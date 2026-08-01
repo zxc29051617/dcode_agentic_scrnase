@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "JudgeResult",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "step": { "type": "string" },
+    "verdict": { "type": "string", "enum": ["pass", "warn", "fail"] },
+    "score": { "type": "number", "minimum": 0, "maximum": 100 },
+    "reasons": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "suggested_action": { "type": "string" },
+    "needs_human_review": { "type": "boolean" }
+  },
+  "required": ["step", "verdict", "score", "reasons", "evidence", "needs_human_review"]
+}

@@ -1,0 +1,237 @@
+"""Wiring checks for the workflow graph.
+
+These assert *routing*, not biology: that every registry step is reachable, that
+each route lands where the v4 graph says it should, and that a bad verdict
+cannot slip past the human gate. Bundles are real fixtures, so `ingest_validate`
+does genuine detection; the steps after it are still scaffolds.
+
+Run with `python tests/test_graph_smoke.py` (or `python tests/run_all.py`).
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from src.graph import build_graph  # noqa: E402
+from src.judge import JudgeResult, StubJudge  # noqa: E402
+from src.policy import GatePolicy  # noqa: E402
+from src.provenance import AuditLog  # noqa: E402
+from src.registry import MAINLINE, REGISTRY  # noqa: E402
+from src.run import DEFAULT_RECURSION_LIMIT  # noqa: E402
+from src.state import new_run_state, summarize  # noqa: E402
+from tests import fixtures  # noqa: E402
+
+SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schemas" / "judge_result.schema.json"
+
+WALK = GatePolicy(headless_decision="accept")
+"""Opt-in policy that accepts at gates so a full route can be walked."""
+
+IMPLEMENTED = ["ingest_validate"]
+"""Skills with a real `run()` on the filtered-matrix route; everything else is a scaffold."""
+
+
+def _run(config, *, policy=WALK, judge=None):
+    graph = build_graph(policy=policy, judge=judge or StubJudge())
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        bundle = fixtures.bundle_for(config, root / "bundle")
+        state = new_run_state(
+            project="test",
+            config=config,
+            input_bundle={"paths": [str(bundle)]},
+            runs_dir=root / "runs",
+        )
+        final = graph.invoke(state, config={"recursion_limit": DEFAULT_RECURSION_LIMIT})
+        final["_audit"] = AuditLog(state["audit_log_path"]).read()
+    return final
+
+
+def _steps(final) -> list[str]:
+    return [r["step"] for r in final["step_results"]]
+
+
+def test_filtered_matrix_route_reaches_report():
+    final = _run({"input_type": "matrix", "matrix_kind": "filtered"})
+    steps = _steps(final)
+    assert "load_filtered_counts" in steps
+    assert "load_raw_counts" not in steps
+    assert steps[-1] == "build_report"
+    for step in MAINLINE:
+        assert step in steps, f"mainline step {step} never ran"
+
+
+def test_fastq_route_runs_upstream_then_rejoins_mainline():
+    final = _run({"input_type": "fastq", "matrix_kind": "filtered"})
+    steps = _steps(final)
+    assert steps[:3] == ["ingest_validate", "fastq_preflight", "cellranger_count"]
+    assert "count_matrix_classify" in steps
+    assert steps[-1] == "build_report"
+
+
+def test_raw_matrix_without_cell_calling_goes_to_review():
+    final = _run({"input_type": "matrix", "matrix_kind": "raw", "cell_calling_resolved": False})
+    steps = _steps(final)
+    assert "load_raw_counts" in steps
+    assert "cell_calling_review" in steps
+    assert steps.index("cell_calling_review") < steps.index("run_qc_metrics")
+
+
+def test_raw_matrix_with_cell_calling_skips_review():
+    final = _run({"input_type": "matrix", "matrix_kind": "raw", "cell_calling_resolved": True})
+    steps = _steps(final)
+    assert "load_raw_counts" in steps
+    assert "cell_calling_review" not in steps
+    assert "run_qc_metrics" in steps
+
+
+def test_sample_qc_triage_runs_when_enabled():
+    final = _run({"input_type": "matrix", "matrix_kind": "filtered", "sample_qc_triage": True})
+    steps = _steps(final)
+    assert steps[:2] == ["ingest_validate", "sample_qc_triage"]
+    assert steps.count("sample_qc_triage") == 1, "triage must not loop"
+
+
+def test_unnamed_matrix_bundle_stops_at_the_first_gate():
+    """A directory with no raw/filtered signal is a question for a person."""
+    final = _run({"input_type": "matrix", "matrix_kind": "unknown"}, policy=GatePolicy())
+    assert final["halted"] is True
+    assert _steps(final) == ["ingest_validate"]
+    assert final["judge_results"][-1]["verdict"] == "warn"
+
+
+def test_ambiguous_matrix_cannot_be_accepted_into_the_mainline():
+    """Even `accept` cannot route an unresolved raw/filtered split forward."""
+    final = _run({"input_type": "matrix", "matrix_kind": "unknown"}, policy=WALK)
+    steps = _steps(final)
+    assert "count_matrix_classify" in steps
+    assert "run_qc_metrics" not in steps
+    assert "build_report" not in steps
+
+
+def test_default_policy_will_not_wave_the_final_gate_through():
+    final = _run({"input_type": "matrix", "matrix_kind": "filtered"}, policy=GatePolicy())
+    assert final["halted"] is True
+    assert "build_report" not in _steps(final), "report must not be built without a decision"
+    assert "annotate_cells" in _steps(final)
+
+
+def test_failing_verdict_halts_the_run():
+    class FailAtQC(StubJudge):
+        def judge(self, step, payload):
+            if step != "run_qc_metrics":
+                return super().judge(step, payload)
+            return JudgeResult(
+                step=step,
+                verdict="fail",
+                score=5,
+                reasons=["synthetic failure"],
+                evidence={},
+                needs_human_review=True,
+            )
+
+    final = _run({"input_type": "matrix", "matrix_kind": "filtered"}, policy=GatePolicy(), judge=FailAtQC())
+    assert final["halted"] is True
+    assert "apply_cell_qc_filter" not in _steps(final)
+    assert final["human_decisions"][-1]["step"] == "run_qc_metrics"
+
+
+def test_every_step_is_judged_and_audited():
+    final = _run({"input_type": "matrix", "matrix_kind": "filtered"})
+    judged = {j["step"] for j in final["judge_results"]}
+    for record in final["step_results"]:
+        if REGISTRY[record["step"]].judge:
+            assert record["step"] in judged, f"{record['step']} ran without a judge"
+
+    events = {entry["event"] for entry in final["_audit"]}
+    assert {"step_start", "step_end", "judge", "human_gate_open"} <= events
+
+
+def test_scaffolds_are_reported_not_hidden():
+    final = _run({"input_type": "matrix", "matrix_kind": "filtered"})
+    report = summarize(final)
+
+    assert report["implemented"] == IMPLEMENTED
+    assert report["crashed"] == []
+    assert report["errors"] == []
+    assert set(report["scaffolds"]) == {r["step"] for r in final["step_results"]} - set(IMPLEMENTED)
+    assert report["verdicts"]["ingest_validate"] == "pass"
+    assert report["verdicts"]["run_qc_metrics"] == "pass (scaffold)"
+
+    for verdict in final["judge_results"]:
+        if verdict["step"] in IMPLEMENTED:
+            assert verdict["score"] > 0
+        else:
+            assert verdict["score"] == 0
+            assert any("SCAFFOLD" in reason for reason in verdict["reasons"])
+
+
+def test_fastq_preflight_blocks_without_a_reference():
+    """`fastq_preflight` is real now: no reference must actually stop the run."""
+    final = _run({"input_type": "fastq", "matrix_kind": "filtered"}, policy=GatePolicy())
+    steps = _steps(final)
+    assert steps == ["ingest_validate", "fastq_preflight"]
+    assert final["halted"] is True
+    preflight_verdict = next(j for j in final["judge_results"] if j["step"] == "fastq_preflight")
+    assert preflight_verdict["verdict"] == "fail"
+    assert any("no reference provided" in e for e in final["errors"])
+
+
+def test_fastq_preflight_passes_with_a_valid_reference():
+    with tempfile.TemporaryDirectory() as tmp:
+        ref = fixtures.make_reference(Path(tmp))
+        final = _run(
+            {"input_type": "fastq", "matrix_kind": "filtered", "reference": str(ref)},
+            policy=WALK,
+        )
+    steps = _steps(final)
+    assert "fastq_preflight" in steps
+    assert "cellranger_count" in steps
+    preflight_verdict = next(j for j in final["judge_results"] if j["step"] == "fastq_preflight")
+    assert preflight_verdict["verdict"] == "pass"
+
+
+def test_ingest_detection_drives_routing_not_config():
+    """The FASTQ fixture routes upstream even though config claims a matrix."""
+    final = _run({"input_type": "fastq", "matrix_kind": "filtered"})
+    detected = final["artifacts"]["ingest_validate"]
+    assert detected["input_type"] == "fastq"
+    assert detected["needs_upstream_preprocessing"] is True
+    assert detected["sample_ids"] == ["SampleA"]
+    assert "fastq_preflight" in _steps(final)
+
+
+def test_judge_results_match_the_published_schema():
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    allowed = set(schema["properties"])
+    required = set(schema["required"])
+
+    final = _run({"input_type": "matrix", "matrix_kind": "filtered"})
+    assert final["judge_results"], "nothing was judged"
+    for verdict in final["judge_results"]:
+        assert set(verdict) <= allowed, f"extra keys: {set(verdict) - allowed}"
+        assert required <= set(verdict), f"missing keys: {required - set(verdict)}"
+        assert verdict["verdict"] in {"pass", "warn", "fail"}
+        assert 0 <= verdict["score"] <= 100
+
+
+def main() -> int:
+    tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
+    failures = []
+    for test in tests:
+        try:
+            test()
+            print(f"  ok    {test.__name__}")
+        except AssertionError as exc:
+            failures.append((test.__name__, exc))
+            print(f"  FAIL  {test.__name__}: {exc}")
+    print(f"\n{len(tests) - len(failures)}/{len(tests)} passed")
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

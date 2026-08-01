@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(command -v conda mamba)",
+      "Bash(conda env *)",
+      "Bash(git mv *)",
+      "Read(//home/zxc29051617/data/**)",
+      "Read(//home/zxc29051617/data/pbmc_1k_v3/**)",
+      "Bash(find / -maxdepth 4 -iname \"*refdata*\")",
+      "Bash(/home/zxc29051617/projects/cellranger-10.1.0/bin/cellranger --version)",
+      "Bash(git add *)"
+    ]
+  }
+}

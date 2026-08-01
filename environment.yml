@@ -1,0 +1,28 @@
+name: dcode-scrna
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - pip
+  - numpy
+  - pandas
+  - scipy
+  - scanpy
+  - anndata
+  - matplotlib
+  - seaborn
+  - scikit-learn
+  - h5py
+  - pyyaml
+  - pydantic
+  - networkx
+  - igraph
+  - leidenalg
+  - pip:
+      - langchain
+      - langgraph
+      - langchain-openai
+      - openai
+      - celltypist
+      - scrublet
