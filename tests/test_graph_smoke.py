@@ -31,18 +31,25 @@ SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schemas" / "judge_result
 WALK = GatePolicy(headless_decision="accept")
 """Opt-in policy that accepts at gates so a full route can be walked."""
 
-IMPLEMENTED = ["ingest_validate"]
+IMPLEMENTED = ["ingest_validate", "resolve_reference"]
 """Skills with a real `run()` on the filtered-matrix route; everything else is a scaffold."""
 
 
 def _run(config, *, policy=WALK, judge=None):
+    """Run the graph on a fixture bundle with a working reference.
+
+    A reference is supplied by default so these tests exercise *routing*;
+    reference resolution has its own suite. Pass `transcriptome` in `config` to
+    override it, or point it somewhere missing to test the blocked path.
+    """
     graph = build_graph(policy=policy, judge=judge or StubJudge())
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         bundle = fixtures.bundle_for(config, root / "bundle")
+        reference = fixtures.make_reference(root, "ref", genomes=["GRCh38"])
         state = new_run_state(
             project="test",
-            config=config,
+            config={"species": "human", "transcriptome": str(reference), **config},
             input_bundle={"paths": [str(bundle)]},
             runs_dir=root / "runs",
         )
@@ -68,7 +75,12 @@ def test_filtered_matrix_route_reaches_report():
 def test_fastq_route_runs_upstream_then_rejoins_mainline():
     final = _run({"input_type": "fastq", "matrix_kind": "filtered"})
     steps = _steps(final)
-    assert steps[:3] == ["ingest_validate", "fastq_preflight", "cellranger_count"]
+    assert steps[:4] == [
+        "ingest_validate",
+        "resolve_reference",
+        "fastq_preflight",
+        "cellranger_count",
+    ]
     assert "count_matrix_classify" in steps
     assert steps[-1] == "build_report"
 
@@ -92,7 +104,7 @@ def test_raw_matrix_with_cell_calling_skips_review():
 def test_sample_qc_triage_runs_when_enabled():
     final = _run({"input_type": "matrix", "matrix_kind": "filtered", "sample_qc_triage": True})
     steps = _steps(final)
-    assert steps[:2] == ["ingest_validate", "sample_qc_triage"]
+    assert steps[:3] == ["ingest_validate", "resolve_reference", "sample_qc_triage"]
     assert steps.count("sample_qc_triage") == 1, "triage must not loop"
 
 
@@ -170,27 +182,43 @@ def test_scaffolds_are_reported_not_hidden():
             assert any("SCAFFOLD" in reason for reason in verdict["reasons"])
 
 
-def test_fastq_preflight_blocks_without_a_reference():
-    """`fastq_preflight` is real now: no reference must actually stop the run."""
-    final = _run({"input_type": "fastq", "matrix_kind": "filtered"}, policy=GatePolicy())
-    steps = _steps(final)
-    assert steps == ["ingest_validate", "fastq_preflight"]
+def test_missing_reference_blocks_before_preflight_even_runs():
+    """`resolve_reference` catches it first, so no FASTQ work is started at all."""
+    final = _run(
+        {"input_type": "fastq", "transcriptome": "/nonexistent/reference"},
+        policy=GatePolicy(),
+    )
+    assert _steps(final) == ["ingest_validate", "resolve_reference"]
     assert final["halted"] is True
-    preflight_verdict = next(j for j in final["judge_results"] if j["step"] == "fastq_preflight")
-    assert preflight_verdict["verdict"] == "fail"
-    assert any("no reference provided" in e for e in final["errors"])
+    verdict = next(j for j in final["judge_results"] if j["step"] == "resolve_reference")
+    assert verdict["verdict"] == "fail"
+    assert any("does not exist" in e for e in final["errors"])
+
+
+def test_species_mismatch_stops_the_run():
+    """The silent-failure case: a mouse run pointed at a human reference."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        human_ref = fixtures.make_reference(root, "human_ref", genomes=["GRCh38"])
+        final = _run(
+            {"input_type": "fastq", "species": "mouse", "transcriptome": str(human_ref)},
+            policy=GatePolicy(),
+        )
+    assert final["halted"] is True
+    assert "fastq_preflight" not in _steps(final)
+    assert any("species mismatch" in e for e in final["errors"])
 
 
 def test_fastq_preflight_passes_with_a_valid_reference_and_real_reads():
     """`bundle_for`'s FASTQs are empty placeholders; this needs real read content."""
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        ref = fixtures.make_reference(root)
+        ref = fixtures.make_reference(root, "ref", genomes=["GRCh38"])
         bundle = fixtures.make_fastq_dir_with_reads(root / "bundle")
         graph = build_graph(policy=WALK, judge=StubJudge())
         state = new_run_state(
             project="test",
-            config={"reference": str(ref)},
+            config={"species": "human", "transcriptome": str(ref)},
             input_bundle={"paths": [str(bundle)]},
             runs_dir=root / "runs",
         )

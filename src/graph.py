@@ -42,7 +42,7 @@ def branch_input_type(state: WorkflowState) -> str:
     return "fastq" if kind == "fastq" else "matrix"
 
 
-def branch_after_ingest(state: WorkflowState) -> str:
+def branch_after_reference(state: WorkflowState) -> str:
     """Optional sample-level triage runs before the input-type split."""
     ran = any(r["step"] == "sample_qc_triage" for r in state.get("step_results") or [])
     if (state.get("config") or {}).get("sample_qc_triage") and not ran:
@@ -118,9 +118,13 @@ def build_graph(
         successors[step] = lambda state, b=branch, pm=path_map: pm.get(b(state), END)
 
     # ---- intake and routing ------------------------------------------------
+    # `resolve_reference` sits between intake and the route split so both the
+    # FASTQ and the count-matrix route pass through it: the transcriptome is only
+    # needed for counting, but the species constants are needed by both.
+    linear("ingest_validate", "resolve_reference")
     branching(
-        "ingest_validate",
-        branch_after_ingest,
+        "resolve_reference",
+        branch_after_reference,
         {"sample_qc": "sample_qc_triage", "fastq": "fastq_preflight", "matrix": "count_matrix_classify"},
     )
     branching(

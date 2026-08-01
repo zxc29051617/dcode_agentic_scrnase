@@ -20,6 +20,8 @@
 ## 目錄
 
 - `docs/`：架構與 workflow 設計
+- `reference/`：Cell Ranger reference（內容 gitignore，見 `reference/README.md`）
+- `scripts/`：`link_reference.sh` 等維運腳本
 - `src/`：LangGraph orchestrator 實作
 - `skills/`：每個 step 一個工具（`SKILL.md` 契約 + Python 實作）
 - `schemas/`：judge / state / output 的 JSON schema
@@ -28,11 +30,11 @@
 
 ## 目前狀態
 
-Orchestrator 可以跑。Skill **20 個裡實作了 2 個**：
+Orchestrator 可以跑。Skill **21 個裡實作了 3 個**：
 
 | | |
 |---|---|
-| ✅ 已實作 | `ingest_validate`、`fastq_preflight` |
+| ✅ 已實作 | `ingest_validate`、`resolve_reference`、`fastq_preflight` |
 | ⬜ scaffold | 其餘 18 個，`run()` 直接 raise `NotImplementedError` |
 
 Scaffold 不會讓流程崩潰，會被標成 `status="scaffold"`，summary 裡的 verdict 也寫成
@@ -43,24 +45,29 @@ Scaffold 不會讓流程崩潰，會被標成 `status="scaffold"`，summary 裡�
 ```bash
 conda activate dcode-scrna
 
+# 一次性：把 reference 放進專案（symlink，不複製 32 GB）
+bash scripts/link_reference.sh human /path/to/T2T_CHM13v2_RefSeqLiftoff_v5_3
+
 # 預設 policy：走到 human gate 就停，不會偷偷放行
 python -m src.run --input /path/to/filtered_feature_bc_matrix
 
-# 走完整條線（--headless-decision accept 是明確的 opt-in）
+# FASTQ 路線，走完整條線（--headless-decision accept 是明確的 opt-in）
 python -m src.run --input ~/data/pbmc_1k_v3/pbmc_1k_v3_fastqs --headless-decision accept
 
 # 只跑單一 skill，不進 graph
 python skills/ingest_validate/ingest_validate.py ~/data/pbmc_1k_v3/pbmc_1k_v3_fastqs
-python skills/fastq_preflight/fastq_preflight.py ~/data/pbmc_1k_v3/pbmc_1k_v3_fastqs --reference <path>
-
-# FASTQ 路線需要 --reference 才能過 fastq_preflight（沒有的話會在 human gate 停下）
-python -m src.run --input ~/data/pbmc_1k_v3/pbmc_1k_v3_fastqs --reference <path> --headless-decision accept
+python skills/resolve_reference/resolve_reference.py --species human --fastq
+python skills/fastq_preflight/fastq_preflight.py ~/data/pbmc_1k_v3/pbmc_1k_v3_fastqs \
+  --reference reference/T2T_CHM13v2_RefSeqLiftoff_v5_3
 
 # 測試
 python tests/run_all.py
 ```
 
 `--input` 給什麼由 `ingest_validate` 自己偵測（FASTQ / MTX / .h5 / .h5ad）。
+`--species` 決定用哪份 reference 和 QC 常數（`--reference` 可以明確覆寫）；
+物種和 reference 對不上會在第二步就停下來，不會等 count 跑完才發現。
+
 `--matrix-kind`、`--cell-calling-resolved` 只是 `count_matrix_classify` 和
 `load_raw_counts` 還是 scaffold 期間的 fallback，那兩個實作掉之後就可以拿掉。
 
@@ -78,6 +85,7 @@ python -m src.run --judge local ...
 | 檔案 | 負責 |
 |---|---|
 | `registry.py` | 有哪些 step、對應哪個 skill、誰來 judge |
+| `species.py` | 物種→reference / mito prefix / 紅血球基因的對照表（純資料） |
 | `nodes.py` | graph node：跑一個 step、judge 一個 step、停下來等人 |
 | `judge.py` | judge 契約與 backend（stub / 本地模型） |
 | `policy.py` | 什麼樣的 verdict 才能繼續 |

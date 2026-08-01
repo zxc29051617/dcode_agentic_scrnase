@@ -48,11 +48,26 @@ def make_fastq_dir(
     return directory
 
 
-def make_reference(root: Path, name: str = "GRCh38-ref") -> Path:
-    """A minimal directory that satisfies fastq_preflight's reference check."""
+def make_reference(
+    root: Path,
+    name: str = "GRCh38-ref",
+    *,
+    genomes: list[str] | None = None,
+    version: str | None = None,
+) -> Path:
+    """A minimal directory that passes for a Cell Ranger reference.
+
+    `genomes` is what mkref stamps in and what every counted matrix carries, so
+    it is the field `resolve_reference` cross-checks the species against.
+    """
+    import json
+
     directory = Path(root) / name
     directory.mkdir(parents=True, exist_ok=True)
-    (directory / "reference.json").write_text("{}", encoding="utf-8")
+    meta: dict[str, object] = {"genomes": genomes or [name]}
+    if version:
+        meta["version"] = version
+    (directory / "reference.json").write_text(json.dumps(meta), encoding="utf-8")
     return directory
 
 

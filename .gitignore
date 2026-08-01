@@ -3,3 +3,7 @@ __pycache__/
 .claude/settings.local.json
 runs/
 .claude/settings.local.json.tmp.*
+
+# References are 20-32 GB and machine-specific; reference/README.md says how to get one.
+reference/*
+!reference/README.md

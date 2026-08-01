@@ -44,6 +44,16 @@ def main(argv: list[str] | None = None) -> int:
         help="bundle directories or files; ingest_validate detects the route from these",
     )
     parser.add_argument(
+        "--species",
+        default="human",
+        help="human, mouse, 小鼠, ... — resolves the reference and the QC constants",
+    )
+    parser.add_argument(
+        "--reference",
+        metavar="PATH",
+        help="explicit transcriptome path; wins over --species",
+    )
+    parser.add_argument(
         "--matrix-kind",
         choices=["raw", "filtered", "unknown"],
         default="filtered",
@@ -72,6 +82,8 @@ def main(argv: list[str] | None = None) -> int:
         project=args.project,
         input_bundle={"paths": args.input},
         config={
+            "species": args.species,
+            "transcriptome": args.reference,
             "matrix_kind": args.matrix_kind,
             "cell_calling_resolved": args.cell_calling_resolved,
             "sample_qc_triage": args.sample_qc_triage,

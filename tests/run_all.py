@@ -10,9 +10,19 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests import test_fastq_preflight, test_graph_smoke, test_ingest_validate  # noqa: E402
+from tests import (  # noqa: E402
+    test_fastq_preflight,
+    test_graph_smoke,
+    test_ingest_validate,
+    test_resolve_reference,
+)
 
-MODULES = (test_ingest_validate, test_fastq_preflight, test_graph_smoke)
+MODULES = (
+    test_ingest_validate,
+    test_resolve_reference,
+    test_fastq_preflight,
+    test_graph_smoke,
+)
 
 
 def main() -> int:

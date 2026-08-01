@@ -261,7 +261,12 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
         blocking.extend(library.blocking)
         warnings.extend(library.warnings)
 
-    ref_blocking, ref_warnings = _check_reference(config.get("reference"))
+    # `resolve_reference` owns *which* reference and whether it matches the
+    # species; this step only asks whether that one can run a count. Its
+    # resolved path wins over config, which is the fallback for a standalone run.
+    resolved = (payload.get("artifacts") or {}).get("resolve_reference") or {}
+    reference = resolved.get("transcriptome") or config.get("reference")
+    ref_blocking, ref_warnings = _check_reference(reference)
     blocking.extend(ref_blocking)
     warnings.extend(ref_warnings)
 

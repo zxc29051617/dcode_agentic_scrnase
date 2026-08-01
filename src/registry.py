@@ -36,7 +36,8 @@ class StepSpec:
 REGISTRY: dict[str, StepSpec] = {
     spec.name: spec
     for spec in (
-        StepSpec("ingest_validate", "utility", "judge_ingest", branches=True),
+        StepSpec("ingest_validate", "utility", "judge_ingest"),
+        StepSpec("resolve_reference", "utility", "judge_reference", branches=True),
         StepSpec("sample_qc_triage", "utility", "judge_sample_qc"),
         StepSpec("fastq_preflight", "upstream", "judge_fastq_preflight"),
         StepSpec("cellranger_count", "upstream", "judge_cellranger_count"),
