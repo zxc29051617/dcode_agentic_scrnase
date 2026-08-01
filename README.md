@@ -28,12 +28,12 @@
 
 ## 目前狀態
 
-Orchestrator 可以跑。Skill **20 個裡實作了 1 個**：
+Orchestrator 可以跑。Skill **20 個裡實作了 2 個**：
 
 | | |
 |---|---|
-| ✅ 已實作 | `ingest_validate` |
-| ⬜ scaffold | 其餘 19 個，`run()` 直接 raise `NotImplementedError` |
+| ✅ 已實作 | `ingest_validate`、`fastq_preflight` |
+| ⬜ scaffold | 其餘 18 個，`run()` 直接 raise `NotImplementedError` |
 
 Scaffold 不會讓流程崩潰，會被標成 `status="scaffold"`，summary 裡的 verdict 也寫成
 `"pass (scaffold)"`、score 0，不會被誤讀成真的通過。
@@ -49,8 +49,12 @@ python -m src.run --input /path/to/filtered_feature_bc_matrix
 # 走完整條線（--headless-decision accept 是明確的 opt-in）
 python -m src.run --input ~/data/pbmc_1k_v3/pbmc_1k_v3_fastqs --headless-decision accept
 
-# 只跑 ingest 分類，不進 graph
+# 只跑單一 skill，不進 graph
 python skills/ingest_validate/ingest_validate.py ~/data/pbmc_1k_v3/pbmc_1k_v3_fastqs
+python skills/fastq_preflight/fastq_preflight.py ~/data/pbmc_1k_v3/pbmc_1k_v3_fastqs --reference <path>
+
+# FASTQ 路線需要 --reference 才能過 fastq_preflight（沒有的話會在 human gate 停下）
+python -m src.run --input ~/data/pbmc_1k_v3/pbmc_1k_v3_fastqs --reference <path> --headless-decision accept
 
 # 測試
 python tests/run_all.py

@@ -14,8 +14,8 @@ Orchestrator 層是**真的**，分析層是**假的**：
 - 每個 step 後面都有 judge node，verdict 符合 `schemas/judge_result.schema.json`
 - human gate 預設不放行 warn/fail，headless 執行預設 `stop`
 - provenance 每步寫 JSONL audit log
-- **20 個 registry step 裡實作了 1 個**（`ingest_validate`），其餘 19 個
-  `run()` 還是直接 raise `NotImplementedError`
+- **20 個 registry step 裡實作了 2 個**（`ingest_validate`、`fastq_preflight`），
+  其餘 18 個 `run()` 還是直接 raise `NotImplementedError`
 
 ## 一個待決定的落差
 
@@ -35,15 +35,20 @@ judge 邏輯集中在 `src/judge.py`：一份 contract、一份 prompt、每個 
 一次實作一個 skill，順序照 `docs/tool_registry.md` 的 MVP implementation order：
 
 1. ~~`ingest_validate`~~ — 已完成，對 `pbmc_1k_v3` 官方測試集驗證過
-2. `count_matrix_classify` — raw / filtered 的分流靠它；`ingest_validate` 已經給了
+2. ~~`fastq_preflight`~~ — 已完成，對 `pbmc_1k_v3` 驗證過（R1=28bp 正確判成 SC3Pv3）；
+   缺 reference 時會真的擋在 human gate，不是假裝通過
+3. `cellranger_count` — 真的呼叫 `/home/zxc29051617/projects/cellranger-10.1.0/bin/cellranger`；
+   需要先準備一份參考基因體（`fastq_preflight` 只檢查路徑存在 + `reference.json`，
+   不驗證內容完整性）
+4. `count_matrix_classify` — raw / filtered 的分流靠它；`ingest_validate` 已經給了
    `matrix_kind_hint` 和 `matrix_path`，這一步負責把 hint 變成決定
-3. `load_filtered_counts` — 最短的一條可跑通的真實路徑
-4. `run_qc_metrics` — 第一個有真正 metrics 可以給 judge 評的 step
+5. `load_filtered_counts` — 最短的一條可跑通的真實路徑
+6. `run_qc_metrics` — 第一個有真正 metrics 可以給 judge 評的 step
 
-做到第 4 個，就有一條 `filtered matrix -> QC -> 真 judge` 的端到端真實路徑，
+做到第 6 個，就有一條 `FASTQ -> count -> QC -> 真 judge` 的端到端真實路徑，
 那時候才值得把 judge 從 stub 換成本地模型。
 
-實作完 2 和 3 之後，`src/run.py` 的 `--matrix-kind` 和 `--cell-calling-resolved`
+實作完 4 和 5 之後，`src/run.py` 的 `--matrix-kind` 和 `--cell-calling-resolved`
 兩個 scaffold fallback 就可以拿掉，`graph.py` 裡對應的 config fallback 也是。
 
 ## 實作一個 skill 的契約

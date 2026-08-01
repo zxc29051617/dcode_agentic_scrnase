@@ -181,13 +181,21 @@ def test_fastq_preflight_blocks_without_a_reference():
     assert any("no reference provided" in e for e in final["errors"])
 
 
-def test_fastq_preflight_passes_with_a_valid_reference():
+def test_fastq_preflight_passes_with_a_valid_reference_and_real_reads():
+    """`bundle_for`'s FASTQs are empty placeholders; this needs real read content."""
     with tempfile.TemporaryDirectory() as tmp:
-        ref = fixtures.make_reference(Path(tmp))
-        final = _run(
-            {"input_type": "fastq", "matrix_kind": "filtered", "reference": str(ref)},
-            policy=WALK,
+        root = Path(tmp)
+        ref = fixtures.make_reference(root)
+        bundle = fixtures.make_fastq_dir_with_reads(root / "bundle")
+        graph = build_graph(policy=WALK, judge=StubJudge())
+        state = new_run_state(
+            project="test",
+            config={"reference": str(ref)},
+            input_bundle={"paths": [str(bundle)]},
+            runs_dir=root / "runs",
         )
+        final = graph.invoke(state, config={"recursion_limit": DEFAULT_RECURSION_LIMIT})
+
     steps = _steps(final)
     assert "fastq_preflight" in steps
     assert "cellranger_count" in steps
