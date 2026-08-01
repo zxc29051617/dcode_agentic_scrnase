@@ -14,8 +14,9 @@ Orchestrator 層是**真的**，分析層是**假的**：
 - 每個 step 後面都有 judge node，verdict 符合 `schemas/judge_result.schema.json`
 - human gate 預設不放行 warn/fail，headless 執行預設 `stop`
 - provenance 每步寫 JSONL audit log
-- **21 個 registry step 裡實作了 3 個**（`ingest_validate`、`resolve_reference`、
-  `fastq_preflight`），其餘 18 個 `run()` 還是直接 raise `NotImplementedError`
+- **21 個 registry step 裡實作了 4 個**（`ingest_validate`、`resolve_reference`、
+  `fastq_preflight`、`cellranger_count`），其餘 17 個還是 `NotImplementedError`
+- FASTQ 上游整段（偵測 → 選 reference → preflight → count）已經是真的
 
 ## 一個待決定的落差
 
@@ -40,9 +41,8 @@ judge 邏輯集中在 `src/judge.py`：一份 contract、一份 prompt、每個 
 3. ~~reference 接進專案~~ — 已完成。`scripts/link_reference.sh` 用 symlink 把
    reference 放進 `reference/`，`src/species.py` 是物種對照表，
    `resolve_reference` 負責解析 + 驗證物種對不對得上
-4. `cellranger_count` — 真的呼叫 `/home/zxc29051617/projects/cellranger-10.1.0/bin/cellranger`。
-   reference 已就緒（T2T v5.3 已 link 進 `reference/`）。**要移植 `_assert_same_reference`**：
-   拒絕沿用「用別份 reference 算出來的」既有 matrix
+4. ~~`cellranger_count`~~ — 已完成。cellranger 路徑自動尋找，
+   `_assert_same_reference` 已移植：拒絕沿用「用別份 reference 算出來的」既有 matrix
 5. `count_matrix_classify` — raw / filtered 的分流靠它；`ingest_validate` 已經給了
    `matrix_kind_hint` 和 `matrix_path`，這一步負責把 hint 變成決定
 6. `load_filtered_counts` — 最短的一條可跑通的真實路徑

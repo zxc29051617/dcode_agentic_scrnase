@@ -6,6 +6,7 @@ never write artifacts, and the gate never rewrites either.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Callable
 
 from langgraph.types import interrupt
@@ -27,9 +28,14 @@ def build_payload(state: WorkflowState, step: str) -> dict[str, Any]:
     """Assemble the payload handed to a skill's `run()`."""
     config = state.get("config") or {}
     step_config = (config.get("steps") or {}).get(step, {})
+    # Steps that write files (cellranger_count, build_report) need somewhere to
+    # put them. The audit log already lives at the run's root, so derive it from
+    # there rather than inventing a second convention.
+    run_dir = str(Path(state.get("audit_log_path", "runs/unknown/audit.jsonl")).parent)
     return {
         "step": step,
         "run_id": state.get("run_id"),
+        "run_dir": run_dir,
         "config": {**{k: v for k, v in config.items() if k != "steps"}, **step_config},
         "input_bundle": state.get("input_bundle") or {},
         "sample_metadata": state.get("sample_metadata") or {},

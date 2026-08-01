@@ -99,6 +99,36 @@ def make_fastq_dir_with_reads(
     return directory
 
 
+def make_count_matrix_h5(path: Path, genome: str = "GRCh38") -> Path:
+    """A 10x-shaped filtered matrix carrying the genome it was counted against.
+
+    Only `matrix/features/genome` matters here — that is the field
+    `cellranger_count.assert_same_reference` reads to catch a stale reuse.
+    """
+    import h5py
+    import numpy as np
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with h5py.File(path, "w") as handle:
+        features = handle.create_group("matrix/features")
+        features.create_dataset("genome", data=np.array([genome.encode()] * 3))
+    return path
+
+
+def make_cellranger_outs_h5(
+    work: Path, library_id: str = "SampleA", genome: str = "GRCh38"
+) -> Path:
+    """A finished-looking `<work>/<library>/outs/` with a filtered matrix in it."""
+    outs = Path(work) / library_id / "outs"
+    outs.mkdir(parents=True, exist_ok=True)
+    make_count_matrix_h5(outs / "filtered_feature_bc_matrix.h5", genome)
+    (outs / "metrics_summary.csv").write_text(
+        "Estimated Number of Cells,Mean Reads per Cell\n1222,42000\n", encoding="utf-8"
+    )
+    return outs
+
+
 def make_h5ad(root: Path, *, n_obs: int = 500, name: str = "data.h5ad") -> Path:
     import anndata
     import numpy as np
