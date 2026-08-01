@@ -19,6 +19,9 @@ dependencies:
   - networkx
   - igraph
   - leidenalg
+  # Sequencing QC for the FASTQ route (fastq_qc skill)
+  - fastqc
+  - multiqc
   - pip:
       - langchain
       - langgraph

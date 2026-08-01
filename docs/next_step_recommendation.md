@@ -14,9 +14,9 @@ Orchestrator 層是**真的**，分析層是**假的**：
 - 每個 step 後面都有 judge node，verdict 符合 `schemas/judge_result.schema.json`
 - human gate 預設不放行 warn/fail，headless 執行預設 `stop`
 - provenance 每步寫 JSONL audit log
-- **21 個 registry step 裡實作了 4 個**（`ingest_validate`、`resolve_reference`、
-  `fastq_preflight`、`cellranger_count`），其餘 17 個還是 `NotImplementedError`
-- FASTQ 上游整段（偵測 → 選 reference → preflight → count）已經是真的
+- **22 個 registry step 裡實作了 5 個**（`ingest_validate`、`resolve_reference`、
+  `fastq_preflight`、`fastq_qc`、`cellranger_count`），其餘 17 個還是 `NotImplementedError`
+- FASTQ 上游整段（偵測 → 選 reference → 結構檢查 → 品質評估 → count）已經是真的
 
 ## 一個待決定的落差
 

@@ -134,7 +134,8 @@ def build_graph(
     )
 
     # ---- FASTQ upstream route ----------------------------------------------
-    linear("fastq_preflight", "cellranger_count")
+    linear("fastq_preflight", "fastq_qc")
+    linear("fastq_qc", "cellranger_count")
     linear("cellranger_count", "count_matrix_classify")
 
     # ---- count matrix split -------------------------------------------------

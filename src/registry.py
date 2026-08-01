@@ -40,6 +40,9 @@ REGISTRY: dict[str, StepSpec] = {
         StepSpec("resolve_reference", "utility", "judge_reference", branches=True),
         StepSpec("sample_qc_triage", "utility", "judge_sample_qc"),
         StepSpec("fastq_preflight", "upstream", "judge_fastq_preflight"),
+        # Structural checks first (milliseconds), sequencing quality second
+        # (minutes): a bundle missing an R2 should never reach FastQC.
+        StepSpec("fastq_qc", "upstream", "judge_fastq_qc"),
         StepSpec("cellranger_count", "upstream", "judge_cellranger_count"),
         StepSpec("count_matrix_classify", "router", "judge_matrix_classify", branches=True),
         StepSpec("load_raw_counts", "analysis", "judge_raw_counts", branches=True),

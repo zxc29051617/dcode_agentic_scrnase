@@ -99,6 +99,46 @@ def make_fastq_dir_with_reads(
     return directory
 
 
+def make_10x_fastq_trio(
+    root: Path,
+    sample: str = "S",
+    *,
+    n_reads: int = 500,
+    r2_quality: int = 37,
+    name: str = "fastq",
+) -> Path:
+    """A 10x-shaped R1/R2/I1 trio with real, varied quality strings.
+
+    The quality characters must span a realistic range: FastQC guesses the
+    encoding from the characters it sees, and a file whose quality is one
+    repeated high character is read as Illumina 1.5 (offset 64), turning Q37
+    into Q6. Real data never looks like that; a fixture must not either.
+    """
+    import gzip
+    import random
+
+    rng = random.Random(0)
+    directory = Path(root) / name
+    directory.mkdir(parents=True, exist_ok=True)
+
+    def write(filename: str, length: int, quality: int) -> None:
+        with gzip.open(directory / filename, "wt") as handle:
+            for i in range(n_reads):
+                seq = "".join(rng.choice("ACGT") for _ in range(length))
+                quals = [max(2, min(41, quality + rng.randint(-2, 2))) for _ in range(length)]
+                # A few reads carry one very low base. That is enough for the
+                # character range to force Sanger (offset 33) detection, without
+                # dragging any position's mean down far enough to fail a module.
+                if i % 100 == 0:
+                    quals[0] = 2
+                handle.write(f"@r{i}\n{seq}\n+\n" + "".join(chr(33 + q) for q in quals) + "\n")
+
+    write(f"{sample}_S1_L001_R1_001.fastq.gz", 28, 37)
+    write(f"{sample}_S1_L001_R2_001.fastq.gz", 91, r2_quality)
+    write(f"{sample}_S1_L001_I1_001.fastq.gz", 8, 37)
+    return directory
+
+
 def make_count_matrix_h5(path: Path, genome: str = "GRCh38") -> Path:
     """A 10x-shaped filtered matrix carrying the genome it was counted against.
 

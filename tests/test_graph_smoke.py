@@ -75,10 +75,12 @@ def test_filtered_matrix_route_reaches_report():
 def test_fastq_route_runs_upstream_then_rejoins_mainline():
     final = _run({"input_type": "fastq", "matrix_kind": "filtered"})
     steps = _steps(final)
-    assert steps[:4] == [
+    assert steps[:5] == [
         "ingest_validate",
         "resolve_reference",
         "fastq_preflight",
+        # Structural checks before the expensive quality pass, and both before counting.
+        "fastq_qc",
         "cellranger_count",
     ]
     assert "count_matrix_classify" in steps

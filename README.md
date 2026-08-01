@@ -30,12 +30,14 @@
 
 ## 目前狀態
 
-Orchestrator 可以跑。Skill **21 個裡實作了 4 個**，FASTQ 上游整段已經是真的：
+Orchestrator 可以跑。Skill **22 個裡實作了 5 個**，FASTQ 上游整段已經是真的：
 
 | | |
 |---|---|
-| ✅ 已實作 | `ingest_validate`、`resolve_reference`、`fastq_preflight`、`cellranger_count` |
+| ✅ 已實作 | `ingest_validate`、`resolve_reference`、`fastq_preflight`、`fastq_qc`、`cellranger_count` |
 | ⬜ scaffold | 其餘 17 個，`run()` 直接 raise `NotImplementedError` |
+
+FASTQ 路線：偵測輸入 → 選 reference 並驗證物種 → 結構檢查 → **FastQC/MultiQC 品質評估** → count
 
 Scaffold 不會讓流程崩潰，會被標成 `status="scaffold"`，summary 裡的 verdict 也寫成
 `"pass (scaffold)"`、score 0，不會被誤讀成真的通過。
@@ -59,6 +61,10 @@ python skills/ingest_validate/ingest_validate.py ~/data/pbmc_1k_v3/pbmc_1k_v3_fa
 python skills/resolve_reference/resolve_reference.py --species human --fastq
 python skills/fastq_preflight/fastq_preflight.py ~/data/pbmc_1k_v3/pbmc_1k_v3_fastqs \
   --reference reference/T2T_CHM13v2_RefSeqLiftoff_v5_3
+
+# 只跑定序品質評估（FastQC + MultiQC）
+python skills/fastq_qc/fastq_qc.py --fastqs ~/data/pbmc_1k_v3/pbmc_1k_v3_fastqs \
+  --run-dir runs/manual --threads 8
 
 # 只跑 count（約 20-40 分鐘）。cellranger 路徑會自己找，不用給
 python skills/cellranger_count/cellranger_count.py \

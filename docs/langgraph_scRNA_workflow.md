@@ -65,7 +65,8 @@ flowchart TD
 
 ### Deterministic nodes
 
-- `QC`: FastQC / MultiQC / raw read sanity checks
+- `fastq_preflight`: structural checks — naming, R1/R2 pairing, read lengths, reference readiness
+- `fastq_qc`: FastQC / MultiQC sequencing quality, judged on R2 because R1/I1 are barcodes
 - `Count`: Cell Ranger count or equivalent
 - `Cell calling`: decide which barcodes are cells
 - `Load`: import matrices into AnnData
