@@ -13,12 +13,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src import matrix_io  # noqa: E402
 from src.registry import load_skill  # noqa: E402
+from tests import paths  # noqa: E402
 
 validate = load_skill("post_load_validate")
 
-REAL_OUTS = (
-    Path.home() / ".claude/jobs/d529e0fc/tmp/cr_verify/cellranger_count/pbmc_1k_v3/outs"
-)
+REAL_OUTS = paths.COUNT_OUTS / "pbmc_1k_v3" / "outs"
 
 
 class Skip(Exception):

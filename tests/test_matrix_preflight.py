@@ -13,16 +13,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src import matrix_io, species  # noqa: E402
 from src.registry import load_skill  # noqa: E402
+from tests import paths  # noqa: E402
 
 preflight = load_skill("matrix_preflight")
 
-REAL_OUTS = (
-    Path.home() / ".claude/jobs/d529e0fc/tmp/cr_verify/cellranger_count/pbmc_1k_v3/outs"
-)
+REAL_OUTS = paths.COUNT_OUTS / "pbmc_1k_v3" / "outs"
 
-#: 10x's own public matrices. Third-party files the pipeline did not produce, so
-#: they catch assumptions that hold only for output we generated ourselves.
-TENX_PUBLIC = Path.home() / "data" / "10x_public"
+TENX_PUBLIC = paths.TENX_PUBLIC
 
 
 class Skip(Exception):

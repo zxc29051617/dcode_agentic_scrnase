@@ -12,14 +12,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.registry import load_skill  # noqa: E402
+from tests import paths  # noqa: E402
 from tests import fixtures  # noqa: E402
 
 classify = load_skill("count_matrix_classify")
 
-REAL_OUTS = (
-    Path.home()
-    / ".claude/jobs/d529e0fc/tmp/cr_verify/cellranger_count/pbmc_1k_v3/outs"
-)
+REAL_OUTS = paths.COUNT_OUTS / "pbmc_1k_v3" / "outs"
 
 
 class Skip(Exception):

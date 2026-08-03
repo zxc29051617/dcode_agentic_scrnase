@@ -12,6 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.registry import load_skill  # noqa: E402
+from tests import paths  # noqa: E402
 from tests import fixtures  # noqa: E402
 
 preflight = load_skill("fastq_preflight")
@@ -132,9 +133,9 @@ def test_samplesheet_flags_extra_sample_as_warning_only():
 
 
 TENX_FASTQ = {
-    "pbmc_1k_v2": (Path.home() / "data/pbmc_1k_v2/pbmc_1k_v2_fastqs", ["SC3Pv2", "SC5P-PE", "SC5P-R2"]),
-    "pbmc_1k_v3": (Path.home() / "data/pbmc_1k_v3/pbmc_1k_v3_fastqs", ["SC3Pv3"]),
-    "neuron_1k_v3": (Path.home() / "data/neuron_1k_v3/neuron_1k_v3_fastqs", ["SC3Pv3"]),
+    "pbmc_1k_v2": (paths.FASTQ_BUNDLES["pbmc_1k_v2"], ["SC3Pv2", "SC5P-PE", "SC5P-R2"]),
+    "pbmc_1k_v3": (paths.FASTQ_BUNDLES["pbmc_1k_v3"], ["SC3Pv3"]),
+    "neuron_1k_v3": (paths.FASTQ_BUNDLES["neuron_1k_v3"], ["SC3Pv3"]),
 }
 
 
@@ -200,7 +201,7 @@ def test_no_fastq_found_is_an_error():
 
 def test_real_pbmc_1k_v3_bundle_if_present():
     """The 10x official test set: known-good SC3Pv3 chemistry, no reference on hand."""
-    bundle = Path.home() / "data" / "pbmc_1k_v3" / "pbmc_1k_v3_fastqs"
+    bundle = paths.FASTQ_BUNDLES["pbmc_1k_v3"]
     if not bundle.exists():
         raise Skip("pbmc_1k_v3 fastqs not present")
     result = _run([bundle])

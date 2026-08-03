@@ -7,3 +7,10 @@ runs/
 # References are 20-32 GB and machine-specific; reference/README.md says how to get one.
 reference/*
 !reference/README.md
+
+# Datasets and third-party tools: ~27 GB, fetched not committed.
+# data/README.md and tools/README.md say how to get them.
+data/*
+!data/README.md
+tools/*
+!tools/README.md

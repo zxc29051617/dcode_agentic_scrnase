@@ -12,6 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.registry import load_skill  # noqa: E402
+from tests import paths  # noqa: E402
 from tests import fixtures  # noqa: E402
 
 ingest = load_skill("ingest_validate")
@@ -95,7 +96,7 @@ def test_multi_lane_layout_is_resolved_once():
 
 def test_real_pbmc_1k_v3_bundle_if_present():
     """The 10x official test set, when it has been downloaded locally."""
-    bundle = Path.home() / "data" / "pbmc_1k_v3" / "pbmc_1k_v3_fastqs"
+    bundle = paths.FASTQ_BUNDLES["pbmc_1k_v3"]
     if not bundle.exists():
         raise Skip("pbmc_1k_v3 fastqs not present")
     result = _run([bundle])

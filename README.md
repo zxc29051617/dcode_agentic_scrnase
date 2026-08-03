@@ -20,8 +20,10 @@
 ## 目錄
 
 - `docs/`：架構與 workflow 設計
+- `data/`：測試資料集（內容 gitignore，見 `data/README.md`）
 - `reference/`：Cell Ranger reference（內容 gitignore，見 `reference/README.md`）
-- `scripts/`：`link_reference.sh` 等維運腳本
+- `tools/`：Cell Ranger 等第三方工具的 symlink（見 `tools/README.md`）
+- `scripts/`：`get_test_data.sh`、`link_reference.sh` 等維運腳本
 - `src/`：LangGraph orchestrator 實作
 - `skills/`：每個 step 一個工具（`SKILL.md` 契約 + Python 實作）
 - `schemas/`：judge / state / output 的 JSON schema
@@ -76,8 +78,14 @@ python skills/cellranger_count/cellranger_count.py \
 python tests/run_all.py
 ```
 
-測試資料在 `~/data/`：`pbmc_1k_v3/`（FASTQ，10x 官方）與 `10x_public/`
-（五份 10x 公開矩陣，含 v2 化學、CITE-seq、小鼠）。沒有這些目錄時相關測試會 skip。
+資料、reference、工具都在專案內，但**內容不進 git**（約 27 GB）。缺的時候相關測試會
+乾淨地 skip，所以剛 clone 下來就能跑，只是測得比較少：
+
+```bash
+bash scripts/get_test_data.sh          # 列出需要什麼、有什麼
+bash scripts/get_test_data.sh fastq    # 18 GB，FASTQ 路線
+bash scripts/link_reference.sh         # reference 怎麼放
+```
 
 `--input` 給什麼由 `ingest_validate` 自己偵測（FASTQ / MTX / .h5 / .h5ad）。
 `--species` 決定用哪份 reference 和 QC 常數（`--reference` 可以明確覆寫）；
