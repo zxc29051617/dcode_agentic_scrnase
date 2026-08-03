@@ -36,6 +36,7 @@ INPUT_FIELDS = (
 )
 OUTPUT_FIELDS = (
     "reports",
+    "notes",
     "multiqc_report",
     "per_read_role",
     "module_failures",
@@ -58,12 +59,20 @@ DEFAULT_MIN_Q30 = 0.75
 STRUCTURAL_MODULES = frozenset(
     {
         "Per base sequence content",
-        "Sequence Duplication Levels",
         "Overrepresented sequences",
         "Sequence Length Distribution",
         "Per sequence GC content",
     }
 )
+
+#: Expected on EVERY read of an scRNA-seq library, including the cDNA read.
+#: The protocol amplifies by PCR and deliberately over-sequences a small set of
+#: transcripts; UMIs exist to collapse the copies afterwards. FastQC cannot see
+#: the UMIs, so it reports the amplification as duplication and fails the run.
+#: Cell Ranger's "Sequencing Saturation" is the metric that actually says
+#: whether the depth was right — measured after deduplication, which is the only
+#: place the question can be answered.
+ASSAY_EXPECTED_MODULES = frozenset({"Sequence Duplication Levels"})
 
 #: Read roles that carry biology. Everything else is a barcode or an index.
 BIOLOGICAL_READS = frozenset({"R2"})
@@ -184,12 +193,16 @@ def parse_fastqc_zip(zip_path: Path) -> dict[str, Any] | None:
     failed = sorted(name for name, status in statuses.items() if status == "fail")
     warned = sorted(name for name, status in statuses.items() if status == "warn")
 
-    # A barcode read failing on composition is a barcode, not a defect.
-    structural = []
+    # Two separate reasons a FastQC flag is not a finding here:
+    #   assay-level  - true of every read (PCR duplication)
+    #   read-role    - true only of barcode/index reads (composition, repeats)
+    expected = set(ASSAY_EXPECTED_MODULES)
     if read_role not in BIOLOGICAL_READS:
-        structural = [name for name in failed + warned if name in STRUCTURAL_MODULES]
-        failed = [name for name in failed if name not in STRUCTURAL_MODULES]
-        warned = [name for name in warned if name not in STRUCTURAL_MODULES]
+        expected |= STRUCTURAL_MODULES
+
+    structural = [name for name in failed + warned if name in expected]
+    failed = [name for name in failed if name not in expected]
+    warned = [name for name in warned if name not in expected]
 
     return {
         "file": basic.get("Filename", zip_path.stem),
@@ -366,6 +379,17 @@ def _summarize(
     if adapter_max is not None and adapter_max >= 10.0:
         warnings.append(f"adapter content reaches {adapter_max:.1f}% at its worst position")
 
+    # Reported, never silently dropped. It is expected, but a person still needs
+    # the number — and needs to know which metric actually answers the question.
+    notes: list[str] = []
+    if duplicate_r2 is not None:
+        notes.append(
+            f"cDNA (R2) duplication is {duplicate_r2:.0%}. Expected for scRNA-seq: the "
+            "protocol amplifies by PCR and UMIs collapse the copies, which FastQC "
+            "cannot see. Cell Ranger's Sequencing Saturation is the metric that says "
+            "whether the depth was right (50-80% is the usual target)."
+        )
+
     expected = sorted(
         {
             module
@@ -376,6 +400,7 @@ def _summarize(
 
     return _result(
         reports=reports,
+        notes=notes,
         multiqc_report=multiqc_report,
         report_dir=str(out_dir),
         per_read_role={
@@ -405,6 +430,7 @@ def _summarize(
 def _result(
     *,
     reports: list[dict[str, Any]] | None = None,
+    notes: list[str] | None = None,
     multiqc_report: str | None = None,
     report_dir: str | None = None,
     per_read_role: dict[str, Any] | None = None,
@@ -417,6 +443,9 @@ def _result(
 ) -> dict[str, Any]:
     return {
         "reports": reports or [],
+        # Expected findings, stated rather than dropped: a reader must be able to
+        # see the duplication number even though it is not counted as a failure.
+        "notes": notes or [],
         "multiqc_report": multiqc_report,
         "report_dir": report_dir,
         "per_read_role": per_read_role or {},

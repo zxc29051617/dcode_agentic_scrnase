@@ -38,6 +38,21 @@ So: quality is judged on **R2**, and R1/I1 module failures of the structural
 kind are downgraded to notes saying they are expected. A genuine R1 problem —
 low quality scores, not composition — is still reported.
 
+### Duplication is expected on R2 as well
+The read-role rule alone is not enough. scRNA-seq amplifies by PCR and
+deliberately over-sequences a small set of transcripts; UMIs collapse the copies
+afterwards, and FastQC cannot see UMIs. So it fails **Sequence Duplication
+Levels** on the cDNA read of every healthy run.
+
+That one is treated as expected on all reads, not just barcodes. The number is
+still reported as a note, together with the metric that actually answers the
+question — Cell Ranger's **Sequencing Saturation**, measured after
+deduplication, where 50-80% is the usual target.
+
+Found by running the real `pbmc_1k_v3` set: R2 duplication 51%, which the
+read-role rule flagged as a failure, while Cell Ranger put sequencing saturation
+at a perfectly healthy 70.8%.
+
 ## Input
 
 | key | meaning |
@@ -84,6 +99,21 @@ Each becomes an `errors` entry:
 
 ## Downstream routing
 `cellranger_count`.
+
+## Verified against
+`pbmc_1k_v3`, 6 files / 200M reads, 12 threads:
+
+| | |
+|---|---|
+| Q30 on R2 (cDNA) | 94.1% |
+| Q30 on R1 / I1 | 98.0% / 94.6% |
+| R2 duplication | 51% — expected, noted, not a failure |
+| worst adapter content | 2.7% |
+| genuine module failures | none |
+
+Flags correctly downgraded as expected: per base sequence content, per sequence
+GC content, overrepresented sequences (barcode/index reads), and sequence
+duplication (all reads).
 
 ## Standalone
 

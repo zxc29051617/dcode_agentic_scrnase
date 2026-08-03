@@ -134,6 +134,43 @@ def test_quality_failure_on_a_barcode_read_is_still_reported():
     assert parsed["modules_failed"] == ["Per base sequence quality"]
 
 
+def test_duplication_is_expected_on_R2_too():
+    """scRNA-seq amplifies by PCR and dedupes with UMIs, which FastQC cannot see.
+
+    Unlike composition, this is an assay-level expectation: it holds for the cDNA
+    read as well, so the read-role rule alone would wrongly fail every real run.
+    Found by running the real pbmc_1k_v3 set, where R2 duplication was 51% and
+    Cell Ranger's sequencing saturation was a perfectly healthy 70.8%.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        parsed = _parse_text(
+            Path(tmp), _data_with("S_S1_L001_R2_001.fastq.gz", "Sequence Duplication Levels")
+        )
+    assert parsed["read_role"] == "R2"
+    assert parsed["modules_failed"] == []
+    assert parsed["modules_expected_for_read_role"] == ["Sequence Duplication Levels"]
+
+
+def test_duplication_is_still_reported_as_a_note():
+    """Expected is not the same as hidden: the number has to reach the reader."""
+    _need_fastqc()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        bundle = fixtures.make_10x_fastq_trio(root)
+        result = qc.run(
+            {
+                "input_bundle": {"paths": [str(bundle)]},
+                "run_dir": str(root / "run"),
+                "config": {"fastqc_threads": 2},
+            }
+        )
+        assert result["metrics"]["pct_duplicate_r2"] is not None
+        assert any("duplication is" in n for n in result["notes"])
+        assert any("Sequencing Saturation" in n for n in result["notes"]), (
+            "must point at the metric that actually answers the question"
+        )
+
+
 def test_read_role_survives_fastqc_stripping_the_extension():
     """FastQC names the zip `..._R2_001_fastqc.zip`, so the archive name alone lies."""
     with tempfile.TemporaryDirectory() as tmp:
