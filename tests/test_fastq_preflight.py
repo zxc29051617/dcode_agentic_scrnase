@@ -25,25 +25,40 @@ def _run(paths, **config):
     return preflight.run({"input_bundle": {"paths": [str(p) for p in paths]}, "config": config})
 
 
-def test_v3_chemistry_is_recognized_from_read_length():
+def test_a_bundle_with_random_barcodes_passes_but_names_no_chemistry():
+    """Synthetic reads are in no whitelist, and saying so beats guessing."""
     with tempfile.TemporaryDirectory() as tmp:
         bundle = fixtures.make_fastq_dir_with_reads(Path(tmp), r1_length=28)
         ref = fixtures.make_reference(Path(tmp))
         result = _run([bundle], reference=str(ref))
     assert result["errors"] == []
     assert result["ready_to_count"] is True
-    lib = result["detected_libraries"][0]
-    assert lib["chemistry_guess"] == ["SC3Pv3"]
+    assert result["detected_libraries"][0]["chemistry_guess"] == []
+    assert any("could not be identified" in w for w in result["warnings"])
     assert result["recommended_next_tool"] == "cellranger_count"
 
 
-def test_v2_length_is_reported_as_ambiguous_not_a_single_guess():
+def test_read_length_is_a_lower_bound_not_an_identification():
+    """The heuristic this replaced. 10x's own pbmc_1k_v2 is a v2 library
+    sequenced with 28 cycles on R1 — the same length as v3 — so reading the
+    chemistry off the length called it v3, confidently and wrongly."""
+    from src.registry import load_skill
+
+    module = load_skill("fastq_preflight")
+    assert module.MIN_R1_LENGTH["SC3Pv2"] == 26
+    assert module.MIN_R1_LENGTH["SC3Pv3"] == 28
+    assert not hasattr(module, "CHEMISTRY_BY_R1_LENGTH"), (
+        "the length-to-chemistry table was the bug; it must not come back"
+    )
+
+
+def test_an_r1_too_short_for_any_chemistry_is_blocking():
     with tempfile.TemporaryDirectory() as tmp:
-        bundle = fixtures.make_fastq_dir_with_reads(Path(tmp), r1_length=26)
+        bundle = fixtures.make_fastq_dir_with_reads(Path(tmp), r1_length=20)
         ref = fixtures.make_reference(Path(tmp))
         result = _run([bundle], reference=str(ref))
-    guess = result["detected_libraries"][0]["chemistry_guess"]
-    assert set(guess) == {"SC3Pv2", "SC5P-PE", "SC5P-R2"}
+    assert result["ready_to_count"] is False
+    assert any("too short for any 10x chemistry" in e for e in result["blocking_errors"])
 
 
 def test_missing_reference_is_blocking():
@@ -76,14 +91,14 @@ def test_missing_r2_is_blocking_not_just_a_warning():
     assert any("has no R2" in e for e in result["blocking_errors"])
 
 
-def test_unknown_r1_length_is_a_warning_not_blocking():
+def test_an_over_sequenced_r1_is_not_a_problem():
+    """More cycles than a kit needs is a sequencing choice, not a defect."""
     with tempfile.TemporaryDirectory() as tmp:
         bundle = fixtures.make_fastq_dir_with_reads(Path(tmp), r1_length=50)
         ref = fixtures.make_reference(Path(tmp))
         result = _run([bundle], reference=str(ref))
     assert result["ready_to_count"] is True
-    assert any("does not match a known 10x chemistry" in w for w in result["warnings"])
-    assert result["detected_libraries"][0]["chemistry_guess"] == []
+    assert not any("too short" in w for w in result["warnings"])
 
 
 def test_short_r2_is_flagged():
@@ -116,17 +131,48 @@ def test_samplesheet_flags_extra_sample_as_warning_only():
     assert result["blocking_errors"] == []
 
 
+TENX_FASTQ = {
+    "pbmc_1k_v2": (Path.home() / "data/pbmc_1k_v2/pbmc_1k_v2_fastqs", ["SC3Pv2", "SC5P-PE", "SC5P-R2"]),
+    "pbmc_1k_v3": (Path.home() / "data/pbmc_1k_v3/pbmc_1k_v3_fastqs", ["SC3Pv3"]),
+    "neuron_1k_v3": (Path.home() / "data/neuron_1k_v3/neuron_1k_v3_fastqs", ["SC3Pv3"]),
+}
+
+
+def test_real_chemistry_comes_from_the_barcode_whitelist():
+    """The check the length heuristic could not pass.
+
+    All three have a 28bp R1. Only the whitelist separates them: pbmc_1k_v2's
+    barcodes land in 737K-august-2016 and the v3 sets in 3M-february-2018.
+    v2 and 5' share the 737K list, so that hit narrows to three kits and stops —
+    telling them apart needs alignment.
+    """
+    available = {n: v for n, v in TENX_FASTQ.items() if v[0].is_dir()}
+    if not available:
+        raise Skip("no 10x FASTQ bundles downloaded")
+
+    for name, (bundle, expected) in available.items():
+        result = _run([bundle])
+        library = result["detected_libraries"][0]
+        assert library["reads"]["R1"]["lengths_observed"] == [28], name
+        assert library["chemistry_guess"] == expected, name
+        rates = library["chemistry_evidence"]["whitelist_hit_rate"]
+        best = library["chemistry_evidence"]["matched_whitelist"]
+        assert rates[best] > 0.5, f"{name}: only {rates[best]:.0%} matched"
+
+
 def test_samplesheet_chemistry_mismatch_is_a_warning():
-    with tempfile.TemporaryDirectory() as tmp:
-        bundle = fixtures.make_fastq_dir_with_reads(Path(tmp), sample="SampleA", r1_length=28)
-        ref = fixtures.make_reference(Path(tmp))
-        result = _run(
-            [bundle],
-            reference=str(ref),
-            samplesheet=[{"sample": "SampleA", "chemistry": "SC3Pv2"}],
-        )
-    assert result["ready_to_count"] is True, "a mismatch is a warning, not a blocker"
+    """Needs a bundle whose chemistry can actually be read, so it needs real data:
+    a mismatch cannot be detected against a chemistry nothing identified."""
+    bundle, _ = TENX_FASTQ["pbmc_1k_v3"]
+    if not bundle.is_dir():
+        raise Skip("pbmc_1k_v3 fastqs not present")
+    result = _run(
+        [bundle], samplesheet=[{"sample": "pbmc_1k_v3", "chemistry": "SC3Pv2"}]
+    )
     assert any("declares chemistry" in w for w in result["warnings"])
+    assert not any("declares chemistry" in e for e in result["blocking_errors"]), (
+        "a mismatch is a warning: Cell Ranger's --chemistry override may be deliberate"
+    )
 
 
 def test_multi_lane_is_read_from_every_lane():

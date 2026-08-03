@@ -168,6 +168,35 @@ def test_unverified_species_warns_but_does_not_block():
 # --- the command ------------------------------------------------------------
 
 
+def test_paths_in_the_command_are_absolute():
+    """Cell Ranger runs with cwd set to the output directory.
+
+    `resolve_reference` hands over `reference/<name>` on purpose — that is what
+    keeps config portable — but a relative path stops meaning anything once the
+    subprocess has changed directory. A full-graph mouse run failed on exactly
+    this after the standalone CLI, which passes absolute paths, had passed.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        reference = fixtures.make_reference(root, "ref", genomes=["GRCh38"])
+        work = root / "run" / "cellranger_count"
+        fixtures.make_cellranger_outs_h5(work, "SampleA", genome="GRCh38")
+
+        import os
+
+        previous = os.getcwd()
+        os.chdir(root)
+        try:
+            payload = _payload(root, reference=Path("ref"), work=root / "run")
+            payload["input_bundle"] = {"paths": ["fastq"]}
+            result = count.run(payload)
+        finally:
+            os.chdir(previous)
+
+    assert result["errors"] == [], "a relative reference must still resolve"
+    assert result["libraries"][0]["disposition"].startswith("reused")
+
+
 def test_command_carries_the_validated_arguments():
     command = count._build_command(
         "cellranger",
@@ -208,7 +237,14 @@ def test_create_bam_is_explicit_in_the_command():
     assert "--create-bam=true" in " ".join(on)
 
 
-def test_multiple_libraries_all_appear_in_the_manifest():
+def test_multiple_libraries_are_counted_but_stop_before_the_mainline():
+    """Everything is counted and saved; only the analysis line is single-sample.
+
+    Passing the first matrix downstream would produce a report named for the
+    project that describes a quarter of it, with the audit log agreeing — the
+    error shape nothing downstream can notice. There is no merge step yet, so
+    this stops rather than picking one.
+    """
     import json
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -221,8 +257,11 @@ def test_multiple_libraries_all_appear_in_the_manifest():
             _payload(root, reference=reference, work=root / "run", libraries=("A", "B"))
         )
 
-        # Read the manifest before the temp directory goes away.
-        assert result["errors"] == []
+        assert result["errors"], "silently analysing one of two is the failure to avoid"
+        assert "nothing was lost" in result["errors"][0]
+        assert result["matrix_path"] is None, "nothing may be handed downstream"
+
+        # The counts are still complete and findable.
         assert result["metrics"]["n_libraries"] == 2
         manifest = Path(result["count_manifest"])
         assert manifest.is_file()

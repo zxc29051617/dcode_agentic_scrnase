@@ -35,9 +35,8 @@ sample sheet, and verifies the reference path looks like a real transcriptome.
 | `recommended_next_tool` | `cellranger_count` if ready, else `human_review` |
 
 ## Behavior
-- Peeks the first read of every file (`gzip` aware) to get real lengths — no assumptions.
-- R1 length 28 → `SC3Pv3`. R1 length 26 → ambiguous, reported as `[SC3Pv2, SC5P-PE, SC5P-R2]`
-  rather than a single guess, since that length is shared across kits.
+- Peeks the first read of every file (`gzip` aware) to get real lengths.
+- **Chemistry comes from the barcode whitelist, not the read length.** See below.
 - R2 shorter than 50bp is flagged as too short to be a usable cDNA read.
 - A sample sheet entry naming a sample with no matching FASTQ is blocking (nothing to count).
   A FASTQ sample missing from the sheet is only a warning (extra data, still usable).
@@ -45,6 +44,32 @@ sample sheet, and verifies the reference path looks like a real transcriptome.
   Cell Ranger's own `--chemistry` override may be intentional.
 - Reference readiness: no path → blocking. Path exists but missing `reference.json` → blocking
   (does not look like a Cell Ranger transcriptome).
+
+## Chemistry: why read length does not work
+This step used to read the chemistry off the R1 length — 26bp meant v2, 28bp
+meant v3. Running 10x's own `pbmc_1k_v2` proved that wrong: **its R1 is 28bp**,
+because read length is a sequencing parameter, not a property of the kit. You
+can run more cycles than the chemistry needs, and 10x did.
+
+The barcode whitelist is what actually identifies it. Each kit ships a different
+list, and membership is decisive:
+
+| dataset | R1 | 737K-august-2016 | 3M-february-2018 | called |
+|---|---|---|---|---|
+| `pbmc_1k_v2` | 28bp | **65%** | 9% | SC3Pv2 / SC5P |
+| `pbmc_1k_v3` | 28bp | 7% | **69%** | SC3Pv3 |
+| `neuron_1k_v3` | 28bp | 6% | **78%** | SC3Pv3 |
+
+3' v2 and 5' share the 737K list, so a hit there narrows to those kits and stops.
+Separating them needs to know where the cDNA begins, which means alignment —
+not something a preflight check can or should do.
+
+Read length is kept only as a validity check: shorter than 26bp is too short for
+any 10x kit and blocks. Longer than a kit needs is a sequencing choice, not a
+defect.
+
+The guess is still never used to set `--chemistry`; Cell Ranger sees the reads
+and auto-detects better than any preflight can.
 
 ## Failure modes
 Each becomes a `blocking_errors` entry:
@@ -66,6 +91,10 @@ python skills/fastq_preflight/fastq_preflight.py <fastq_dir> --reference <path>
 ```
 
 ## Verified against
-`pbmc_1k_v3` (10x official 3' v3 test set): R1=28bp, I1=8bp, chemistry correctly
-identified as `SC3Pv3` (matches `SOURCE.txt`'s `10x_3prime_v3_GEX`), blocked only
-on the missing reference since none was supplied.
+Three real bundles, all with a 28bp R1 — the case the old heuristic got wrong:
+
+| | chemistry called | correct |
+|---|---|---|
+| `pbmc_1k_v3` (human, 3' v3) | `SC3Pv3` | ✓ |
+| `pbmc_1k_v2` (human, 3' v2) | `SC3Pv2 / SC5P-PE / SC5P-R2` | ✓ (v2 is in the set; 5' is genuinely indistinguishable here) |
+| `neuron_1k_v3` (mouse, 3' v3) | `SC3Pv3` | ✓ |

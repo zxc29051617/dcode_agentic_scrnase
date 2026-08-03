@@ -336,7 +336,11 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
     reference = resolved.get("transcriptome") or config.get("transcriptome")
     if not reference:
         return _result(errors=["no transcriptome; resolve_reference must run first"])
-    transcriptome = Path(reference).expanduser()
+    # Absolute, because Cell Ranger runs with cwd set to the output directory.
+    # `resolve_reference` hands over a project-relative path by design — that is
+    # what keeps config portable — but it stops being meaningful the moment the
+    # subprocess changes directory.
+    transcriptome = Path(reference).expanduser().resolve()
     if not (transcriptome / "reference.json").is_file():
         return _result(
             errors=[f"not a Cell Ranger reference (no reference.json): {transcriptome}"]
@@ -377,7 +381,9 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
     if not libraries:
         return _result(errors=["no library to count; fastq_preflight found no sample"])
 
-    fastqs = ",".join(dirs)
+    # Absolute for the same reason as the transcriptome: the subprocess runs
+    # from the output directory, where a relative path means somewhere else.
+    fastqs = ",".join(str(Path(d).expanduser().resolve()) for d in dirs)
     work = Path(payload.get("run_dir") or ".") / TOOL_NAME
 
     records: list[dict[str, Any]] = []
@@ -403,6 +409,32 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
     manifest.write_text(
         json.dumps({r["library_id"]: r["outs"] for r in records}, indent=2), encoding="utf-8"
     )
+
+    # Every library counted, and every matrix is on disk — but the mainline from
+    # count_matrix_classify onward carries exactly one. Passing the first one
+    # downstream would produce a report named for the project that describes a
+    # fraction of it, with the audit log agreeing. Nothing downstream could
+    # notice, so this stops here instead.
+    if len(records) > 1:
+        manifest_path = work / "count_manifest.json"
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(
+            json.dumps({r["library_id"]: r["outs"] for r in records}, indent=2),
+            encoding="utf-8",
+        )
+        return _result(
+            libraries=records,
+            count_manifest=str(manifest_path),
+            warnings=warnings,
+            errors=[
+                f"{len(records)} libraries were counted "
+                f"({', '.join(r['library_id'] for r in records)}) but the analysis "
+                f"mainline handles one matrix. All counts are complete and listed in "
+                f"{manifest_path} — nothing was lost. Run the mainline on one library "
+                f"at a time, or merge them first; there is no merge step yet"
+            ],
+            metrics={"n_libraries": len(records)},
+        )
 
     n_reused = sum(1 for r in records if str(r.get("disposition", "")).startswith("reused"))
     if n_reused:

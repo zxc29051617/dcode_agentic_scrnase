@@ -41,12 +41,39 @@ ILLUMINA_RE = re.compile(
     re.IGNORECASE,
 )
 
-#: 10x barcode+UMI read length -> plausible kit names. 26bp is shared by 3' v2
-#: and 5' kits, so it is reported as ambiguous rather than a single guess.
-CHEMISTRY_BY_R1_LENGTH: dict[int, tuple[str, ...]] = {
-    26: ("SC3Pv2", "SC5P-PE", "SC5P-R2"),
-    28: ("SC3Pv3",),
+#: The minimum R1 length each chemistry needs: 16bp barcode plus its UMI.
+#:
+#: A LOWER BOUND, not an identification. Read length is a sequencing parameter,
+#: not a property of the kit — 10x's own pbmc_1k_v2 is a v2 library sequenced
+#: with 28 cycles on R1, two more than v2 needs. Guessing v3 from that length,
+#: as this module used to, is confidently wrong.
+MIN_R1_LENGTH: dict[str, int] = {
+    "SC3Pv2": 26,   # 16 + 10
+    "SC5P": 26,     # 16 + 10
+    "SC3Pv3": 28,   # 16 + 12
+    "SC3Pv4": 28,   # 16 + 12, GEM-X
 }
+
+#: What actually identifies the chemistry: which barcode whitelist the reads
+#: belong to. The lists are disjoint enough to be decisive — on 10x's own data,
+#: 94% of pbmc_1k_v2's barcodes are in the v2 list and 8% in the v3 one.
+#:
+#: 3' v2 and 5' share `737K-august-2016`, so a hit there narrows to two kits and
+#: no further. Telling them apart needs to know where the cDNA starts, which
+#: means alignment — not something a preflight check can or should do.
+WHITELIST_CHEMISTRY: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("3M-february-2018_TRU.txt.gz", ("SC3Pv3",)),
+    ("3M-3pgex-may-2023_TRU.txt.gz", ("SC3Pv4",)),
+    ("3M-5pgex-jan-2023.txt.gz", ("SC5P-PE", "SC5P-R2")),
+    ("737K-august-2016.txt", ("SC3Pv2", "SC5P-PE", "SC5P-R2")),
+)
+
+#: Fraction of sampled barcodes that must be in a whitelist to call it. Real
+#: data lands near 95%; sequencing error puts the rest just off the list.
+WHITELIST_HIT_THRESHOLD = 0.5
+
+#: Barcodes to sample. Enough to be decisive, few enough to read in a moment.
+BARCODE_SAMPLE_SIZE = 20_000
 MIN_CDNA_READ_LENGTH = 50
 """Below this, R2 is too short to be a usable cDNA read for GEX."""
 
@@ -63,8 +90,109 @@ class Library:
     n_files: int
     reads: dict[str, dict[str, Any]] = field(default_factory=dict)
     chemistry_guess: list[str] = field(default_factory=list)
+    chemistry_evidence: dict[str, Any] = field(default_factory=dict)
     blocking: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+
+
+def _whitelist_dir() -> Path | None:
+    """Cell Ranger ships the barcode whitelists; find them next to the binary."""
+    import glob as _glob
+
+    for pattern in (
+        "~/projects/cellranger-*/lib/python/cellranger/barcodes",
+        "~/cellranger-*/lib/python/cellranger/barcodes",
+        "/opt/cellranger-*/lib/python/cellranger/barcodes",
+    ):
+        matches = sorted(_glob.glob(str(Path(pattern).expanduser())))
+        if matches:
+            return Path(matches[-1])
+    return None
+
+
+def _sample_barcodes(files: list[Path], length: int = 16) -> list[str]:
+    """The first `BARCODE_SAMPLE_SIZE` barcodes, taken from the head of R1."""
+    barcodes: list[str] = []
+    for path in files:
+        opener = gzip.open if path.name.endswith(".gz") else open
+        try:
+            with opener(path, "rt", errors="replace") as handle:
+                for index, line in enumerate(handle):
+                    if index % 4 == 1:
+                        barcodes.append(line.strip()[:length])
+                        if len(barcodes) >= BARCODE_SAMPLE_SIZE:
+                            return barcodes
+        except OSError:
+            continue
+    return barcodes
+
+
+#: Identifying a chemistry means streaming ~4.5M whitelist lines, so the answer
+#: is remembered per bundle. Keyed on path and mtime, so an edited file is
+#: re-read rather than served stale.
+_chemistry_cache: dict[tuple, tuple[list[str], dict[str, Any]]] = {}
+
+
+def identify_chemistry(r1_files: list[Path]) -> tuple[list[str], dict[str, Any]]:
+    """Which kit these reads came from, by whitelist membership.
+
+    Streams each whitelist against the sampled barcodes rather than loading it
+    into a set — the v3 list has 3.7M entries and only the 20k sample needs to
+    be held.
+
+    Returns (candidate kits, evidence). An empty list means undecided, which is
+    an honest answer and better than the read-length guess this replaced.
+    """
+    try:
+        key = tuple(sorted((str(f), f.stat().st_mtime_ns) for f in r1_files))
+    except OSError:
+        key = tuple(sorted(str(f) for f in r1_files))
+    if key in _chemistry_cache:
+        return _chemistry_cache[key]
+
+    directory = _whitelist_dir()
+    if directory is None:
+        return [], {"reason": "Cell Ranger's barcode whitelists were not found"}
+
+    sample = _sample_barcodes(r1_files)
+    if not sample:
+        return [], {"reason": "no barcodes could be read from R1"}
+    wanted = set(sample)
+
+    hits: dict[str, float] = {}
+    for filename, kits in WHITELIST_CHEMISTRY:
+        path = directory / filename
+        if not path.is_file():
+            continue
+        opener = gzip.open if filename.endswith(".gz") else open
+        found = 0
+        try:
+            with opener(path, "rt", errors="replace") as handle:
+                for line in handle:
+                    if line.split("\t", 1)[0].strip() in wanted:
+                        found += 1
+        except OSError:
+            continue
+        hits[filename] = found / len(wanted)
+
+    if not hits:
+        return [], {"reason": "no whitelist could be read"}
+
+    best = max(hits, key=hits.get)
+    evidence = {
+        "n_barcodes_sampled": len(sample),
+        "whitelist_hit_rate": {name: round(rate, 3) for name, rate in sorted(hits.items())},
+        "matched_whitelist": best,
+    }
+    if hits[best] < WHITELIST_HIT_THRESHOLD:
+        evidence["reason"] = (
+            f"no whitelist matched more than {hits[best]:.0%} of the barcodes"
+        )
+        answer: tuple[list[str], dict[str, Any]] = ([], evidence)
+    else:
+        answer = (list(dict(WHITELIST_CHEMISTRY)[best]), evidence)
+    _chemistry_cache[key] = answer
+    return answer
 
 
 def _peek_read_length(path: Path) -> int | None:
@@ -144,16 +272,38 @@ def _build_library(sample: str, reads_to_files: dict[str, list[Path]]) -> Librar
                 f"{sample!r} {role} read length varies across files: {observed}"
             )
 
+    # Chemistry comes from the barcode whitelist, not the read length.
+    r1_files = reads_to_files.get("R1", [])
+    if r1_files:
+        kits, evidence = identify_chemistry(r1_files)
+        library.chemistry_guess = kits
+        library.chemistry_evidence = evidence
+        if not kits:
+            library.warnings.append(
+                f"{sample!r} chemistry could not be identified from the barcode "
+                f"whitelists ({evidence.get('reason', 'unknown')}); Cell Ranger's "
+                f"own auto-detection will still run"
+            )
+
+    # Read length is only a validity check now: too short for any kit is a real
+    # problem, but a longer read says nothing about which kit produced it.
     r1_lengths = library.reads.get("R1", {}).get("lengths_observed") or []
     if r1_lengths:
-        r1_length = r1_lengths[0]
-        candidates = CHEMISTRY_BY_R1_LENGTH.get(r1_length)
-        if candidates:
-            library.chemistry_guess = list(candidates)
-        else:
-            library.warnings.append(
-                f"{sample!r} R1 length {r1_length} does not match a known 10x chemistry"
+        shortest_kit = min(MIN_R1_LENGTH.values())
+        if r1_lengths[0] < shortest_kit:
+            library.blocking.append(
+                f"{sample!r} R1 is {r1_lengths[0]}bp, too short for any 10x chemistry "
+                f"(the shortest needs {shortest_kit}bp of barcode + UMI)"
             )
+        elif library.chemistry_guess:
+            needed = min(
+                MIN_R1_LENGTH[k] for k in library.chemistry_guess if k in MIN_R1_LENGTH
+            ) if any(k in MIN_R1_LENGTH for k in library.chemistry_guess) else 0
+            if needed and r1_lengths[0] < needed:
+                library.warnings.append(
+                    f"{sample!r} R1 is {r1_lengths[0]}bp but "
+                    f"{'/'.join(library.chemistry_guess)} needs {needed}bp"
+                )
 
     r2_lengths = library.reads.get("R2", {}).get("lengths_observed") or []
     if r2_lengths and min(r2_lengths) < MIN_CDNA_READ_LENGTH:

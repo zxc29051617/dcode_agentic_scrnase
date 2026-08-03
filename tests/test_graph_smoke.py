@@ -265,11 +265,16 @@ def test_species_mismatch_stops_the_run():
 
 
 def test_fastq_preflight_passes_with_a_valid_reference_and_real_reads():
-    """`bundle_for`'s FASTQs are empty placeholders; this needs real read content."""
+    """Needs a bundle whose barcodes are on a real whitelist.
+
+    Chemistry is identified by whitelist membership, so a fixture of random ACGT
+    is correctly reported as "not 10x data" — a warning, and the run would stop
+    at the gate for it. `make_10x_fastq_trio` draws real barcodes.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         ref = fixtures.make_reference(root, "ref", genomes=["GRCh38"])
-        bundle = fixtures.make_fastq_dir_with_reads(root / "bundle")
+        bundle = fixtures.make_10x_fastq_trio(root / "bundle", n_reads=200)
         graph = build_graph(policy=WALK, judge=StubJudge())
         state = new_run_state(
             project="test",

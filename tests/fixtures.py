@@ -154,6 +154,31 @@ def make_fastq_dir_with_reads(
     return directory
 
 
+def _real_barcodes(n: int) -> list[str] | None:
+    """Barcodes from Cell Ranger's own v2 whitelist, when it is installed.
+
+    `fastq_preflight` identifies chemistry by whitelist membership, so random
+    ACGT strings are — correctly — reported as "not 10x data". A fixture that
+    wants to stand in for a real bundle has to carry barcodes that really are on
+    a list. Returns None when Cell Ranger is not installed, and the caller falls
+    back to random ones.
+    """
+    import glob as _glob
+
+    for pattern in (
+        "~/projects/cellranger-*/lib/python/cellranger/barcodes/737K-august-2016.txt",
+        "/opt/cellranger-*/lib/python/cellranger/barcodes/737K-august-2016.txt",
+    ):
+        matches = sorted(_glob.glob(str(Path(pattern).expanduser())))
+        if not matches:
+            continue
+        with open(matches[-1], encoding="utf-8") as handle:
+            found = [line.strip() for _, line in zip(range(n), handle) if line.strip()]
+        if found:
+            return found
+    return None
+
+
 def make_10x_fastq_trio(
     root: Path,
     sample: str = "S",
@@ -175,11 +200,19 @@ def make_10x_fastq_trio(
     rng = random.Random(0)
     directory = Path(root) / name
     directory.mkdir(parents=True, exist_ok=True)
+    whitelist = _real_barcodes(n_reads)
 
     def write(filename: str, length: int, quality: int) -> None:
+        is_r1 = "_R1_" in filename
         with gzip.open(directory / filename, "wt") as handle:
             for i in range(n_reads):
-                seq = "".join(rng.choice("ACGT") for _ in range(length))
+                if is_r1 and whitelist:
+                    # A real barcode plus a random UMI, so chemistry detection
+                    # has something to recognise.
+                    umi = "".join(rng.choice("ACGT") for _ in range(length - 16))
+                    seq = whitelist[i % len(whitelist)] + umi
+                else:
+                    seq = "".join(rng.choice("ACGT") for _ in range(length))
                 quals = [max(2, min(41, quality + rng.randint(-2, 2))) for _ in range(length)]
                 # A few reads carry one very low base. That is enough for the
                 # character range to force Sanger (offset 33) detection, without
