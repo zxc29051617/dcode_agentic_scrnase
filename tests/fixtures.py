@@ -35,24 +35,44 @@ def make_mtx_dir(
     lowered = name.lower()
     if n_barcodes is None:
         if "raw" in lowered:
-            n_barcodes = 200_000
+            # Small, but with empty droplets — which is what marks a matrix raw,
+            # so the fixture does not need the 300,000 barcodes of a real one.
+            n_barcodes = 5_000
         elif "filtered" in lowered:
             n_barcodes = 1_000
         else:
+            # The middle range, where neither emptiness nor count can decide.
             n_barcodes = 75_000
     if nnz is None:
-        # Fewer entries than barcodes is the pigeonhole proof of empty droplets.
-        nnz = n_barcodes // 2 if "raw" in lowered else n_barcodes * 5
+        nnz = n_barcodes // 2 if "raw" in lowered else n_barcodes * 3
 
     directory = Path(root) / name
     directory.mkdir(parents=True, exist_ok=True)
     with gzip.open(directory / "barcodes.tsv.gz", "wt") as handle:
         handle.writelines(f"BC{i:08d}-1\n" for i in range(n_barcodes))
     with gzip.open(directory / "features.tsv.gz", "wt") as handle:
-        handle.writelines(f"GENE{i}\tSYM{i}\tGene Expression\n" for i in range(n_features))
+        handle.writelines(f"ENSG{i:08d}\tSYM{i}\tGene Expression\n" for i in range(n_features))
+
+    # Real entries, not just a header: the loaders read these files with scanpy,
+    # so a header-only matrix fails rather than classifying.
+    non_empty = min(nnz, n_barcodes)
+    per_barcode = max(1, nnz // non_empty)
     with gzip.open(directory / "matrix.mtx.gz", "wt") as handle:
         handle.write("%%MatrixMarket matrix coordinate integer general\n%\n")
         handle.write(f"{n_features} {n_barcodes} {nnz}\n")
+        written = 0
+        for barcode in range(1, non_empty + 1):
+            for offset in range(per_barcode):
+                if written >= nnz:
+                    break
+                handle.write(f"{(offset % n_features) + 1} {barcode} {offset + 1}\n")
+                written += 1
+        # Any remainder goes to the first barcode, on genes it does not have yet.
+        gene = per_barcode
+        while written < nnz and gene < n_features:
+            handle.write(f"{gene + 1} 1 1\n")
+            written += 1
+            gene += 1
     return directory
 
 

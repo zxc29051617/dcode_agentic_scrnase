@@ -31,8 +31,8 @@ FINAL_GATE = "human_review_decision"
 # --------------------------------------------------------------------------
 # Branch decisions
 #
-# Each reads the upstream step's own output first and falls back to config, so
-# the routing can be exercised before the skills are implemented.
+# Each reads the decision the upstream step actually made. No config fallbacks
+# remain on this path: every step that feeds a branch is implemented.
 # --------------------------------------------------------------------------
 
 
@@ -52,7 +52,7 @@ def branch_after_reference(state: WorkflowState) -> str:
 
 def branch_matrix_kind(state: WorkflowState) -> str:
     out = step_output(state, "count_matrix_classify")
-    kind = out.get("matrix_class") or (state.get("config") or {}).get("matrix_kind") or "filtered"
+    kind = out.get("matrix_class")
     if kind == "raw":
         return "raw"
     if kind == "filtered":
@@ -61,11 +61,20 @@ def branch_matrix_kind(state: WorkflowState) -> str:
 
 
 def branch_cell_calling(state: WorkflowState) -> str:
+    """A raw matrix always goes to review — nothing has called cells on it yet."""
     out = step_output(state, "load_raw_counts")
-    resolved = out.get("cell_calling_resolved")
-    if resolved is None:
-        resolved = (state.get("config") or {}).get("cell_calling_resolved", False)
-    return "mainline" if resolved else "review"
+    return "mainline" if out.get("cell_calling_resolved") else "review"
+
+
+def branch_after_cell_calling(state: WorkflowState) -> str:
+    """An unresolved cell count cannot enter the mainline, even on `accept`.
+
+    How many cells to keep is the operator's call. Until one is made there is no
+    subset matrix to hand downstream, so this routes to the gate rather than
+    letting the mainline run on every barcode in the raw matrix.
+    """
+    out = step_output(state, "cell_calling_review")
+    return "mainline" if out.get("cell_calling_state") == "resolved" else HUMAN_GATE
 
 
 def build_graph(
@@ -149,7 +158,7 @@ def build_graph(
         branch_cell_calling,
         {"review": "cell_calling_review", "mainline": MAINLINE[0]},
     )
-    linear("cell_calling_review", MAINLINE[0])
+    branching("cell_calling_review", branch_after_cell_calling, {"mainline": MAINLINE[0]})
     linear("load_filtered_counts", MAINLINE[0])
 
     # ---- Scanpy mainline ----------------------------------------------------

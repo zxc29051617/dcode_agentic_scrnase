@@ -14,10 +14,9 @@ Orchestrator 層是**真的**，分析層是**假的**：
 - 每個 step 後面都有 judge node，verdict 符合 `schemas/judge_result.schema.json`
 - human gate 預設不放行 warn/fail，headless 執行預設 `stop`
 - provenance 每步寫 JSONL audit log
-- **22 個 registry step 裡實作了 6 個**（`ingest_validate`、`resolve_reference`、
-  `fastq_preflight`、`fastq_qc`、`cellranger_count`、`count_matrix_classify`），
-  其餘 16 個還是 `NotImplementedError`
-- FASTQ 上游整段 + raw/filtered 分流已經是真的，兩條路線在 `count_matrix_classify` 會合
+- **22 個 registry step 裡實作了 9 個**，其餘 13 個（Scanpy 主線）還是 `NotImplementedError`
+- FASTQ 上游整段 + raw/filtered 分流 + 載入 + cell calling 都是真的
+- **細胞數由操作者決定**：`cell_calling_review` 給證據後停下來，不自己挑數字
 
 ## 一個待決定的落差
 
@@ -46,14 +45,16 @@ judge 邏輯集中在 `src/judge.py`：一份 contract、一份 prompt、每個 
    `_assert_same_reference` 已移植：拒絕沿用「用別份 reference 算出來的」既有 matrix
 5. ~~`count_matrix_classify`~~ — 已完成。從矩陣本身（空 barcode 數）判斷而不是看檔名，
    hint 對不上就停。對真實 pbmc 的 raw/filtered 兩個矩陣都驗證過
-6. `load_filtered_counts` — 最短的一條可跑通的真實路徑
-7. `run_qc_metrics` — 第一個有真正 metrics 可以給 judge 評的 step
+6. ~~`load_raw_counts` / `load_filtered_counts` / `cell_calling_review`~~ — 已完成。
+   AnnData 以檔案路徑在 step 之間傳遞（見 `src/matrix_io.py`）
+7. `run_qc_metrics` — 第一個有真正 metrics 可以給 judge 評的 step。
+   `resolve_reference` 已經給了 `mito_prefix` 和 `erythroid_genes`
 
-做到第 7 個，就有一條 `FASTQ -> count -> QC -> 真 judge` 的端到端真實路徑，
+做到第 7 個，就有一條 `FASTQ -> count -> cell calling -> QC -> 真 judge` 的端到端路徑，
 那時候才值得把 judge 從 stub 換成本地模型。
 
-實作完 6 之後，`src/run.py` 的 `--cell-calling-resolved` fallback 就可以拿掉。
-`--matrix-kind` 已經不需要了。
+`--matrix-kind` 和 `--cell-calling-resolved` 兩個 scaffold fallback 都已經移除；
+分支現在讀的都是上游 step 真正做出的決定，這條路上沒有 config fallback 了。
 
 ## 實作一個 skill 的契約
 

@@ -31,7 +31,12 @@ SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schemas" / "judge_result
 WALK = GatePolicy(headless_decision="accept")
 """Opt-in policy that accepts at gates so a full route can be walked."""
 
-IMPLEMENTED = ["ingest_validate", "resolve_reference", "count_matrix_classify"]
+IMPLEMENTED = [
+    "ingest_validate",
+    "resolve_reference",
+    "count_matrix_classify",
+    "load_filtered_counts",
+]
 """Skills with a real `run()` on the filtered-matrix route; everything else is a scaffold."""
 
 
@@ -115,20 +120,34 @@ def test_a_failed_count_never_reaches_the_report():
     assert any("cellranger" in e for e in final["errors"])
 
 
-def test_raw_matrix_without_cell_calling_goes_to_review():
-    final = _run({"input_type": "matrix", "matrix_kind": "raw", "cell_calling_resolved": False})
+def test_a_raw_matrix_always_goes_through_cell_calling_review():
+    """Nothing has called cells on a raw matrix, so the route cannot skip it."""
+    final = _run({"input_type": "matrix", "matrix_kind": "raw"})
     steps = _steps(final)
     assert "load_raw_counts" in steps
     assert "cell_calling_review" in steps
-    assert steps.index("cell_calling_review") < steps.index("run_qc_metrics")
+    assert final["artifacts"]["load_raw_counts"]["cell_calling_resolved"] is False
 
 
-def test_raw_matrix_with_cell_calling_skips_review():
-    final = _run({"input_type": "matrix", "matrix_kind": "raw", "cell_calling_resolved": True})
+def test_an_unchosen_cell_count_cannot_be_accepted_into_the_mainline():
+    """How many cells to keep is the operator's call; `accept` is not a number."""
+    final = _run({"input_type": "matrix", "matrix_kind": "raw"}, policy=WALK)
     steps = _steps(final)
-    assert "load_raw_counts" in steps
-    assert "cell_calling_review" not in steps
-    assert "run_qc_metrics" in steps
+    assert "cell_calling_review" in steps
+    assert final["artifacts"]["cell_calling_review"]["cell_calling_state"] == "needs_review"
+    assert "run_qc_metrics" not in steps, "the mainline must not run on every barcode"
+    assert "build_report" not in steps
+
+
+def test_choosing_a_cell_count_lets_the_raw_route_continue():
+    final = _run({"input_type": "matrix", "matrix_kind": "raw", "force_cells": 400})
+    steps = _steps(final)
+    review = final["artifacts"]["cell_calling_review"]
+    assert review["cell_calling_state"] == "resolved"
+    assert review["n_cells"] == 400
+    assert review["selection"]["chosen_by"] == "operator"
+    assert steps.index("cell_calling_review") < steps.index("run_qc_metrics")
+    assert steps[-1] == "build_report"
 
 
 def test_sample_qc_triage_runs_when_enabled():

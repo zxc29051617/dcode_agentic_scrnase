@@ -53,16 +53,18 @@ def main(argv: list[str] | None = None) -> int:
         metavar="PATH",
         help="explicit transcriptome path; wins over --species",
     )
-    parser.add_argument(
-        "--matrix-kind",
-        choices=["raw", "filtered", "unknown"],
-        default="filtered",
-        help="fallback for count_matrix_classify while that skill is a scaffold",
+    cells = parser.add_mutually_exclusive_group()
+    cells.add_argument(
+        "--force-cells",
+        type=int,
+        metavar="N",
+        help="keep the top N barcodes by UMI instead of Cell Ranger's cell call",
     )
-    parser.add_argument(
-        "--cell-calling-resolved",
-        action="store_true",
-        help="fallback for load_raw_counts while that skill is a scaffold",
+    cells.add_argument(
+        "--min-umi",
+        type=int,
+        metavar="X",
+        help="keep barcodes with at least X UMI instead of Cell Ranger's cell call",
     )
     parser.add_argument("--sample-qc-triage", action="store_true")
     parser.add_argument("--judge", choices=["stub", "local"], default="stub")
@@ -84,8 +86,8 @@ def main(argv: list[str] | None = None) -> int:
         config={
             "species": args.species,
             "transcriptome": args.reference,
-            "matrix_kind": args.matrix_kind,
-            "cell_calling_resolved": args.cell_calling_resolved,
+            "force_cells": args.force_cells,
+            "min_umi": args.min_umi,
             "sample_qc_triage": args.sample_qc_triage,
         },
         policy=GatePolicy(
