@@ -14,7 +14,7 @@ Orchestrator 層是**真的**，分析層是**假的**：
 - 每個 step 後面都有 judge node，verdict 符合 `schemas/judge_result.schema.json`
 - human gate 預設不放行 warn/fail，headless 執行預設 `stop`
 - provenance 每步寫 JSONL audit log
-- **24 個 registry step 裡實作了 11 個**，其餘 13 個（Scanpy 主線）還是 `NotImplementedError`
+- **25 個 registry step 裡實作了 13 個**，其餘 12 個還是 `NotImplementedError`
 - FASTQ 上游整段 + raw/filtered 分流 + 載入 + cell calling + 匯流標準化都是真的
 - 兩條路各有入口檢查：`resolve_reference`（FASTQ）與 `matrix_preflight`（矩陣），
   各自用該路線有的證據驗物種，並輸出同一組 QC 常數
@@ -50,11 +50,24 @@ judge 邏輯集中在 `src/judge.py`：一份 contract、一份 prompt、每個 
    hint 對不上就停。對真實 pbmc 的 raw/filtered 兩個矩陣都驗證過
 6. ~~`load_raw_counts` / `load_filtered_counts` / `cell_calling_review`~~ — 已完成。
    AnnData 以檔案路徑在 step 之間傳遞（見 `src/matrix_io.py`）
-7. `run_qc_metrics` — 第一個有真正 metrics 可以給 judge 評的 step。
-   `resolve_reference` 已經給了 `mito_prefix` 和 `erythroid_genes`
+7. ~~`merge_samples` / `post_load_validate`~~ — 已完成。多樣本在這裡合併成一個
+   帶 `sample` 標籤的物件，之後共用一條主線
+8. ~~`run_qc_metrics`~~ — 已完成。第一個有真正 metrics 可以給 judge 評的 step。
+   對 `pbmc_1k_v3` 驗證：median genes/cell 跟 Cell Ranger 自己報的 3,201 完全一致
 
-做到第 7 個，就有一條 `FASTQ -> count -> cell calling -> QC -> 真 judge` 的端到端路徑，
-那時候才值得把 judge 從 stub 換成本地模型。
+現在已經有一條 `FASTQ -> count -> cell calling -> merge -> QC -> 真 judge` 的
+端到端路徑，**接下來值得先把 judge 從 stub 換成本地模型**，因為後面的
+QC filter / doublet / normalize / PCA / clustering 這些空殼步驟開始有真正的數值
+可以評分了，先把評分機制接上再繼續填空殼會更有效率。
+
+## 下一批要填的空殼（Scanpy 主線）
+
+`apply_cell_qc_filter` → `detect_doublets` → `normalize_hvg_prepare` → `run_pca`
+→ `run_integration` → `run_clustering` → `run_umap` → `find_markers` →
+`annotate_cells` → `human_review_decision` → `build_report`，共 11 個。
+
+`apply_cell_qc_filter` 是下一個——它會用到 `run_qc_metrics` 剛算出來的
+`pct_counts_mt` / `pct_counts_erythroid` / `n_genes_by_counts`，介面已經接好了。
 
 `--matrix-kind` 和 `--cell-calling-resolved` 兩個 scaffold fallback 都已經移除；
 分支現在讀的都是上游 step 真正做出的決定，這條路上沒有 config fallback 了。

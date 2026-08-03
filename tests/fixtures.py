@@ -51,7 +51,13 @@ def make_mtx_dir(
     with gzip.open(directory / "barcodes.tsv.gz", "wt") as handle:
         handle.writelines(f"BC{i:08d}-1\n" for i in range(n_barcodes))
     with gzip.open(directory / "features.tsv.gz", "wt") as handle:
-        handle.writelines(f"ENSG{i:08d}\tSYM{i}\tGene Expression\n" for i in range(n_features))
+        # Genes 0 and 1 are named like a real mitochondrial and erythroid gene,
+        # so run_qc_metrics can compute both fractions on this fixture instead of
+        # warning that neither was found — a fixture-naming gap, not a real one.
+        symbols = ["MT-CO1", "HBB"] + [f"SYM{i}" for i in range(2, n_features)]
+        handle.writelines(
+            f"ENSG{i:08d}\t{symbols[i]}\tGene Expression\n" for i in range(n_features)
+        )
 
     # Real entries, not just a header: the loaders read these files with scanpy,
     # so a header-only matrix fails rather than classifying.
