@@ -12,36 +12,38 @@ Count matrix 再拆成：
 
 ```mermaid
 flowchart TD
-    A[Input bundle] --> B[Ingest / preflight / intake validation]
-    B --> C{Main input type}
+    A[Input bundle] --> B[ingest_validate]
+    B --> SP[resolve_species<br/>table lookup, both routes]
+    SP --> C{Main input type}
 
-    C -->|FASTQ bundle| F0[Upstream preprocessing]
-    C -->|Count matrix bundle| M0[Count matrix classifier]
+    C -->|FASTQ bundle| RR[resolve_reference<br/>32 GB index, FASTQ only]
+    C -->|Count matrix bundle| M0[count_matrix_classify]
 
     %% FASTQ route
-    F0 --> F1[nfcore-scrnaseq-wrapper]
-    F1 --> F2[Count matrix produced]
+    RR --> F1[fastq_preflight<br/>structure, ms]
+    F1 --> FQ[fastq_qc<br/>FastQC + MultiQC, min]
+    FQ --> F2[cellranger_count<br/>writes BOTH matrices]
     F2 --> M0
 
     %% Count matrix route
     M0 -->|raw_feature_bc_matrix / raw-count h5ad| R0[Raw-count route]
     M0 -->|filtered_feature_bc_matrix / filtered-count h5ad| P0[Filtered-count route]
 
-    R0 --> R1[Validate raw counts + source state]
+    R0 --> R1[load_raw_counts]
     R1 --> R2{Cell calling already resolved?}
-    R2 -->|no| R3[Cell calling review]
-    R2 -->|yes| D0[Downstream Scanpy mainline]
+    R2 -->|no| R3[cell_calling_review<br/>operator picks the count]
+    R2 -->|yes| STD
 
     R3 --> J3[Judge cell calling]
-    J3 -->|pass| D0
-    J3 -->|warn| H1[Human review]
-    J3 -->|fail| H1
+    J3 -->|count chosen| STD
+    J3 -->|not chosen| H1[Human review]
 
-    P0 --> P1[Validate filtered counts]
-    P1 --> D0
+    P0 --> P1[load_filtered_counts]
+    P1 --> STD[standardize_count_data<br/>one shape, genome checked]
+    STD --> D0
 
     %% Main Scanpy line
-    D0 --> S1[QC metrics / raw load]
+    D0[Downstream Scanpy mainline] --> S1[run_qc_metrics]
     S1 --> J1[Judge QC]
     J1 -->|pass| S2[Cell QC filter]
     J1 -->|warn| H1
@@ -119,6 +121,16 @@ flowchart TD
 
 ## 這版的意思
 
+- **`resolve_species` 在分岔前，`resolve_reference` 在 FASTQ 分支上。**
+  物種常數（粒線體前綴、紅血球基因、marker 資料庫）兩條路都要，是查表；
+  32 GB 的 transcriptome 只有 FASTQ 路線要。混在一起會讓矩陣路線經過一個
+  它根本用不到的 reference 節點。
+- **Cell Ranger 同時產生 raw 和 filtered**，所以 `cellranger_count` 是**選擇**
+  用哪一份往下走（要自訂細胞數就走 raw），不是讓下游去猜。使用者直接給矩陣時
+  才是真的要分類。`count_matrix_classify` 兩種情況都會驗證檔案內容符合宣稱。
+- **`standardize_count_data` 是匯流點。** 三個 step 都可能產出矩陣，
+  所以由一個節點保證下游拿到的形狀一致，並在這裡把 genome 跟宣告的物種對照
+  —— 這是矩陣路線原本沒地方做的檢查。
 - **主入口只有 FASTQ 和 Count matrix。**
 - Count matrix 不再和 h5ad / latent data 混在一起。
 - raw matrix 會先看 cell calling 是否已經解決；沒有的話就進 cell calling review。

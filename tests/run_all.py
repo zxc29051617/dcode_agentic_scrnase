@@ -19,6 +19,7 @@ from tests import (  # noqa: E402
     test_graph_smoke,
     test_ingest_validate,
     test_resolve_reference,
+    test_standardize,
 )
 
 MODULES = (
@@ -29,6 +30,7 @@ MODULES = (
     test_cellranger_count,
     test_count_matrix_classify,
     test_cell_calling,
+    test_standardize,
     test_graph_smoke,
 )
 

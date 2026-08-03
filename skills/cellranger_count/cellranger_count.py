@@ -412,12 +412,24 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
             "(verified against this reference, not recounted)"
         )
 
+    # Cell Ranger writes BOTH matrices, so which one goes downstream is a
+    # decision, not a guess. Wanting to set the cell count means wanting the raw
+    # barcode list; otherwise Cell Ranger's own call is the sensible default.
     first = records[0]
+    wants_own_cell_count = config.get("force_cells") is not None or config.get("min_umi") is not None
+    chosen = "raw" if wants_own_cell_count else "filtered"
+    if wants_own_cell_count:
+        warnings.append(
+            "routing on the raw matrix because a cell count was requested; "
+            "Cell Ranger's own call stays available for comparison"
+        )
+
     return _result(
         libraries=records,
         count_manifest=str(manifest),
         raw_matrix=first["raw_feature_bc_matrix"],
         filtered_matrix=first["filtered_feature_bc_matrix"],
+        chosen=chosen,
         warnings=warnings,
         next_tool="count_matrix_classify",
         metrics={
@@ -453,6 +465,7 @@ def _result(
     count_manifest: str | None = None,
     raw_matrix: str | None = None,
     filtered_matrix: str | None = None,
+    chosen: str | None = None,
     warnings: list[str] | None = None,
     errors: list[str] | None = None,
     next_tool: str | None = None,
@@ -463,12 +476,14 @@ def _result(
         "count_manifest": count_manifest,
         "raw_feature_bc_matrix": raw_matrix,
         "filtered_feature_bc_matrix": filtered_matrix,
-        # A hint, not the decision: `count_matrix_classify` confirms it against
-        # the matrix itself. Cell Ranger emits both raw and filtered; filtered is
-        # the standard downstream choice and raw stays available for
-        # cell_calling_review.
-        "matrix_path": filtered_matrix,
-        "matrix_kind_hint": "filtered" if filtered_matrix else None,
+        # Cell Ranger produced BOTH, so downstream is told which one was chosen
+        # and why — not left to classify a file whose kind is already known.
+        # `count_matrix_classify` still verifies the choice against the contents.
+        "matrix_path": {"raw": raw_matrix, "filtered": filtered_matrix}.get(chosen),
+        "matrix_kind_hint": chosen,
+        "available_matrices": (
+            {"raw": raw_matrix, "filtered": filtered_matrix} if raw_matrix else {}
+        ),
         "recommended_next_tool": next_tool,
         "metrics": metrics or {},
         "warnings": warnings or [],

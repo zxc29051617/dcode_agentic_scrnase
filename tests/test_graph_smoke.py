@@ -33,9 +33,10 @@ WALK = GatePolicy(headless_decision="accept")
 
 IMPLEMENTED = [
     "ingest_validate",
-    "resolve_reference",
+    "resolve_species",
     "count_matrix_classify",
     "load_filtered_counts",
+    "standardize_count_data",
 ]
 """Skills with a real `run()` on the filtered-matrix route; everything else is a scaffold."""
 
@@ -89,14 +90,17 @@ def test_fastq_route_visits_the_upstream_steps_in_order():
     """
     final = _run({"input_type": "fastq"})
     steps = _steps(final)
-    assert steps[:5] == [
+    assert steps[:6] == [
         "ingest_validate",
+        # A table lookup both routes need, before the split...
+        "resolve_species",
+        # ...and the 32 GB transcriptome only this one does, after it.
         "resolve_reference",
         "fastq_preflight",
         "fastq_qc",
         "cellranger_count",
     ]
-    assert steps[5] == "count_matrix_classify"
+    assert steps[6] == "count_matrix_classify"
 
 
 def test_fastq_qc_really_runs_inside_the_graph():
@@ -153,7 +157,7 @@ def test_choosing_a_cell_count_lets_the_raw_route_continue():
 def test_sample_qc_triage_runs_when_enabled():
     final = _run({"input_type": "matrix", "matrix_kind": "filtered", "sample_qc_triage": True})
     steps = _steps(final)
-    assert steps[:3] == ["ingest_validate", "resolve_reference", "sample_qc_triage"]
+    assert steps[:3] == ["ingest_validate", "resolve_species", "sample_qc_triage"]
     assert steps.count("sample_qc_triage") == 1, "triage must not loop"
 
 
@@ -221,6 +225,7 @@ def test_scaffolds_are_reported_not_hidden():
     assert report["errors"] == []
     assert set(report["scaffolds"]) == {r["step"] for r in final["step_results"]} - set(IMPLEMENTED)
     assert report["verdicts"]["ingest_validate"] == "pass"
+    assert report["verdicts"]["standardize_count_data"] == "pass"
     assert report["verdicts"]["run_qc_metrics"] == "pass (scaffold)"
 
     for verdict in final["judge_results"]:
@@ -232,12 +237,15 @@ def test_scaffolds_are_reported_not_hidden():
 
 
 def test_missing_reference_blocks_before_preflight_even_runs():
-    """`resolve_reference` catches it first, so no FASTQ work is started at all."""
+    """`resolve_reference` catches it first, so no FASTQ work is started at all.
+
+    It only runs on the FASTQ branch, so a count-matrix run never reaches it.
+    """
     final = _run(
         {"input_type": "fastq", "transcriptome": "/nonexistent/reference"},
         policy=GatePolicy(),
     )
-    assert _steps(final) == ["ingest_validate", "resolve_reference"]
+    assert _steps(final) == ["ingest_validate", "resolve_species", "resolve_reference"]
     assert final["halted"] is True
     verdict = next(j for j in final["judge_results"] if j["step"] == "resolve_reference")
     assert verdict["verdict"] == "fail"

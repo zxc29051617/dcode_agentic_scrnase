@@ -241,6 +241,10 @@ def classify(evidence: dict[str, Any]) -> tuple[str, list[str]]:
     return "unknown", reasons
 
 
+def artifacts_of(payload: dict[str, Any], step: str) -> dict[str, Any]:
+    return (payload.get("artifacts") or {}).get(step) or {}
+
+
 def _hinted_path_and_kind(payload: dict[str, Any]) -> tuple[str | None, str | None, str]:
     """Where the matrix is, and what upstream believes it to be."""
     artifacts = payload.get("artifacts") or {}
@@ -277,18 +281,37 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
 
     matrix_class, reasons = classify(evidence)
 
-    # A hint that disagrees with the matrix is a finding, not something to smooth
-    # over: it means a file was renamed, moved, or pointed at by mistake.
+    # Two different situations, and conflating them is what made this step read
+    # as guesswork:
+    #
+    #   selection — Cell Ranger wrote BOTH matrices and said which one it is
+    #               routing on. The kind is known; this step's job is to confirm
+    #               the file matches that claim, not to rediscover it.
+    #   discovery — someone handed over a matrix. Nothing knows what it is, so
+    #               the contents are the only evidence there is.
+    available = (artifacts_of(payload, "cellranger_count") or {}).get("available_matrices") or {}
+    mode = "selection" if available else "discovery"
+    evidence["mode"] = mode
+    if available:
+        evidence["available_matrices"] = sorted(available)
+
+    # Either way, a claim that disagrees with the contents is a finding: it means
+    # a file was renamed, moved, or pointed at by mistake.
     if hint and matrix_class != "unknown" and hint != matrix_class:
+        detail = (
+            f"{hint_source} selected the {hint!r} matrix"
+            if mode == "selection"
+            else f"{hint_source} called this matrix {hint!r}"
+        )
         return _result(
             matrix_class="unknown",
             evidence=evidence,
             reasons=reasons,
             matrix_path=str(path),
             errors=[
-                f"{hint_source} called this matrix {hint!r} but its contents look "
-                f"{matrix_class!r}: {'; '.join(reasons)}. Routing on either would be a "
-                f"guess — confirm which file this actually is"
+                f"{detail} but its contents look {matrix_class!r}: "
+                f"{'; '.join(reasons)}. Routing on either would be a guess — "
+                f"confirm which file this actually is"
             ],
         )
 
@@ -298,7 +321,11 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
             "state is unresolved"
         )
     elif hint == matrix_class:
-        evidence["hint_confirmed"] = f"{hint_source} said {hint!r}, contents agree"
+        evidence["hint_confirmed"] = (
+            f"{hint_source} selected {hint!r}; the contents agree"
+            if mode == "selection"
+            else f"{hint_source} said {hint!r}, contents agree"
+        )
 
     return _result(
         matrix_class=matrix_class,

@@ -64,7 +64,21 @@ def load_matrix(path: str | Path) -> tuple[Any, dict[str, Any]]:
         "n_obs": int(adata.n_obs),
         "n_vars": int(adata.n_vars),
     }
+    # A 10x .h5 records which reference it was counted against, and scanpy keeps
+    # it in `var`. That is the only self-describing format of the three: an mtx
+    # directory carries no genome at all, so a matrix route that came in that way
+    # simply cannot be cross-checked against the declared species.
+    genomes = recorded_genomes(adata)
+    if genomes:
+        provenance["genomes"] = sorted(genomes)
     return adata, provenance
+
+
+def recorded_genomes(adata: Any) -> set[str]:
+    """Which reference this matrix says it was counted against. Empty if unstated."""
+    if "genome" not in getattr(adata, "var", {}):
+        return set()
+    return {str(value) for value in adata.var["genome"].unique() if str(value)}
 
 
 def write_h5ad(adata: Any, path: str | Path) -> str:

@@ -14,8 +14,10 @@ Orchestrator 層是**真的**，分析層是**假的**：
 - 每個 step 後面都有 judge node，verdict 符合 `schemas/judge_result.schema.json`
 - human gate 預設不放行 warn/fail，headless 執行預設 `stop`
 - provenance 每步寫 JSONL audit log
-- **22 個 registry step 裡實作了 9 個**，其餘 13 個（Scanpy 主線）還是 `NotImplementedError`
-- FASTQ 上游整段 + raw/filtered 分流 + 載入 + cell calling 都是真的
+- **24 個 registry step 裡實作了 11 個**，其餘 13 個（Scanpy 主線）還是 `NotImplementedError`
+- FASTQ 上游整段 + raw/filtered 分流 + 載入 + cell calling + 匯流標準化都是真的
+- `resolve_species`（查表，兩條路都走）和 `resolve_reference`（32 GB index，只有 FASTQ 走）已分開
+- `standardize_count_data` 是匯流點，保證下游形狀一致並在此驗證 genome 與物種
 - **細胞數由操作者決定**：`cell_calling_review` 給證據後停下來，不自己挑數字
 
 ## 一個待決定的落差

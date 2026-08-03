@@ -30,11 +30,11 @@
 
 ## 目前狀態
 
-Orchestrator 可以跑。Skill **22 個裡實作了 9 個**，FASTQ 上游整段已經是真的：
+Orchestrator 可以跑。Skill **24 個裡實作了 11 個**，FASTQ 上游整段已經是真的：
 
 | | |
 |---|---|
-| ✅ 已實作 | `ingest_validate`、`resolve_reference`、`fastq_preflight`、`fastq_qc`、`cellranger_count`、`count_matrix_classify`、`load_raw_counts`、`load_filtered_counts`、`cell_calling_review` |
+| ✅ 已實作 | `ingest_validate`、`resolve_species`、`resolve_reference`、`fastq_preflight`、`fastq_qc`、`cellranger_count`、`count_matrix_classify`、`load_raw_counts`、`load_filtered_counts`、`cell_calling_review`、`standardize_count_data` |
 | ⬜ scaffold | 其餘 13 個（Scanpy 主線），`run()` 直接 raise `NotImplementedError` |
 
 FASTQ 路線：偵測輸入 → 選 reference 並驗證物種 → 結構檢查 → **FastQC/MultiQC 品質評估** → count

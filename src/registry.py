@@ -37,8 +37,12 @@ REGISTRY: dict[str, StepSpec] = {
     spec.name: spec
     for spec in (
         StepSpec("ingest_validate", "utility", "judge_ingest"),
-        StepSpec("resolve_reference", "utility", "judge_reference", branches=True),
-        StepSpec("sample_qc_triage", "utility", "judge_sample_qc"),
+        # Species constants are a table lookup both routes need; the 32 GB
+        # transcriptome is only needed to turn reads into counts. Splitting them
+        # keeps a count-matrix run from passing through a reference step.
+        StepSpec("resolve_species", "utility", "judge_species", branches=True),
+        StepSpec("sample_qc_triage", "utility", "judge_sample_qc", branches=True),
+        StepSpec("resolve_reference", "utility", "judge_reference"),
         StepSpec("fastq_preflight", "upstream", "judge_fastq_preflight"),
         # Structural checks first (milliseconds), sequencing quality second
         # (minutes): a bundle missing an R2 should never reach FastQC.
@@ -47,7 +51,11 @@ REGISTRY: dict[str, StepSpec] = {
         StepSpec("count_matrix_classify", "router", "judge_matrix_classify", branches=True),
         StepSpec("load_raw_counts", "analysis", "judge_raw_counts", branches=True),
         StepSpec("load_filtered_counts", "analysis", "judge_filtered_counts"),
-        StepSpec("cell_calling_review", "analysis", "judge_cell_calling"),
+        StepSpec("cell_calling_review", "analysis", "judge_cell_calling", branches=True),
+        # Where the two routes meet. Three steps can produce the matrix, so one
+        # node promises the mainline a single shape instead of letting every consumer
+        # grow per-route special cases.
+        StepSpec("standardize_count_data", "analysis", "judge_standardize"),
         StepSpec("run_qc_metrics", "analysis", "judge_qc"),
         StepSpec("apply_cell_qc_filter", "analysis", "judge_cell_qc_filter"),
         StepSpec("detect_doublets", "analysis", "judge_doublets"),

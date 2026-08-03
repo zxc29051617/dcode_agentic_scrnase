@@ -1,4 +1,10 @@
-"""Resolve which Cell Ranger reference this run uses, and prove it is the right one.
+"""Resolve the Cell Ranger reference for counting, and prove it is the right one.
+
+Runs on the **FASTQ branch only**. A 32 GB STAR index is what turns reads into
+counts; a run that arrives holding a count matrix never needs one. The species
+constants that *both* routes need — mitochondrial prefix, haemoglobin symbols,
+marker database — come from `resolve_species`, which runs before the split and
+touches no files.
 
 Picking the wrong reference fails silently: the counts are wrong, but the audit
 log, the report and the matrix all agree with each other and are wrong together.
@@ -43,9 +49,6 @@ OUTPUT_FIELDS = (
     "reference_available",
     "species_verified",
     "reference_genomes",
-    "mito_prefix",
-    "erythroid_genes",
-    "marker_db",
     "warnings",
     "errors",
     "recommended_next_tool",
@@ -131,11 +134,6 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
     profile = species_table.profile(config.get("species"))
     raw_species = config.get("species")
 
-    # A transcriptome is only required when this run will actually count.
-    # A count-matrix run needs the species constants, never the 32 GB index.
-    ingest = artifacts.get("ingest_validate") or {}
-    needs_counting = bool(ingest.get("needs_upstream_preprocessing"))
-
     # --- resolve the path ---------------------------------------------------
     explicit = config.get("transcriptome")
     root = Path(config.get("reference_root") or DEFAULT_REFERENCE_ROOT)
@@ -145,17 +143,12 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
         transcriptome = Path(explicit).expanduser()
     elif profile is not None:
         transcriptome = root / profile.reference.dirname
-    elif needs_counting:
+    else:
         errors.append(
             f"no reference for species={raw_species!r}"
             + (f" (recognised as {declared})" if declared else " (unrecognised)")
             + f". Registered: {', '.join(species_table.known())}. "
             "Either use a registered species or set config.transcriptome explicitly"
-        )
-    else:
-        warnings.append(
-            f"no species profile for {raw_species!r}; species constants "
-            "(mito_prefix, erythroid genes) must come from config"
         )
 
     # --- check it is really there -------------------------------------------
@@ -167,8 +160,7 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
             hint = ""
             if profile is not None and not explicit:
                 hint = f". Get it: {_how_to_get(profile.reference)}"
-            # A missing reference only blocks a run that was going to count.
-            (errors if needs_counting else warnings).append(problem + hint)
+            errors.append(problem + hint)
         else:
             available = True
 
@@ -179,12 +171,6 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
         errors.extend(verify_errors)
         warnings.extend(verify_warnings)
 
-    if profile is not None and not profile.qc_defaults_native:
-        warnings.append(
-            f"QC starting points for {profile.canonical} were derived from another "
-            "species' data; review the thresholds rather than trusting the defaults"
-        )
-
     genomes = list((meta or {}).get("genomes") or [])
     return _result(
         species=declared,
@@ -193,26 +179,15 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
         species_verified=verified,
         reference_genomes=genomes,
         reference_version=(meta or {}).get("version"),
-        mito_prefix=profile.mito_prefix if profile else config.get("mito_prefix"),
-        erythroid_genes=list(profile.erythroid) if profile else list(config.get("erythroid_genes") or []),
-        marker_db=profile.marker_db if profile else None,
         warnings=warnings,
         errors=errors,
-        next_tool=_next_tool(config, payload, needs_counting),
+        next_tool="fastq_preflight",
         metrics={
             "reference_available": available,
             "species_verified": verified,
             "n_reference_genomes": len(genomes),
         },
     )
-
-
-def _next_tool(config: dict[str, Any], payload: dict[str, Any], needs_counting: bool) -> str:
-    if config.get("sample_qc_triage") and (
-        payload.get("sample_metadata") or config.get("qc_metrics_csv")
-    ):
-        return "sample_qc_triage"
-    return "fastq_preflight" if needs_counting else "count_matrix_classify"
 
 
 def _result(
@@ -223,9 +198,6 @@ def _result(
     species_verified: bool = False,
     reference_genomes: list[str] | None = None,
     reference_version: str | None = None,
-    mito_prefix: str | None = None,
-    erythroid_genes: list[str] | None = None,
-    marker_db: str | None = None,
     warnings: list[str] | None = None,
     errors: list[str] | None = None,
     next_tool: str | None = None,
@@ -238,9 +210,6 @@ def _result(
         "species_verified": species_verified,
         "reference_genomes": reference_genomes or [],
         "reference_version": reference_version,
-        "mito_prefix": mito_prefix,
-        "erythroid_genes": erythroid_genes or [],
-        "marker_db": marker_db,
         "recommended_next_tool": next_tool,
         "metrics": metrics or {},
         "warnings": warnings or [],
@@ -253,11 +222,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--species", help="human, mouse, 小鼠, ...")
     parser.add_argument("--transcriptome", help="explicit reference path; wins over --species")
     parser.add_argument("--reference-root", default=DEFAULT_REFERENCE_ROOT)
-    parser.add_argument(
-        "--fastq",
-        action="store_true",
-        help="treat the run as FASTQ input, which makes a reference mandatory",
-    )
     args = parser.parse_args(argv)
 
     result = run(
@@ -267,9 +231,7 @@ def main(argv: list[str] | None = None) -> int:
                 "transcriptome": args.transcriptome,
                 "reference_root": args.reference_root,
             },
-            "artifacts": {
-                "ingest_validate": {"needs_upstream_preprocessing": args.fastq}
-            },
+            "artifacts": {},
         }
     )
     print(json.dumps(result, indent=2, ensure_ascii=False))

@@ -42,7 +42,7 @@ def branch_input_type(state: WorkflowState) -> str:
     return "fastq" if kind == "fastq" else "matrix"
 
 
-def branch_after_reference(state: WorkflowState) -> str:
+def branch_after_species(state: WorkflowState) -> str:
     """Optional sample-level triage runs before the input-type split."""
     ran = any(r["step"] == "sample_qc_triage" for r in state.get("step_results") or [])
     if (state.get("config") or {}).get("sample_qc_triage") and not ran:
@@ -66,6 +66,11 @@ def branch_cell_calling(state: WorkflowState) -> str:
     return "mainline" if out.get("cell_calling_resolved") else "review"
 
 
+def branch_merge(state: WorkflowState) -> str:
+    """Both routes converge on `standardize_count_data`."""
+    return "standardize"
+
+
 def branch_after_cell_calling(state: WorkflowState) -> str:
     """An unresolved cell count cannot enter the mainline, even on `accept`.
 
@@ -74,7 +79,7 @@ def branch_after_cell_calling(state: WorkflowState) -> str:
     letting the mainline run on every barcode in the raw matrix.
     """
     out = step_output(state, "cell_calling_review")
-    return "mainline" if out.get("cell_calling_state") == "resolved" else HUMAN_GATE
+    return "standardize" if out.get("cell_calling_state") == "resolved" else HUMAN_GATE
 
 
 def build_graph(
@@ -127,22 +132,27 @@ def build_graph(
         successors[step] = lambda state, b=branch, pm=path_map: pm.get(b(state), END)
 
     # ---- intake and routing ------------------------------------------------
-    # `resolve_reference` sits between intake and the route split so both the
-    # FASTQ and the count-matrix route pass through it: the transcriptome is only
-    # needed for counting, but the species constants are needed by both.
-    linear("ingest_validate", "resolve_reference")
+    # `resolve_species` is a table lookup both routes need, so it sits before the
+    # split. `resolve_reference` resolves a 32 GB transcriptome, which only the
+    # FASTQ route uses, so it sits after it.
+    linear("ingest_validate", "resolve_species")
     branching(
-        "resolve_reference",
-        branch_after_reference,
-        {"sample_qc": "sample_qc_triage", "fastq": "fastq_preflight", "matrix": "count_matrix_classify"},
+        "resolve_species",
+        branch_after_species,
+        {
+            "sample_qc": "sample_qc_triage",
+            "fastq": "resolve_reference",
+            "matrix": "count_matrix_classify",
+        },
     )
     branching(
         "sample_qc_triage",
         branch_input_type,
-        {"fastq": "fastq_preflight", "matrix": "count_matrix_classify"},
+        {"fastq": "resolve_reference", "matrix": "count_matrix_classify"},
     )
 
     # ---- FASTQ upstream route ----------------------------------------------
+    linear("resolve_reference", "fastq_preflight")
     linear("fastq_preflight", "fastq_qc")
     linear("fastq_qc", "cellranger_count")
     linear("cellranger_count", "count_matrix_classify")
@@ -156,10 +166,19 @@ def build_graph(
     branching(
         "load_raw_counts",
         branch_cell_calling,
-        {"review": "cell_calling_review", "mainline": MAINLINE[0]},
+        {"review": "cell_calling_review", "mainline": "standardize_count_data"},
     )
-    branching("cell_calling_review", branch_after_cell_calling, {"mainline": MAINLINE[0]})
-    linear("load_filtered_counts", MAINLINE[0])
+    branching(
+        "cell_calling_review",
+        branch_after_cell_calling,
+        {"standardize": "standardize_count_data"},
+    )
+    linear("load_filtered_counts", "standardize_count_data")
+
+    # ---- the merge point ----------------------------------------------------
+    # Everything downstream is promised one shape of AnnData, whichever of the
+    # three producers above supplied it.
+    linear("standardize_count_data", MAINLINE[0])
 
     # ---- Scanpy mainline ----------------------------------------------------
     for current, following in zip(MAINLINE, MAINLINE[1:] + (FINAL_GATE,)):

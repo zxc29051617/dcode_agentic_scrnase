@@ -1,4 +1,9 @@
-"""Unit tests for `resolve_reference` and the `src.species` table.
+"""Unit tests for `resolve_species`, `resolve_reference`, and the species table.
+
+`resolve_species` is a table lookup both routes need; `resolve_reference`
+resolves the 32 GB transcriptome only the FASTQ route uses. They were one step
+until it became clear a count-matrix run was passing through something called
+"resolve_reference" for a reference it never touches.
 
 Run with `python tests/test_resolve_reference.py` (or `python tests/run_all.py`).
 """
@@ -16,20 +21,17 @@ from src.registry import load_skill  # noqa: E402
 from tests import fixtures  # noqa: E402
 
 resolve = load_skill("resolve_reference")
+resolve_species = load_skill("resolve_species")
 
 
 class Skip(Exception):
     """Raised by a test that needs data this machine does not have."""
 
 
-def _run(*, fastq=True, artifacts=None, **config):
-    return resolve.run(
-        {
-            "config": config,
-            "artifacts": artifacts
-            or {"ingest_validate": {"needs_upstream_preprocessing": fastq}},
-        }
-    )
+def _run(*, artifacts=None, **config):
+    """`resolve_reference` runs on the FASTQ branch only, so a transcriptome is
+    always required by the time it is reached."""
+    return resolve.run({"config": config, "artifacts": artifacts or {}})
 
 
 # --- the table ------------------------------------------------------------
@@ -79,9 +81,8 @@ def test_registered_species_resolves_to_a_project_local_path():
     assert result["transcriptome"].endswith("T2T_CHM13v2_RefSeqLiftoff_v5_3")
     assert result["reference_available"] is True
     assert result["species_verified"] is True
-    assert result["mito_prefix"] == "MT-"
-    assert "HBB" in result["erythroid_genes"]
     assert result["recommended_next_tool"] == "fastq_preflight"
+    assert "mito_prefix" not in result, "species constants belong to resolve_species now"
 
 
 def test_species_mismatch_is_an_error():
@@ -104,26 +105,60 @@ def test_explicit_transcriptome_wins_over_the_species_lookup():
     assert result["errors"] == []
 
 
-def test_missing_reference_blocks_a_fastq_run_and_says_how_to_get_it():
+def test_missing_reference_blocks_and_says_how_to_get_it():
     with tempfile.TemporaryDirectory() as tmp:
-        result = _run(species="mouse", reference_root=str(Path(tmp) / "empty"), fastq=True)
+        result = _run(species="mouse", reference_root=str(Path(tmp) / "empty"))
     assert result["reference_available"] is False
     assert any("does not exist" in e for e in result["errors"])
     assert any("cf.10xgenomics.com" in e for e in result["errors"]), "must say how to get it"
 
 
-def test_missing_reference_only_warns_on_a_matrix_run():
-    """A count matrix never needs the 32 GB index — only the species constants."""
-    with tempfile.TemporaryDirectory() as tmp:
-        result = _run(species="human", reference_root=str(Path(tmp) / "empty"), fastq=False)
+def test_a_matrix_run_never_reaches_the_reference_step():
+    """The split is the point: only the FASTQ branch needs a transcriptome.
+
+    `resolve_species` is what a count-matrix run passes through, and it cannot
+    fail on a missing file because it never opens one.
+    """
+    result = resolve_species.run({"config": {"species": "human"}, "artifacts": {}})
     assert result["errors"] == []
-    assert any("does not exist" in w for w in result["warnings"])
-    assert result["mito_prefix"] == "MT-", "constants still resolve without the reference"
+    assert result["mito_prefix"] == "MT-"
+    assert result["erythroid_genes"], "QC constants come from here, not the reference"
     assert result["recommended_next_tool"] == "count_matrix_classify"
 
 
-def test_unregistered_species_blocks_a_fastq_run_without_an_explicit_path():
-    result = _run(species="rat", fastq=True)
+def test_a_fastq_run_is_routed_to_the_reference_step():
+    result = resolve_species.run(
+        {
+            "config": {"species": "human"},
+            "artifacts": {"ingest_validate": {"needs_upstream_preprocessing": True}},
+        }
+    )
+    assert result["recommended_next_tool"] == "resolve_reference"
+
+
+def test_species_constants_take_config_over_the_table():
+    """A curated table is a default, not an override of someone's own annotation."""
+    result = resolve_species.run(
+        {"config": {"species": "human", "mito_prefix": "mt:"}, "artifacts": {}}
+    )
+    assert result["mito_prefix"] == "mt:"
+    assert result["constants_source"]["mito_prefix"] == "config"
+
+
+def test_an_unregistered_species_asks_for_constants_rather_than_inventing_them():
+    result = resolve_species.run({"config": {"species": "rat"}, "artifacts": {}})
+    assert result["errors"] == [], "a non-model organism must not be blocked here"
+    assert any("no vetted gene lists" in w for w in result["warnings"])
+    assert result["erythroid_genes"] == []
+
+
+def test_no_mito_prefix_is_called_out_as_a_silent_qc_failure():
+    result = resolve_species.run({"config": {"species": "rat"}, "artifacts": {}})
+    assert any("report zero rather than fail" in w for w in result["warnings"])
+
+
+def test_unregistered_species_blocks_without_an_explicit_path():
+    result = _run(species="rat")
     assert any("no reference for species" in e for e in result["errors"])
     assert any("human, mouse" in e for e in result["errors"]), "must list what is registered"
 
@@ -131,7 +166,7 @@ def test_unregistered_species_blocks_a_fastq_run_without_an_explicit_path():
 def test_unregistered_species_runs_with_an_explicit_path():
     with tempfile.TemporaryDirectory() as tmp:
         ref = fixtures.make_reference(Path(tmp), "rat_ref", genomes=["mRatBN7.2"])
-        result = _run(species="rat", transcriptome=str(ref), fastq=True)
+        result = _run(species="rat", transcriptome=str(ref))
     assert result["errors"] == [], "a non-model organism must not be blocked"
     assert result["species"] == "rat"
     assert result["species_verified"] is True
@@ -162,13 +197,16 @@ def test_directory_without_reference_json_is_not_a_reference():
     assert any("no reference.json" in e for e in result["errors"])
 
 
-def test_mouse_warns_that_its_qc_defaults_are_borrowed():
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        fixtures.make_reference(root, "refdata-gex-GRCm39-2024-A", genomes=["GRCm39"])
-        result = _run(species="mouse", reference_root=str(root))
+def test_borrowed_qc_defaults_are_a_note_not_a_blocking_warning():
+    """Every mouse run would otherwise stop at step two, which teaches clicking through.
+
+    The information matters when QC thresholds are reviewed, several steps later
+    — not as a gate before the data has even been read.
+    """
+    result = resolve_species.run({"config": {"species": "mouse"}, "artifacts": {}})
     assert result["errors"] == []
-    assert any("derived from another species" in w for w in result["warnings"])
+    assert result["warnings"] == []
+    assert any("derived from another species" in n for n in result["notes"])
 
 
 def test_real_t2t_reference_if_linked():
