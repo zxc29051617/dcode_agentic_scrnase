@@ -90,3 +90,22 @@ python skills/cellranger_count/cellranger_count.py \
   --transcriptome reference/T2T_CHM13v2_RefSeqLiftoff_v5_3 \
   --run-dir runs/manual --localcores 32 --localmem 128
 ```
+
+## Verified against
+`pbmc_1k_v3` counted against the T2T-CHM13v2.0 / RefSeq-Liftoff-v5.3 reference,
+32 cores / 128 GB, 21.3 minutes:
+
+| | |
+|---|---|
+| estimated cells | 1,218 (10x's published figure for this set is 1,222, on GRCh38) |
+| mean reads/cell | 54,681 |
+| median genes/cell | 3,201 |
+| reads confidently mapped to transcriptome | 79.6% |
+| fraction reads in cells | 95.6% |
+
+Both branches of the reuse decision were exercised on that real output:
+
+- same reference → reused in 0.25s instead of recounting for 21 minutes
+- a reference named `GRCh38-2024-A` → refused, matrix left untouched, message
+  naming both genomes and how to recover
+
