@@ -52,6 +52,10 @@ REGISTRY: dict[str, StepSpec] = {
         StepSpec("load_raw_counts", "analysis", "judge_raw_counts", branches=True),
         StepSpec("load_filtered_counts", "analysis", "judge_filtered_counts"),
         StepSpec("cell_calling_review", "analysis", "judge_cell_calling", branches=True),
+        # Per-sample work ends here. Everything before this point runs once per
+        # library; everything after works on one labelled object, which is what
+        # `run_integration` later corrects the batch effect of.
+        StepSpec("merge_samples", "analysis", "judge_merge"),
         # Where the two routes meet. Three steps can produce the matrix, so one
         # node promises the mainline a single shape instead of letting every
         # consumer grow per-route special cases.

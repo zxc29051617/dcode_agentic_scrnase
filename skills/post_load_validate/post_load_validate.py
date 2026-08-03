@@ -1,10 +1,9 @@
 """The merge point: guarantee one shape of AnnData whichever route produced it.
 
-Three steps can hand a matrix to the mainline — `load_filtered_counts`,
-`cell_calling_review`, and (for a raw matrix a person had already called cells
-on) `load_raw_counts`. Three producers and one consumer is exactly when the
-consumer starts growing per-route special cases, so everything downstream of
-here is promised the same object instead.
+`merge_samples` hands over one labelled AnnData whichever route and however many
+libraries produced it. This step is what the mainline is actually promised: a
+consumer with several possible producers grows per-route special cases unless
+one node stands between them.
 
 What is promised:
 
@@ -64,7 +63,7 @@ OUTPUT_FIELDS = (
 
 #: Steps that can produce the matrix, most specific first. `cell_calling_review`
 #: wins over `load_raw_counts` because its output is the subset of the other.
-PRODUCERS = ("cell_calling_review", "load_filtered_counts", "load_raw_counts")
+PRODUCERS = ("merge_samples", "cell_calling_review", "load_filtered_counts", "load_raw_counts")
 
 
 def _incoming(payload: dict[str, Any]) -> tuple[str | None, str | None]:

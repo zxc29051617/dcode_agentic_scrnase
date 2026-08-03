@@ -168,18 +168,20 @@ def build_graph(
     branching(
         "load_raw_counts",
         branch_cell_calling,
-        {"review": "cell_calling_review", "mainline": "post_load_validate"},
+        {"review": "cell_calling_review", "mainline": "merge_samples"},
     )
     branching(
         "cell_calling_review",
         branch_after_cell_calling,
-        {"standardize": "post_load_validate"},
+        {"standardize": "merge_samples"},
     )
-    linear("load_filtered_counts", "post_load_validate")
+    linear("load_filtered_counts", "merge_samples")
 
-    # ---- the merge point ----------------------------------------------------
-    # Everything downstream is promised one shape of AnnData, whichever of the
-    # three producers above supplied it.
+    # ---- per-sample work ends, one object begins ----------------------------
+    # Every step above runs once per library. `merge_samples` concatenates them
+    # with a `sample` label; `post_load_validate` then promises the mainline one
+    # shape whichever route and however many samples produced it.
+    linear("merge_samples", "post_load_validate")
     linear("post_load_validate", MAINLINE[0])
 
     # ---- Scanpy mainline ----------------------------------------------------

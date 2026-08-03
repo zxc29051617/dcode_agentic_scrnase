@@ -32,11 +32,11 @@
 
 ## 目前狀態
 
-Orchestrator 可以跑。Skill **24 個裡實作了 11 個**，FASTQ 上游整段已經是真的：
+Orchestrator 可以跑。Skill **25 個裡實作了 12 個**，FASTQ 上游整段已經是真的：
 
 | | |
 |---|---|
-| ✅ 已實作 | `ingest_validate`、`resolve_reference`、`matrix_preflight`、`fastq_preflight`、`fastq_qc`、`cellranger_count`、`count_matrix_classify`、`load_raw_counts`、`load_filtered_counts`、`cell_calling_review`、`post_load_validate` |
+| ✅ 已實作 | `ingest_validate`、`resolve_reference`、`matrix_preflight`、`fastq_preflight`、`fastq_qc`、`cellranger_count`、`count_matrix_classify`、`load_raw_counts`、`load_filtered_counts`、`cell_calling_review`、`merge_samples`、`post_load_validate` |
 | ⬜ scaffold | 其餘 13 個（Scanpy 主線），`run()` 直接 raise `NotImplementedError` |
 
 FASTQ 路線：偵測輸入 → 選 reference 並驗證物種 → 結構檢查 → **FastQC/MultiQC 品質評估** → count
@@ -92,6 +92,15 @@ bash scripts/link_reference.sh         # reference 怎麼放
 物種和 reference 對不上會在第二步就停下來，不會等 count 跑完才發現。
 
 `--matrix-kind` 已經不需要了——`count_matrix_classify` 會從矩陣本身判斷 raw/filtered。
+
+**多樣本**：每個樣本各自 count → 各自載入 →（raw 路線各自決定細胞數）→
+`merge_samples` 合併成一個 AnnData 並加 `sample` 標籤 → 之後共用同一條主線。
+細胞數可以統一給一個值，也可以逐樣本給：
+
+```bash
+--force-cells 1500                      # 每個樣本都留 1500
+--force-cells '{"A": 1500, "B": 2400}'  # 逐樣本（config 用 dict）
+```
 
 **細胞數由你決定**。走 raw 矩陣時，`cell_calling_review` 會先給你證據
 （斷崖位置、各個候選細胞數對應的 UMI 門檻）然後停下來，不會替你挑數字：

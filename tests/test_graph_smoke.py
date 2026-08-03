@@ -36,6 +36,7 @@ IMPLEMENTED = [
     "matrix_preflight",
     "count_matrix_classify",
     "load_filtered_counts",
+    "merge_samples",
     "post_load_validate",
 ]
 """Skills with a real `run()` on the filtered-matrix route; everything else is a scaffold."""

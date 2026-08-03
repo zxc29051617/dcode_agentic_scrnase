@@ -237,13 +237,12 @@ def test_create_bam_is_explicit_in_the_command():
     assert "--create-bam=true" in " ".join(on)
 
 
-def test_multiple_libraries_are_counted_but_stop_before_the_mainline():
-    """Everything is counted and saved; only the analysis line is single-sample.
+def test_every_library_is_passed_downstream_not_just_the_first():
+    """Silently analysing one of N was the bug; `merge_samples` is the fix.
 
-    Passing the first matrix downstream would produce a report named for the
-    project that describes a quarter of it, with the audit log agreeing — the
-    error shape nothing downstream can notice. There is no merge step yet, so
-    this stops rather than picking one.
+    Passing only the first matrix would produce a report named for the project
+    that describes a fraction of it, with the audit log agreeing — the error
+    shape nothing downstream can notice.
     """
     import json
 
@@ -257,12 +256,10 @@ def test_multiple_libraries_are_counted_but_stop_before_the_mainline():
             _payload(root, reference=reference, work=root / "run", libraries=("A", "B"))
         )
 
-        assert result["errors"], "silently analysing one of two is the failure to avoid"
-        assert "nothing was lost" in result["errors"][0]
-        assert result["matrix_path"] is None, "nothing may be handed downstream"
-
-        # The counts are still complete and findable.
+        assert result["errors"] == []
+        assert set(result["matrix_paths"]) == {"A", "B"}, "every library, not just one"
         assert result["metrics"]["n_libraries"] == 2
+
         manifest = Path(result["count_manifest"])
         assert manifest.is_file()
         assert set(json.loads(manifest.read_text())) == {"A", "B"}
@@ -277,8 +274,10 @@ def test_output_hands_the_filtered_matrix_to_the_classifier():
         result = count.run(_payload(root, reference=reference, work=root / "run"))
 
     assert result["matrix_kind_hint"] == "filtered"
-    assert result["matrix_path"] == result["filtered_feature_bc_matrix"]
-    assert result["raw_feature_bc_matrix"].endswith("raw_feature_bc_matrix.h5")
+    library = result["libraries"][0]
+    assert result["matrix_paths"]["SampleA"] == library["filtered_feature_bc_matrix"]
+    assert library["raw_feature_bc_matrix"].endswith("raw_feature_bc_matrix.h5")
+    assert result["available_matrices"]["raw"], "the raw matrices stay reachable"
     assert result["recommended_next_tool"] == "count_matrix_classify"
     assert result["metrics"]["per_library"]["SampleA"]["Estimated Number of Cells"] == "1222"
 

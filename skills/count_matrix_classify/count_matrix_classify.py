@@ -245,41 +245,81 @@ def artifacts_of(payload: dict[str, Any], step: str) -> dict[str, Any]:
     return (payload.get("artifacts") or {}).get(step) or {}
 
 
-def _hinted_path_and_kind(payload: dict[str, Any]) -> tuple[str | None, str | None, str]:
-    """Where the matrix is, and what upstream believes it to be."""
+def _hinted_paths_and_kind(payload: dict[str, Any]) -> tuple[dict[str, str], str | None, str]:
+    """`{sample: path}`, and what upstream believes they are.
+
+    Cell Ranger hands over one matrix per library; a person handing over a
+    matrix directly hands over one. Both arrive here as a mapping so the rest of
+    the step does not branch on how many there are.
+    """
     artifacts = payload.get("artifacts") or {}
-    for step in ("cellranger_count", "ingest_validate"):
+    for step in ("cellranger_count", "matrix_preflight", "ingest_validate"):
         source = artifacts.get(step) or {}
+        hint = source.get("matrix_kind_hint") or source.get("matrix_kind")
+        hint = hint if hint != "unknown" else None
+        paths = source.get("matrix_paths")
+        if paths:
+            return {str(k): str(v) for k, v in paths.items()}, hint, step
         path = source.get("matrix_path")
         if path:
-            hint = source.get("matrix_kind_hint") or source.get("matrix_kind")
-            return str(path), (hint if hint != "unknown" else None), step
+            return {"sample1": str(path)}, hint, step
 
     bundle = payload.get("input_bundle") or {}
     if isinstance(bundle, (str, Path)):
-        return str(bundle), None, "input_bundle"
+        return {"sample1": str(bundle)}, None, "input_bundle"
     raw = bundle.get("paths") or bundle.get("path") or []
-    paths = [str(raw)] if isinstance(raw, (str, Path)) else [str(p) for p in raw]
-    return (paths[0] if paths else None), None, "input_bundle"
+    listed = [str(raw)] if isinstance(raw, (str, Path)) else [str(p) for p in raw]
+    return ({"sample1": listed[0]} if listed else {}), None, "input_bundle"
 
 
 def run(payload: dict[str, Any]) -> dict[str, Any]:
     warnings: list[str] = []
-    matrix_path, hint, hint_source = _hinted_path_and_kind(payload)
+    incoming, hint, hint_source = _hinted_paths_and_kind(payload)
 
-    if not matrix_path:
+    if not incoming:
         return _result(errors=["no matrix to classify; nothing upstream supplied a path"])
 
-    path = Path(matrix_path).expanduser()
-    if not path.exists():
-        return _result(errors=[f"matrix path does not exist: {path}"])
+    per_sample: dict[str, Any] = {}
+    for name, raw_path in sorted(incoming.items()):
+        path = Path(raw_path).expanduser()
+        if not path.exists():
+            return _result(errors=[f"matrix path does not exist ({name}): {path}"])
+        try:
+            sample_evidence = gather_evidence(path)
+        except Exception as exc:  # noqa: BLE001 - an unreadable matrix is a finding
+            return _result(errors=[f"cannot read {name} at {path}: {type(exc).__name__}: {exc}"])
+        sample_class, sample_reasons = classify(sample_evidence)
+        per_sample[name] = {
+            "path": str(path),
+            "matrix_class": sample_class,
+            "reasons": sample_reasons,
+            "evidence": sample_evidence,
+        }
 
-    try:
-        evidence = gather_evidence(path)
-    except Exception as exc:  # noqa: BLE001 - an unreadable matrix is a finding
-        return _result(errors=[f"cannot read {path}: {type(exc).__name__}: {exc}"])
+    # Samples that disagree cannot be merged: one has been through a cell caller
+    # and the other has not, so combining them would mix cells with empty
+    # droplets and nothing downstream could separate them again.
+    classes = {v["matrix_class"] for v in per_sample.values()}
+    if len(classes) > 1:
+        return _result(
+            errors=[
+                "the samples are not all the same kind of matrix ("
+                + ", ".join(f"{n}={v['matrix_class']}" for n, v in sorted(per_sample.items()))
+                + "). Merging cells with empty droplets is not recoverable downstream"
+            ],
+            per_sample=per_sample,
+        )
 
-    matrix_class, reasons = classify(evidence)
+    first = next(iter(sorted(per_sample)))
+    matrix_class = per_sample[first]["matrix_class"]
+    reasons = per_sample[first]["reasons"]
+    evidence = per_sample[first]["evidence"]
+    path = Path(per_sample[first]["path"])
+    if len(per_sample) > 1:
+        evidence = {"n_samples": len(per_sample), "per_sample": {
+            n: {k: v["evidence"].get(k) for k in ("n_barcodes", "n_empty_barcodes")}
+            for n, v in sorted(per_sample.items())
+        }}
 
     # Two different situations, and conflating them is what made this step read
     # as guesswork:
@@ -332,6 +372,8 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
         evidence=evidence,
         reasons=reasons,
         matrix_path=str(path),
+        matrix_paths={n: v["path"] for n, v in sorted(per_sample.items())},
+        per_sample=per_sample,
         warnings=warnings,
         next_tool={
             "raw": "load_raw_counts",
@@ -346,6 +388,8 @@ def _result(
     evidence: dict[str, Any] | None = None,
     reasons: list[str] | None = None,
     matrix_path: str | None = None,
+    matrix_paths: dict[str, str] | None = None,
+    per_sample: dict[str, Any] | None = None,
     warnings: list[str] | None = None,
     errors: list[str] | None = None,
     next_tool: str | None = None,
@@ -359,6 +403,8 @@ def _result(
         "evidence": evidence,
         "reasons": reasons or [],
         "matrix_path": matrix_path,
+        "matrix_paths": matrix_paths or ({"sample1": matrix_path} if matrix_path else {}),
+        "per_sample": per_sample or {},
         # None, not False, when undecided: "we do not know" must never read as
         # "cell calling is already done".
         "needs_cell_calling": {"raw": True, "filtered": False}.get(matrix_class),

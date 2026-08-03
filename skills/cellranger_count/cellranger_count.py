@@ -410,32 +410,6 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
         json.dumps({r["library_id"]: r["outs"] for r in records}, indent=2), encoding="utf-8"
     )
 
-    # Every library counted, and every matrix is on disk — but the mainline from
-    # count_matrix_classify onward carries exactly one. Passing the first one
-    # downstream would produce a report named for the project that describes a
-    # fraction of it, with the audit log agreeing. Nothing downstream could
-    # notice, so this stops here instead.
-    if len(records) > 1:
-        manifest_path = work / "count_manifest.json"
-        manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        manifest_path.write_text(
-            json.dumps({r["library_id"]: r["outs"] for r in records}, indent=2),
-            encoding="utf-8",
-        )
-        return _result(
-            libraries=records,
-            count_manifest=str(manifest_path),
-            warnings=warnings,
-            errors=[
-                f"{len(records)} libraries were counted "
-                f"({', '.join(r['library_id'] for r in records)}) but the analysis "
-                f"mainline handles one matrix. All counts are complete and listed in "
-                f"{manifest_path} — nothing was lost. Run the mainline on one library "
-                f"at a time, or merge them first; there is no merge step yet"
-            ],
-            metrics={"n_libraries": len(records)},
-        )
-
     n_reused = sum(1 for r in records if str(r.get("disposition", "")).startswith("reused"))
     if n_reused:
         warnings.append(
@@ -447,7 +421,6 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
     # Cell Ranger writes BOTH matrices, so which one goes downstream is a
     # decision, not a guess. Wanting to set the cell count means wanting the raw
     # barcode list; otherwise Cell Ranger's own call is the sensible default.
-    first = records[0]
     wants_own_cell_count = config.get("force_cells") is not None or config.get("min_umi") is not None
     chosen = "raw" if wants_own_cell_count else "filtered"
     if wants_own_cell_count:
@@ -456,11 +429,13 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
             "Cell Ranger's own call stays available for comparison"
         )
 
+    key = f"{chosen}_feature_bc_matrix"
     return _result(
         libraries=records,
         count_manifest=str(manifest),
-        raw_matrix=first["raw_feature_bc_matrix"],
-        filtered_matrix=first["filtered_feature_bc_matrix"],
+        # Every library, not just the first. Downstream classifies and loads each
+        # one, and `merge_samples` collapses them into a single labelled object.
+        matrix_paths={r["library_id"]: r[key] for r in records},
         chosen=chosen,
         warnings=warnings,
         next_tool="count_matrix_classify",
@@ -495,8 +470,7 @@ def _result(
     *,
     libraries: list[dict[str, Any]] | None = None,
     count_manifest: str | None = None,
-    raw_matrix: str | None = None,
-    filtered_matrix: str | None = None,
+    matrix_paths: dict[str, str] | None = None,
     chosen: str | None = None,
     warnings: list[str] | None = None,
     errors: list[str] | None = None,
@@ -506,16 +480,16 @@ def _result(
     return {
         "libraries": libraries or [],
         "count_manifest": count_manifest,
-        "raw_feature_bc_matrix": raw_matrix,
-        "filtered_feature_bc_matrix": filtered_matrix,
-        # Cell Ranger produced BOTH, so downstream is told which one was chosen
-        # and why — not left to classify a file whose kind is already known.
-        # `count_matrix_classify` still verifies the choice against the contents.
-        "matrix_path": {"raw": raw_matrix, "filtered": filtered_matrix}.get(chosen),
+        # Cell Ranger produced BOTH kinds for every library, so downstream is
+        # told which kind was chosen and why — not left to classify files whose
+        # kind is already known. `count_matrix_classify` still verifies it.
+        "matrix_paths": matrix_paths or {},
+        "matrix_path": next(iter((matrix_paths or {}).values()), None),
         "matrix_kind_hint": chosen,
-        "available_matrices": (
-            {"raw": raw_matrix, "filtered": filtered_matrix} if raw_matrix else {}
-        ),
+        "available_matrices": {
+            "raw": [r["raw_feature_bc_matrix"] for r in (libraries or [])],
+            "filtered": [r["filtered_feature_bc_matrix"] for r in (libraries or [])],
+        } if libraries else {},
         "recommended_next_tool": next_tool,
         "metrics": metrics or {},
         "warnings": warnings or [],

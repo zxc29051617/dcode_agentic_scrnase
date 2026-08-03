@@ -1,16 +1,17 @@
-"""Load a pre-cell-calling matrix, and keep the evidence needed to call cells.
+"""Load pre-cell-calling matrices, and measure the curve cell calling needs.
 
 A raw matrix is every barcode the sequencer saw — for pbmc_1k_v3 that is 329,735
 of them, around 1,200 of which are cells. Which ones is not a question this step
-answers; it loads the counts and measures the barcode-rank curve so
+answers; it loads the counts and measures each sample's barcode-rank curve so
 `cell_calling_review` (and the person reading it) can decide.
 
-`cell_calling_resolved` is therefore always False here. A raw matrix by
-definition has not been through a cell caller, and reporting anything else would
-route 300,000 empty droplets straight into the mainline.
+`cell_calling_resolved` is therefore always False. A raw matrix by definition has
+not been through a cell caller, and reporting anything else would route 300,000
+empty droplets straight into the mainline.
 
-AnnData travels as a path: this writes `<run_dir>/load_raw_counts/adata.h5ad`.
-See `src/matrix_io.py`.
+One sample or twenty: `{sample: path}` in, `{sample: adata path}` out, and a
+barcode-rank curve per sample — they differ, so one cutoff for all of them is a
+choice someone has to make deliberately.
 
 Run standalone:
     python skills/load_raw_counts/load_raw_counts.py <matrix> --run-dir <out>
@@ -31,19 +32,10 @@ if str(_PROJECT_ROOT) not in sys.path:
 from src import matrix_io  # noqa: E402
 
 TOOL_NAME = "load_raw_counts"
-
-#: A real barcode-rank cliff drops counts by orders of magnitude — the pbmc_1k_v3
-#: reference set falls 370x. Below this the curve slopes rather than breaks, and
-#: no cutoff on it is obviously right.
-MIN_CLEAR_CLIFF_RATIO = 10
-INPUT_FIELDS = (
-    "artifacts.count_matrix_classify",
-    "input_bundle",
-    "run_dir",
-)
+INPUT_FIELDS = ("artifacts.count_matrix_classify", "input_bundle", "run_dir")
 OUTPUT_FIELDS = (
-    "adata_path",
-    "source_state",
+    "adata_paths",
+    "per_sample",
     "barcode_rank",
     "cell_calling_resolved",
     "warnings",
@@ -51,79 +43,90 @@ OUTPUT_FIELDS = (
     "recommended_next_tool",
 )
 
-
-def _resolve_matrix(payload: dict[str, Any]) -> str | None:
-    """The matrix `count_matrix_classify` settled on, or a standalone path."""
-    artifacts = payload.get("artifacts") or {}
-    for step in ("count_matrix_classify", "ingest_validate"):
-        path = (artifacts.get(step) or {}).get("matrix_path")
-        if path:
-            return str(path)
-    bundle = payload.get("input_bundle") or {}
-    if isinstance(bundle, (str, Path)):
-        return str(bundle)
-    raw = bundle.get("paths") or bundle.get("path") or []
-    paths = [str(raw)] if isinstance(raw, (str, Path)) else [str(p) for p in raw]
-    return paths[0] if paths else None
+#: A real barcode-rank cliff drops counts by orders of magnitude — pbmc_1k_v3
+#: falls 370x. Below this the curve slopes rather than breaks, and no cutoff on
+#: it is obviously right.
+MIN_CLEAR_CLIFF_RATIO = 10
 
 
 def run(payload: dict[str, Any]) -> dict[str, Any]:
+    # The mapping resolver is shared with the filtered loader; they answer the
+    # same question about where the matrices are.
+    from importlib import import_module
+
+    sys.path.insert(0, str(_PROJECT_ROOT / "skills" / "load_filtered_counts"))
+    resolve_matrices = import_module("load_filtered_counts").resolve_matrices
+
     warnings: list[str] = []
-    source = _resolve_matrix(payload)
-    if not source:
+    incoming = resolve_matrices(payload)
+    if not incoming:
         return _result(errors=["no matrix path; count_matrix_classify must run first"])
-    if not Path(source).expanduser().exists():
-        return _result(errors=[f"matrix path does not exist: {source}"])
-
-    try:
-        adata, provenance = matrix_io.load_matrix(source)
-    except Exception as exc:  # noqa: BLE001 - an unreadable matrix is a finding
-        return _result(errors=[f"cannot load {source}: {type(exc).__name__}: {exc}"])
-
-    if adata.n_obs == 0:
-        return _result(errors=[f"{source} contains no barcodes"])
-
-    totals = matrix_io.total_counts(adata)
-    evidence = matrix_io.barcode_rank_evidence(totals)
-
-    if evidence.get("n_nonzero", 0) == evidence.get("n_barcodes"):
-        warnings.append(
-            "no barcode has zero counts, which is unusual for a raw matrix — "
-            "check that this is really pre-cell-calling data"
-        )
-    cliff = evidence.get("cliff_rank")
-    ratio = evidence.get("cliff_drop_ratio")
-    if cliff and ratio is not None and ratio < MIN_CLEAR_CLIFF_RATIO:
-        warnings.append(
-            f"counts fall only {ratio}x across the cliff at rank {cliff:,}, so cells and "
-            f"ambient droplets are not cleanly separated; where cells end is a "
-            f"judgement call rather than something this curve settles"
-        )
 
     out_dir = Path(payload.get("run_dir") or ".") / TOOL_NAME
-    adata_path = matrix_io.write_h5ad(adata, out_dir / "adata.h5ad")
+    adata_paths: dict[str, str] = {}
+    per_sample: dict[str, Any] = {}
 
+    for name, source in sorted(incoming.items()):
+        if not Path(source).expanduser().exists():
+            return _result(errors=[f"matrix path does not exist ({name}): {source}"])
+        try:
+            adata, provenance = matrix_io.load_matrix(source)
+        except Exception as exc:  # noqa: BLE001 - an unreadable matrix is a finding
+            return _result(
+                errors=[f"cannot load {name} from {source}: {type(exc).__name__}: {exc}"]
+            )
+        if adata.n_obs == 0:
+            return _result(errors=[f"{name} ({source}) contains no barcodes"])
+
+        evidence = matrix_io.barcode_rank_evidence(matrix_io.total_counts(adata))
+
+        if evidence.get("n_nonzero", 0) == evidence.get("n_barcodes"):
+            warnings.append(
+                f"{name}: no barcode has zero counts, which is unusual for a raw "
+                "matrix — check that this is really pre-cell-calling data"
+            )
+        ratio = evidence.get("cliff_drop_ratio")
+        cliff = evidence.get("cliff_rank")
+        if cliff and ratio is not None and ratio < MIN_CLEAR_CLIFF_RATIO:
+            warnings.append(
+                f"{name}: counts fall only {ratio}x across the cliff at rank "
+                f"{cliff:,}, so cells and ambient droplets are not cleanly "
+                "separated; where cells end is a judgement call rather than "
+                "something this curve settles"
+            )
+
+        adata_paths[name] = matrix_io.write_h5ad(adata, out_dir / f"{name}.h5ad")
+        per_sample[name] = {
+            "n_barcodes": int(adata.n_obs),
+            "n_genes": int(adata.n_vars),
+            "barcode_rank": evidence,
+            "source_state": {**provenance, "cell_calling": "not applied"},
+            "source": source,
+        }
+
+    first = next(iter(sorted(adata_paths)))
     return _result(
-        adata_path=adata_path,
-        source_state={**provenance, "cell_calling": "not applied"},
-        barcode_rank=evidence,
+        adata_paths=adata_paths,
+        adata_path=adata_paths[first],
+        per_sample=per_sample,
+        barcode_rank=per_sample[first]["barcode_rank"],
         warnings=warnings,
         next_tool="cell_calling_review",
         metrics={
-            "n_barcodes": int(adata.n_obs),
-            "n_genes": int(adata.n_vars),
-            "n_nonzero_barcodes": evidence.get("n_nonzero"),
-            "cliff_rank": cliff,
-            "cliff_umi": evidence.get("cliff_umi"),
-            "cliff_drop_ratio": ratio,
+            "n_samples": len(per_sample),
+            "barcodes_per_sample": {n: v["n_barcodes"] for n, v in per_sample.items()},
+            "cliff_per_sample": {
+                n: v["barcode_rank"].get("cliff_rank") for n, v in per_sample.items()
+            },
         },
     )
 
 
 def _result(
     *,
+    adata_paths: dict[str, str] | None = None,
     adata_path: str | None = None,
-    source_state: dict[str, Any] | None = None,
+    per_sample: dict[str, Any] | None = None,
     barcode_rank: dict[str, Any] | None = None,
     warnings: list[str] | None = None,
     errors: list[str] | None = None,
@@ -131,8 +134,9 @@ def _result(
     metrics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
+        "adata_paths": adata_paths or {},
         "adata_path": adata_path,
-        "source_state": source_state or {},
+        "per_sample": per_sample or {},
         "barcode_rank": barcode_rank or {},
         # Always False: a raw matrix has not been through a cell caller, and
         # claiming otherwise would send every empty droplet into the mainline.

@@ -35,11 +35,13 @@ flowchart TD
     R2 -->|yes| STD
 
     R3 --> J3[Judge cell calling]
-    J3 -->|count chosen| STD
+    J3 -->|count chosen| MRG
     J3 -->|not chosen| H1[Human review]
 
     P0 --> P1[load_filtered_counts]
-    P1 --> STD[post_load_validate<br/>one AnnData, counts layer, gene ID]
+    P1 --> MRG[merge_samples<br/>concatenate, label by sample]
+    R3 --> MRG
+    MRG --> STD[post_load_validate<br/>one AnnData, counts layer, gene ID]
     STD --> D0
 
     %% Main Scanpy line
@@ -128,6 +130,10 @@ flowchart TD
 - **Cell Ranger 同時產生 raw 和 filtered**，所以 `cellranger_count` 是**選擇**
   用哪一份往下走（要自訂細胞數就走 raw），不是讓下游去猜。使用者直接給矩陣時
   才是真的要分類。`count_matrix_classify` 兩種情況都會驗證檔案內容符合宣稱。
+- **`merge_samples` 是「逐樣本」變成「一個物件」的分界。**
+  count / classify / load / cell calling 都是每個樣本各跑一次；合併之後
+  QC、正規化、分群、integration 共用同一條線。`run_integration` 要校正的
+  批次效應就是這一步製造的，`sample` 欄位就是它的 batch key。
 - **`post_load_validate` 是匯流點。** 三個 step 都可能產出矩陣，
   所以由一個節點保證下游拿到的形狀一致，並在這裡把 genome 跟宣告的物種對照
   —— 這是矩陣路線原本沒地方做的檢查。

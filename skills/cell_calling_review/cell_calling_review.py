@@ -21,6 +21,17 @@ EmptyDrops. On pbmc_1k_v3 the two agree on 1,206 of 1,218 barcodes — the other
 12 are exactly where the ambient-profile test overruled the ranking, and this
 step says so rather than presenting a bare number.
 
+## More than one sample
+Each library has its own barcode-rank curve, so each needs its own cutoff. The
+fan-out happens inside this step rather than in the graph:
+
+  `force_cells: 1500`                    the same count for every sample
+  `force_cells: {A: 1500, B: 2400}`      per sample, which is usually what the
+                                         curves actually call for
+
+A number that is right for one library is rarely right for another, so the
+per-sample form is the one the evidence tends to point at.
+
 Run standalone:
     python skills/cell_calling_review/cell_calling_review.py <raw.h5ad> \\
         --run-dir <out> [--force-cells N | --min-umi X]
@@ -149,11 +160,16 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
     warnings: list[str] = []
 
     loaded = artifacts.get("load_raw_counts") or {}
-    adata_path = loaded.get("adata_path") or config.get("adata_path")
-    if not adata_path:
+    incoming = loaded.get("adata_paths") or {}
+    if not incoming:
+        single = loaded.get("adata_path") or config.get("adata_path")
+        if single:
+            incoming = {"sample1": single}
+    if not incoming:
         return _result(errors=["no raw AnnData; load_raw_counts must run first"])
-    if not Path(adata_path).expanduser().exists():
-        return _result(errors=[f"raw AnnData does not exist: {adata_path}"])
+    missing = [f"{n}: {p}" for n, p in incoming.items() if not Path(p).expanduser().exists()]
+    if missing:
+        return _result(errors=[f"raw AnnData does not exist: {'; '.join(missing)}"])
 
     force_cells = config.get("force_cells")
     min_umi = config.get("min_umi")
@@ -164,100 +180,132 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
             ]
         )
 
-    try:
-        adata, _ = matrix_io.load_matrix(adata_path)
-    except Exception as exc:  # noqa: BLE001
-        return _result(errors=[f"cannot load {adata_path}: {type(exc).__name__}: {exc}"])
-
-    totals = matrix_io.total_counts(adata)
-    evidence = matrix_io.barcode_rank_evidence(totals)
-    evidence["preview"] = _preview(totals, evidence)
+    def _for(setting: Any, name: str) -> Any:
+        """A single value applies to every sample; a mapping is read per sample."""
+        if isinstance(setting, dict):
+            return setting.get(name)
+        return setting
 
     called = _cellranger_called_barcodes(artifacts)
-    if called is not None:
-        evidence["cellranger_cells"] = len(called)
+    out_dir = Path(payload.get("run_dir") or ".") / TOOL_NAME
 
-    # ---- nothing chosen: measure, report, and stop ------------------------
-    if force_cells is None and min_umi is None:
-        cliff = evidence.get("cliff_rank")
-        suggestion = (
-            f"the cliff is at rank {cliff:,} ({evidence.get('cliff_umi', 0):,} UMI)"
-            if cliff
-            else "the curve has no clear cliff"
-        )
+    per_sample: dict[str, Any] = {}
+    adata_paths: dict[str, str] = {}
+    undecided: list[str] = []
+
+    for name, path in sorted(incoming.items()):
+        try:
+            adata, _ = matrix_io.load_matrix(path)
+        except Exception as exc:  # noqa: BLE001
+            return _result(errors=[f"cannot load {name} from {path}: {type(exc).__name__}: {exc}"])
+
+        totals = matrix_io.total_counts(adata)
+        evidence = matrix_io.barcode_rank_evidence(totals)
+        evidence["preview"] = _preview(totals, evidence)
         if called is not None:
-            suggestion += f"; Cell Ranger called {len(called):,} cells"
+            evidence["cellranger_cells"] = len(called)
+
+        want_cells = _for(force_cells, name)
+        want_umi = _for(min_umi, name)
+
+        if want_cells is None and want_umi is None:
+            undecided.append(name)
+            per_sample[name] = {"cell_calling_state": "needs_review", "evidence": evidence}
+            continue
+
+        try:
+            mask, selection = matrix_io.select_barcodes(
+                totals, force_cells=want_cells, min_umi=want_umi
+            )
+        except ValueError as exc:
+            return _result(errors=[f"{name}: {exc}"], evidence=evidence)
+
+        n_selected = int(mask.sum())
+        if n_selected == 0:
+            return _result(
+                errors=[
+                    f"{name}: the chosen threshold keeps no barcodes at all "
+                    f"({json.dumps(selection)}); the highest barcode has "
+                    f"{evidence.get('max_umi', 0):,} UMI"
+                ],
+                evidence=evidence,
+            )
+        if want_cells is not None and n_selected < int(want_cells):
+            warnings.append(
+                f"{name}: asked for {int(want_cells):,} cells but only {n_selected:,} "
+                "barcodes have any counts at all"
+            )
+
+        subset = adata[mask].copy()
+        comparison = _compare_with_cellranger(
+            set(subset.obs_names),
+            called,
+            {n: int(v) for n, v in zip(adata.obs_names, totals)},
+        )
+        if comparison:
+            evidence["vs_cellranger"] = comparison
+            if comparison["dropped_by_this_selection"] or comparison["added_by_this_selection"]:
+                warnings.append(
+                    f"{name}: this selection differs from Cell Ranger's — "
+                    f"{comparison['added_by_this_selection']:,} barcodes added, "
+                    f"{comparison['dropped_by_this_selection']:,} dropped. Choosing a "
+                    f"count bypasses the EmptyDrops test, which is what rescues "
+                    f"low-UMI barcodes whose expression differs from ambient RNA"
+                )
+
+        adata_paths[name] = matrix_io.write_h5ad(subset, out_dir / f"{name}.h5ad")
+        per_sample[name] = {
+            "cell_calling_state": "resolved",
+            "n_cells": n_selected,
+            "selection": {**selection, "chosen_by": "operator"},
+            "evidence": evidence,
+        }
+
+    # Nothing goes downstream until every sample has a cutoff: a partial merge
+    # would quietly analyse some libraries and drop the rest.
+    if undecided:
+        lines = []
+        for name in undecided:
+            ev = per_sample[name]["evidence"]
+            cliff = ev.get("cliff_rank")
+            knee = ev.get("knee_rank")
+            lines.append(
+                f"{name}: knee at {knee:,}, inflection at {cliff:,}"
+                if cliff and knee else f"{name}: no clear cliff"
+            )
         warnings.append(
-            f"no cell count chosen, so cell calling is unresolved. {suggestion}. "
-            f"Set force_cells (keep the top N barcodes) or min_umi (keep barcodes "
-            f"at or above a UMI count) and re-run"
+            "no cell count chosen for "
+            + ", ".join(undecided)
+            + f". {'; '.join(lines)}. Set force_cells (top N barcodes) or min_umi "
+            f"— a single value for every sample, or a mapping per sample — and re-run"
         )
         return _result(
             cell_calling_state="needs_review",
-            evidence=evidence,
+            per_sample=per_sample,
+            evidence=per_sample[undecided[0]]["evidence"],
             warnings=warnings,
             next_tool="human_review",
-            metrics=_metrics(evidence, None),
+            metrics={"n_samples": len(per_sample), "undecided": undecided},
         )
 
-    # ---- a choice was made: apply it --------------------------------------
-    try:
-        mask, selection = matrix_io.select_barcodes(
-            totals, force_cells=force_cells, min_umi=min_umi
-        )
-    except ValueError as exc:
-        return _result(errors=[str(exc)], evidence=evidence)
+    first = next(iter(sorted(per_sample)))
+    evidence = per_sample[first]["evidence"]
 
-    n_selected = int(mask.sum())
-    if n_selected == 0:
-        return _result(
-            errors=[
-                f"the chosen threshold keeps no barcodes at all "
-                f"({json.dumps(selection)}); the highest barcode has "
-                f"{evidence.get('max_umi', 0):,} UMI"
-            ],
-            evidence=evidence,
-        )
-    if force_cells is not None and n_selected < int(force_cells):
-        warnings.append(
-            f"asked for {int(force_cells):,} cells but only {n_selected:,} barcodes "
-            "have any counts at all"
-        )
-
-    subset = adata[mask].copy()
-    barcode_names = list(subset.obs_names)
-    comparison = _compare_with_cellranger(
-        set(barcode_names),
-        called,
-        {name: int(value) for name, value in zip(adata.obs_names, totals)},
-    )
-    if comparison:
-        evidence["vs_cellranger"] = comparison
-        if comparison["dropped_by_this_selection"] or comparison["added_by_this_selection"]:
-            warnings.append(
-                f"this selection differs from Cell Ranger's: "
-                f"{comparison['added_by_this_selection']:,} barcodes added, "
-                f"{comparison['dropped_by_this_selection']:,} dropped. Choosing a count "
-                f"bypasses the EmptyDrops test, which is what rescues low-UMI barcodes "
-                f"whose expression differs from ambient RNA"
-            )
-
-    out_dir = Path(payload.get("run_dir") or ".") / TOOL_NAME
-    subset_path = matrix_io.write_h5ad(subset, out_dir / "adata.h5ad")
-
-    subset_totals = totals[mask]
+    total_cells = sum(v["n_cells"] for v in per_sample.values())
     return _result(
         cell_calling_state="resolved",
-        adata_path=subset_path,
-        n_cells=n_selected,
-        selection={**selection, "chosen_by": "operator"},
+        adata_paths=adata_paths,
+        adata_path=adata_paths[first],
+        n_cells=total_cells,
+        selection=per_sample[first]["selection"],
+        per_sample=per_sample,
         evidence=evidence,
         warnings=warnings,
-        next_tool="run_qc_metrics",
+        next_tool="merge_samples",
         metrics={
-            **_metrics(evidence, n_selected),
-            "umi_threshold": selection.get("umi_threshold"),
-            "median_umi_per_cell": int(np.median(subset_totals)),
+            **_metrics(evidence, total_cells),
+            "n_samples": len(per_sample),
+            "cells_per_sample": {n: v["n_cells"] for n, v in per_sample.items()},
         },
     )
 
@@ -276,7 +324,9 @@ def _metrics(evidence: dict[str, Any], n_cells: int | None) -> dict[str, Any]:
 def _result(
     *,
     cell_calling_state: str = "needs_review",
+    adata_paths: dict[str, str] | None = None,
     adata_path: str | None = None,
+    per_sample: dict[str, Any] | None = None,
     n_cells: int | None = None,
     selection: dict[str, Any] | None = None,
     evidence: dict[str, Any] | None = None,
@@ -287,7 +337,9 @@ def _result(
 ) -> dict[str, Any]:
     return {
         "cell_calling_state": cell_calling_state,
+        "adata_paths": adata_paths or {},
         "adata_path": adata_path,
+        "per_sample": per_sample or {},
         "n_cells": n_cells,
         "selection": selection or {},
         "evidence": evidence or {},

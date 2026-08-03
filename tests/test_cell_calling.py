@@ -125,6 +125,7 @@ def test_load_raw_never_claims_cell_calling_is_resolved():
         assert result["recommended_next_tool"] == "cell_calling_review"
         assert Path(result["adata_path"]).is_file()
         assert result["barcode_rank"]["n_barcodes"] == 5_300
+        assert list(result["adata_paths"]) == ["sample1"], "one sample, still a mapping"
 
 
 def test_load_filtered_flags_an_empty_droplet_rather_than_repairing_it():
@@ -246,7 +247,7 @@ def test_real_raw_cliff_lands_near_cell_rangers_own_call():
     with tempfile.TemporaryDirectory() as tmp:
         loaded = _real_raw(Path(tmp))
         assert loaded["errors"] == []
-        cliff = loaded["metrics"]["cliff_rank"]
+        cliff = loaded["barcode_rank"]["cliff_rank"]
         # Cell Ranger called 1,218 cells on this dataset.
         assert 1_000 <= cliff <= 1_500, f"cliff at {cliff} is nowhere near 1,218"
 
