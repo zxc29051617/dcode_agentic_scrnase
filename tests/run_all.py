@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests import (  # noqa: E402
     test_cellranger_count,
+    test_count_matrix_classify,
     test_fastq_preflight,
     test_fastq_qc,
     test_graph_smoke,
@@ -25,6 +26,7 @@ MODULES = (
     test_fastq_preflight,
     test_fastq_qc,
     test_cellranger_count,
+    test_count_matrix_classify,
     test_graph_smoke,
 )
 

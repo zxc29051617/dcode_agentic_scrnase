@@ -30,12 +30,12 @@
 
 ## 目前狀態
 
-Orchestrator 可以跑。Skill **22 個裡實作了 5 個**，FASTQ 上游整段已經是真的：
+Orchestrator 可以跑。Skill **22 個裡實作了 6 個**，FASTQ 上游整段已經是真的：
 
 | | |
 |---|---|
-| ✅ 已實作 | `ingest_validate`、`resolve_reference`、`fastq_preflight`、`fastq_qc`、`cellranger_count` |
-| ⬜ scaffold | 其餘 17 個，`run()` 直接 raise `NotImplementedError` |
+| ✅ 已實作 | `ingest_validate`、`resolve_reference`、`fastq_preflight`、`fastq_qc`、`cellranger_count`、`count_matrix_classify` |
+| ⬜ scaffold | 其餘 16 個，`run()` 直接 raise `NotImplementedError` |
 
 FASTQ 路線：偵測輸入 → 選 reference 並驗證物種 → 結構檢查 → **FastQC/MultiQC 品質評估** → count
 
@@ -80,8 +80,8 @@ python tests/run_all.py
 `--species` 決定用哪份 reference 和 QC 常數（`--reference` 可以明確覆寫）；
 物種和 reference 對不上會在第二步就停下來，不會等 count 跑完才發現。
 
-`--matrix-kind`、`--cell-calling-resolved` 只是 `count_matrix_classify` 和
-`load_raw_counts` 還是 scaffold 期間的 fallback，那兩個實作掉之後就可以拿掉。
+`--matrix-kind` 已經不需要了——`count_matrix_classify` 會從矩陣本身判斷 raw/filtered。
+`--cell-calling-resolved` 還是 `load_raw_counts` 的 scaffold fallback。
 
 Judge 預設用 `StubJudge`（不需要模型，只看 status/warnings/errors）。
 要接本地模型：

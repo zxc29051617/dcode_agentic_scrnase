@@ -463,11 +463,12 @@ def _result(
         "count_manifest": count_manifest,
         "raw_feature_bc_matrix": raw_matrix,
         "filtered_feature_bc_matrix": filtered_matrix,
-        # `count_matrix_classify` routes on these. Cell Ranger emits both raw and
-        # filtered; filtered is the standard downstream choice, and the raw one
-        # stays available for cell_calling_review.
+        # A hint, not the decision: `count_matrix_classify` confirms it against
+        # the matrix itself. Cell Ranger emits both raw and filtered; filtered is
+        # the standard downstream choice and raw stays available for
+        # cell_calling_review.
         "matrix_path": filtered_matrix,
-        "matrix_kind": "filtered" if filtered_matrix else None,
+        "matrix_kind_hint": "filtered" if filtered_matrix else None,
         "recommended_next_tool": next_tool,
         "metrics": metrics or {},
         "warnings": warnings or [],

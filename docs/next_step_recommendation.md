@@ -14,9 +14,10 @@ Orchestrator 層是**真的**，分析層是**假的**：
 - 每個 step 後面都有 judge node，verdict 符合 `schemas/judge_result.schema.json`
 - human gate 預設不放行 warn/fail，headless 執行預設 `stop`
 - provenance 每步寫 JSONL audit log
-- **22 個 registry step 裡實作了 5 個**（`ingest_validate`、`resolve_reference`、
-  `fastq_preflight`、`fastq_qc`、`cellranger_count`），其餘 17 個還是 `NotImplementedError`
-- FASTQ 上游整段（偵測 → 選 reference → 結構檢查 → 品質評估 → count）已經是真的
+- **22 個 registry step 裡實作了 6 個**（`ingest_validate`、`resolve_reference`、
+  `fastq_preflight`、`fastq_qc`、`cellranger_count`、`count_matrix_classify`），
+  其餘 16 個還是 `NotImplementedError`
+- FASTQ 上游整段 + raw/filtered 分流已經是真的，兩條路線在 `count_matrix_classify` 會合
 
 ## 一個待決定的落差
 
@@ -43,16 +44,16 @@ judge 邏輯集中在 `src/judge.py`：一份 contract、一份 prompt、每個 
    `resolve_reference` 負責解析 + 驗證物種對不對得上
 4. ~~`cellranger_count`~~ — 已完成。cellranger 路徑自動尋找，
    `_assert_same_reference` 已移植：拒絕沿用「用別份 reference 算出來的」既有 matrix
-5. `count_matrix_classify` — raw / filtered 的分流靠它；`ingest_validate` 已經給了
-   `matrix_kind_hint` 和 `matrix_path`，這一步負責把 hint 變成決定
+5. ~~`count_matrix_classify`~~ — 已完成。從矩陣本身（空 barcode 數）判斷而不是看檔名，
+   hint 對不上就停。對真實 pbmc 的 raw/filtered 兩個矩陣都驗證過
 6. `load_filtered_counts` — 最短的一條可跑通的真實路徑
 7. `run_qc_metrics` — 第一個有真正 metrics 可以給 judge 評的 step
 
 做到第 7 個，就有一條 `FASTQ -> count -> QC -> 真 judge` 的端到端真實路徑，
 那時候才值得把 judge 從 stub 換成本地模型。
 
-實作完 5 和 6 之後，`src/run.py` 的 `--matrix-kind` 和 `--cell-calling-resolved`
-兩個 scaffold fallback 就可以拿掉，`graph.py` 裡對應的 config fallback 也是。
+實作完 6 之後，`src/run.py` 的 `--cell-calling-resolved` fallback 就可以拿掉。
+`--matrix-kind` 已經不需要了。
 
 ## 實作一個 skill 的契約
 

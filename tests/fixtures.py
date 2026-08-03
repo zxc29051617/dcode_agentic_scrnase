@@ -12,12 +12,47 @@ from pathlib import Path
 TENX_FILES = ("matrix.mtx.gz", "barcodes.tsv.gz", "features.tsv.gz")
 
 
-def make_mtx_dir(root: Path, name: str = "filtered_feature_bc_matrix") -> Path:
-    """A 10x MTX triplet. `name` carries the raw/filtered signal."""
+def make_mtx_dir(
+    root: Path,
+    name: str = "filtered_feature_bc_matrix",
+    *,
+    n_barcodes: int | None = None,
+    nnz: int | None = None,
+    n_features: int = 100,
+) -> Path:
+    """A 10x MTX triplet with real headers, so it can actually be classified.
+
+    Defaults are chosen from `name` to match what the name claims:
+      `*raw*`      -> a barcode list far too long to be called cells
+      `*filtered*` -> a plausible cell count with entries for every barcode
+      anything else -> the middle range, where the count alone cannot decide
+
+    `count_matrix_classify` reads the barcode file and the MatrixMarket header,
+    so empty placeholder files would make it fail rather than classify.
+    """
+    import gzip
+
+    lowered = name.lower()
+    if n_barcodes is None:
+        if "raw" in lowered:
+            n_barcodes = 200_000
+        elif "filtered" in lowered:
+            n_barcodes = 1_000
+        else:
+            n_barcodes = 75_000
+    if nnz is None:
+        # Fewer entries than barcodes is the pigeonhole proof of empty droplets.
+        nnz = n_barcodes // 2 if "raw" in lowered else n_barcodes * 5
+
     directory = Path(root) / name
     directory.mkdir(parents=True, exist_ok=True)
-    for file in TENX_FILES:
-        (directory / file).touch()
+    with gzip.open(directory / "barcodes.tsv.gz", "wt") as handle:
+        handle.writelines(f"BC{i:08d}-1\n" for i in range(n_barcodes))
+    with gzip.open(directory / "features.tsv.gz", "wt") as handle:
+        handle.writelines(f"GENE{i}\tSYM{i}\tGene Expression\n" for i in range(n_features))
+    with gzip.open(directory / "matrix.mtx.gz", "wt") as handle:
+        handle.write("%%MatrixMarket matrix coordinate integer general\n%\n")
+        handle.write(f"{n_features} {n_barcodes} {nnz}\n")
     return directory
 
 
@@ -181,9 +216,14 @@ def make_h5ad(root: Path, *, n_obs: int = 500, name: str = "data.h5ad") -> Path:
 
 
 def bundle_for(config: dict, root: Path) -> Path:
-    """Build the bundle a graph test's config implies."""
+    """Build the bundle a graph test's config implies.
+
+    The FASTQ bundle carries real reads because `fastq_qc` runs actual FastQC on
+    it. Cell Ranger is still beyond what a fixture can satisfy, so the FASTQ
+    route's graph tests assert routing rather than a completed count.
+    """
     if config.get("input_type") == "fastq":
-        return make_fastq_dir(root)
+        return make_10x_fastq_trio(root, n_reads=200)
     kind = config.get("matrix_kind", "filtered")
     if kind == "raw":
         return make_mtx_dir(root, "raw_feature_bc_matrix")

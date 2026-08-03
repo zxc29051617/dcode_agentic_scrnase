@@ -31,7 +31,7 @@ SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schemas" / "judge_result
 WALK = GatePolicy(headless_decision="accept")
 """Opt-in policy that accepts at gates so a full route can be walked."""
 
-IMPLEMENTED = ["ingest_validate", "resolve_reference"]
+IMPLEMENTED = ["ingest_validate", "resolve_reference", "count_matrix_classify"]
 """Skills with a real `run()` on the filtered-matrix route; everything else is a scaffold."""
 
 
@@ -72,19 +72,47 @@ def test_filtered_matrix_route_reaches_report():
         assert step in steps, f"mainline step {step} never ran"
 
 
-def test_fastq_route_runs_upstream_then_rejoins_mainline():
-    final = _run({"input_type": "fastq", "matrix_kind": "filtered"})
+def test_fastq_route_visits_the_upstream_steps_in_order():
+    """Routing only.
+
+    Three of these steps now shell out to real tools, and no fixture can satisfy
+    Cell Ranger — a completed FASTQ-to-report run needs real data and ~20
+    minutes, which is verified outside the suite (see cellranger_count/SKILL.md).
+    What is checked here is that the route visits the right nodes in the right
+    order: structural checks before the expensive quality pass, both before
+    counting, and the classifier after.
+    """
+    final = _run({"input_type": "fastq"})
     steps = _steps(final)
     assert steps[:5] == [
         "ingest_validate",
         "resolve_reference",
         "fastq_preflight",
-        # Structural checks before the expensive quality pass, and both before counting.
         "fastq_qc",
         "cellranger_count",
     ]
-    assert "count_matrix_classify" in steps
-    assert steps[-1] == "build_report"
+    assert steps[5] == "count_matrix_classify"
+
+
+def test_fastq_qc_really_runs_inside_the_graph():
+    """The fixture carries real reads, so FastQC has something to assess."""
+    final = _run({"input_type": "fastq"})
+    report = next(r for r in final["step_results"] if r["step"] == "fastq_qc")
+    assert report["status"] == "ok"
+    assert report["errors"] == []
+    qc = final["artifacts"]["fastq_qc"]
+    assert sorted(qc["per_read_role"]) == ["I1", "R1", "R2"]
+    assert qc["metrics"]["q30_r2"] is not None
+
+
+def test_a_failed_count_never_reaches_the_report():
+    """Cell Ranger cannot run on a fixture, and that must stop the pipeline."""
+    final = _run({"input_type": "fastq"}, policy=GatePolicy())
+    steps = _steps(final)
+    assert final["halted"] is True
+    assert "build_report" not in steps
+    assert "run_qc_metrics" not in steps
+    assert any("cellranger" in e for e in final["errors"])
 
 
 def test_raw_matrix_without_cell_calling_goes_to_review():
@@ -239,8 +267,9 @@ def test_ingest_detection_drives_routing_not_config():
     detected = final["artifacts"]["ingest_validate"]
     assert detected["input_type"] == "fastq"
     assert detected["needs_upstream_preprocessing"] is True
-    assert detected["sample_ids"] == ["SampleA"]
+    assert detected["sample_ids"] == ["S"], "parsed from the fixture's Illumina names"
     assert "fastq_preflight" in _steps(final)
+    assert "count_matrix_classify" in _steps(final), "config said matrix; detection won"
 
 
 def test_judge_results_match_the_published_schema():

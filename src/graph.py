@@ -52,7 +52,7 @@ def branch_after_reference(state: WorkflowState) -> str:
 
 def branch_matrix_kind(state: WorkflowState) -> str:
     out = step_output(state, "count_matrix_classify")
-    kind = out.get("matrix_kind") or (state.get("config") or {}).get("matrix_kind") or "filtered"
+    kind = out.get("matrix_class") or (state.get("config") or {}).get("matrix_kind") or "filtered"
     if kind == "raw":
         return "raw"
     if kind == "filtered":

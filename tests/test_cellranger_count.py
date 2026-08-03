@@ -237,7 +237,7 @@ def test_output_hands_the_filtered_matrix_to_the_classifier():
         fixtures.make_cellranger_outs_h5(work, "SampleA", genome="GRCh38")
         result = count.run(_payload(root, reference=reference, work=root / "run"))
 
-    assert result["matrix_kind"] == "filtered"
+    assert result["matrix_kind_hint"] == "filtered"
     assert result["matrix_path"] == result["filtered_feature_bc_matrix"]
     assert result["raw_feature_bc_matrix"].endswith("raw_feature_bc_matrix.h5")
     assert result["recommended_next_tool"] == "count_matrix_classify"
