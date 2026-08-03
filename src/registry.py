@@ -36,13 +36,13 @@ class StepSpec:
 REGISTRY: dict[str, StepSpec] = {
     spec.name: spec
     for spec in (
-        StepSpec("ingest_validate", "utility", "judge_ingest"),
-        # Species constants are a table lookup both routes need; the 32 GB
-        # transcriptome is only needed to turn reads into counts. Splitting them
-        # keeps a count-matrix run from passing through a reference step.
-        StepSpec("resolve_species", "utility", "judge_species", branches=True),
+        StepSpec("ingest_validate", "utility", "judge_ingest", branches=True),
         StepSpec("sample_qc_triage", "utility", "judge_sample_qc", branches=True),
+        # One entry check per route, each asking the species question with the
+        # evidence that route actually has: the FASTQ side reads the reference,
+        # the matrix side reads the matrix. Both emit the same QC constants.
         StepSpec("resolve_reference", "utility", "judge_reference"),
+        StepSpec("matrix_preflight", "utility", "judge_matrix_preflight"),
         StepSpec("fastq_preflight", "upstream", "judge_fastq_preflight"),
         # Structural checks first (milliseconds), sequencing quality second
         # (minutes): a bundle missing an R2 should never reach FastQC.
@@ -53,9 +53,9 @@ REGISTRY: dict[str, StepSpec] = {
         StepSpec("load_filtered_counts", "analysis", "judge_filtered_counts"),
         StepSpec("cell_calling_review", "analysis", "judge_cell_calling", branches=True),
         # Where the two routes meet. Three steps can produce the matrix, so one
-        # node promises the mainline a single shape instead of letting every consumer
-        # grow per-route special cases.
-        StepSpec("standardize_count_data", "analysis", "judge_standardize"),
+        # node promises the mainline a single shape instead of letting every
+        # consumer grow per-route special cases.
+        StepSpec("post_load_validate", "analysis", "judge_post_load"),
         StepSpec("run_qc_metrics", "analysis", "judge_qc"),
         StepSpec("apply_cell_qc_filter", "analysis", "judge_cell_qc_filter"),
         StepSpec("detect_doublets", "analysis", "judge_doublets"),

@@ -42,7 +42,7 @@ def branch_input_type(state: WorkflowState) -> str:
     return "fastq" if kind == "fastq" else "matrix"
 
 
-def branch_after_species(state: WorkflowState) -> str:
+def branch_after_ingest(state: WorkflowState) -> str:
     """Optional sample-level triage runs before the input-type split."""
     ran = any(r["step"] == "sample_qc_triage" for r in state.get("step_results") or [])
     if (state.get("config") or {}).get("sample_qc_triage") and not ran:
@@ -132,23 +132,22 @@ def build_graph(
         successors[step] = lambda state, b=branch, pm=path_map: pm.get(b(state), END)
 
     # ---- intake and routing ------------------------------------------------
-    # `resolve_species` is a table lookup both routes need, so it sits before the
-    # split. `resolve_reference` resolves a 32 GB transcriptome, which only the
-    # FASTQ route uses, so it sits after it.
-    linear("ingest_validate", "resolve_species")
+    # Each route gets its own entry check rather than sharing one: the FASTQ side
+    # must resolve a 32 GB transcriptome, the matrix side must read the matrix.
+    # Both answer "what species is this?" — with different evidence.
     branching(
-        "resolve_species",
-        branch_after_species,
+        "ingest_validate",
+        branch_after_ingest,
         {
             "sample_qc": "sample_qc_triage",
             "fastq": "resolve_reference",
-            "matrix": "count_matrix_classify",
+            "matrix": "matrix_preflight",
         },
     )
     branching(
         "sample_qc_triage",
         branch_input_type,
-        {"fastq": "resolve_reference", "matrix": "count_matrix_classify"},
+        {"fastq": "resolve_reference", "matrix": "matrix_preflight"},
     )
 
     # ---- FASTQ upstream route ----------------------------------------------
@@ -156,6 +155,9 @@ def build_graph(
     linear("fastq_preflight", "fastq_qc")
     linear("fastq_qc", "cellranger_count")
     linear("cellranger_count", "count_matrix_classify")
+
+    # ---- matrix entry route -------------------------------------------------
+    linear("matrix_preflight", "count_matrix_classify")
 
     # ---- count matrix split -------------------------------------------------
     branching(
@@ -166,19 +168,19 @@ def build_graph(
     branching(
         "load_raw_counts",
         branch_cell_calling,
-        {"review": "cell_calling_review", "mainline": "standardize_count_data"},
+        {"review": "cell_calling_review", "mainline": "post_load_validate"},
     )
     branching(
         "cell_calling_review",
         branch_after_cell_calling,
-        {"standardize": "standardize_count_data"},
+        {"standardize": "post_load_validate"},
     )
-    linear("load_filtered_counts", "standardize_count_data")
+    linear("load_filtered_counts", "post_load_validate")
 
     # ---- the merge point ----------------------------------------------------
     # Everything downstream is promised one shape of AnnData, whichever of the
     # three producers above supplied it.
-    linear("standardize_count_data", MAINLINE[0])
+    linear("post_load_validate", MAINLINE[0])
 
     # ---- Scanpy mainline ----------------------------------------------------
     for current, following in zip(MAINLINE, MAINLINE[1:] + (FINAL_GATE,)):

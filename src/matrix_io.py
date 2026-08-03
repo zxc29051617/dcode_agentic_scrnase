@@ -150,20 +150,36 @@ def barcode_rank_evidence(totals: Any, *, probes: tuple[int, ...] = RANK_PROBES)
     steepest = int(np.argmin(slope))
     cliff_rank = int(grid[steepest + 1])
 
+    # Knee and inflection are different points and give different cutoffs.
+    # The inflection is where the curve falls fastest (the slope minimum above).
+    # The knee is where it bends hardest: on a plateau-drop-plateau curve, the
+    # point furthest ABOVE the chord joining the two ends, which lands at the
+    # top of the drop. Below the chord would land in the ambient tail instead.
+    #
+    # The knee keeps fewer, more confident cells than the inflection, and the
+    # gap between them is the range a person is really choosing within.
+    chord = np.linspace(log_umi[0], log_umi[-1], log_umi.size)
+    knee_rank = int(grid[int(np.argmax(log_umi - chord))])
+
     # How far UMIs fall across the cliff, comparing an octave either side. The
     # raw log-log slope is not reported: it depends on where in the searched
     # range the cliff sits, so the same curve scores differently for reasons
     # that have nothing to do with the data. A ratio is comparable between runs
     # and says something a person can act on — "counts drop 400x here".
-    below = nonzero[max(cliff_rank // 2, 1) - 1]
-    above_rank = min(cliff_rank * 2, nonzero.size)
-    above = nonzero[above_rank - 1]
+    before_cliff = nonzero[max(cliff_rank // 2, 1) - 1]
+    after_cliff = nonzero[min(cliff_rank * 2, nonzero.size) - 1]
 
     evidence.update(
         {
+            "knee_rank": knee_rank,
+            "knee_umi": int(nonzero[knee_rank - 1]),
+            "inflection_rank": cliff_rank,
+            "inflection_umi": int(nonzero[cliff_rank - 1]),
+            # Kept under the old name too: `cliff` is what the rest of the code
+            # and the docs call the inflection.
             "cliff_rank": cliff_rank,
             "cliff_umi": int(nonzero[cliff_rank - 1]),
-            "cliff_drop_ratio": round(float(below / max(above, 1)), 1),
+            "cliff_drop_ratio": round(float(before_cliff / max(after_cliff, 1)), 1),
             "cliff_searched_to_rank": int(upper),
             "median_umi_top_1000": int(np.median(ordered[: min(1000, ordered.size)])),
         }

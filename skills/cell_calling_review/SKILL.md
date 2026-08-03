@@ -1,6 +1,6 @@
 ---
 name: cell_calling_review
-description: Report the barcode-rank evidence and let the operator choose how many cells to keep, instead of accepting Cell Ranger's number by default.
+description: Review which barcodes are real cells from the barcode-rank curve, the UMI distribution, and the knee/inflection points — with the operator, not instead of them.
 version: 0.2.0
 status: implemented
 ---
@@ -16,6 +16,20 @@ EmptyDrops test that rescues low-UMI barcodes whose expression profile differs
 from ambient RNA. That is a good default and a bad mandate. When the curve has no
 sharp cliff, or the tissue is one where the algorithm is known to be
 conservative, the number should be the operator's.
+
+## The evidence it reviews
+Three readings of the same curve, because they disagree and the disagreement is
+the useful part:
+
+| | what it is | on pbmc_1k_v3 |
+|---|---|---|
+| **knee** | where the curve bends hardest — furthest above the chord joining its ends | rank 901 @ 7,831 UMI |
+| **inflection** | where it falls fastest — the steepest log-log slope | rank 1,198 @ 929 UMI |
+| **UMI distribution** | counts at sampled ranks, and the drop across the cliff | 370x drop |
+
+The knee keeps fewer, more confident cells; the inflection keeps more. Cell
+Ranger called 1,218 here, just past the inflection. **901–1,218 is the range
+the operator is actually choosing within**, and no algorithm can settle it.
 
 ## Two things, kept apart
 1. **Measure.** Where the cliff is, how far counts fall across it, and what each
@@ -43,7 +57,8 @@ an error rather than a silent precedence rule.
 | `adata_path` | the subset matrix, **only** when resolved |
 | `n_cells`, `selection` | what was kept and by which rule, marked `chosen_by: operator` |
 | `evidence.preview` | a table of candidate counts with their UMI thresholds |
-| `evidence.cliff_rank` / `cliff_drop_ratio` | where the curve breaks, and how hard |
+| `evidence.knee_rank` / `inflection_rank` | the two candidate cutoffs, and their UMI |
+| `evidence.cliff_drop_ratio` | how hard the curve breaks between them |
 | `evidence.vs_cellranger` | shared / added / dropped barcodes, with their median UMI |
 
 ## What choosing a count gives up

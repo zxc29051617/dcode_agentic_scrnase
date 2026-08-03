@@ -1,10 +1,14 @@
 """Resolve the Cell Ranger reference for counting, and prove it is the right one.
 
-Runs on the **FASTQ branch only**. A 32 GB STAR index is what turns reads into
-counts; a run that arrives holding a count matrix never needs one. The species
-constants that *both* routes need — mitochondrial prefix, haemoglobin symbols,
-marker database — come from `resolve_species`, which runs before the split and
-touches no files.
+Runs on the **FASTQ branch only**, and is that route's entry check. A 32 GB STAR
+index is what turns reads into counts; a run arriving with a count matrix never
+needs one, and gets `matrix_preflight` instead.
+
+Both entry steps also emit the species constants the mainline needs — the
+mitochondrial prefix, haemoglobin symbols, the marker database — from the shared
+table in `src/species.py`. Each route answers the species question with the
+evidence it has: this one reads the reference's `reference.json`, the matrix
+route reads the matrix.
 
 Picking the wrong reference fails silently: the counts are wrong, but the audit
 log, the report and the matrix all agree with each other and are wrong together.
@@ -49,6 +53,9 @@ OUTPUT_FIELDS = (
     "reference_available",
     "species_verified",
     "reference_genomes",
+    "mito_prefix",
+    "erythroid_genes",
+    "notes",
     "warnings",
     "errors",
     "recommended_next_tool",
@@ -130,7 +137,10 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
     warnings: list[str] = []
     errors: list[str] = []
 
-    declared = species_table.canonical(config.get("species"))
+    constants = species_table.constants_for(config)
+    warnings.extend(constants["warnings"])
+    notes = list(constants["notes"])
+    declared = constants["species"]
     profile = species_table.profile(config.get("species"))
     raw_species = config.get("species")
 
@@ -179,6 +189,8 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
         species_verified=verified,
         reference_genomes=genomes,
         reference_version=(meta or {}).get("version"),
+        constants=constants,
+        notes=notes,
         warnings=warnings,
         errors=errors,
         next_tool="fastq_preflight",
@@ -198,6 +210,8 @@ def _result(
     species_verified: bool = False,
     reference_genomes: list[str] | None = None,
     reference_version: str | None = None,
+    constants: dict[str, Any] | None = None,
+    notes: list[str] | None = None,
     warnings: list[str] | None = None,
     errors: list[str] | None = None,
     next_tool: str | None = None,
@@ -210,6 +224,13 @@ def _result(
         "species_verified": species_verified,
         "reference_genomes": reference_genomes or [],
         "reference_version": reference_version,
+        # The same constants `matrix_preflight` emits, so the mainline reads one
+        # shape whichever way the run came in.
+        "mito_prefix": (constants or {}).get("mito_prefix"),
+        "erythroid_genes": (constants or {}).get("erythroid_genes") or [],
+        "marker_db": (constants or {}).get("marker_db"),
+        "constants_source": (constants or {}).get("constants_source") or {},
+        "notes": notes or [],
         "recommended_next_tool": next_tool,
         "metrics": metrics or {},
         "warnings": warnings or [],

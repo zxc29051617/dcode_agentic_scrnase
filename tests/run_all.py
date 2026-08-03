@@ -18,19 +18,22 @@ from tests import (  # noqa: E402
     test_fastq_qc,
     test_graph_smoke,
     test_ingest_validate,
+    test_matrix_preflight,
     test_resolve_reference,
-    test_standardize,
+    test_post_load_validate,
 )
 
 MODULES = (
     test_ingest_validate,
+    test_matrix_preflight,
     test_resolve_reference,
+    test_matrix_preflight,
     test_fastq_preflight,
     test_fastq_qc,
     test_cellranger_count,
     test_count_matrix_classify,
     test_cell_calling,
-    test_standardize,
+    test_post_load_validate,
     test_graph_smoke,
 )
 

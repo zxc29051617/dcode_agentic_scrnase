@@ -10,17 +10,19 @@ What is promised:
 
   * unique `obs_names` and `var_names`
   * `X` holds raw integer counts, not something already normalised
+  * **the same counts also in `layers["counts"]`** — normalisation overwrites
+    `X` in place, so without a copy the raw values are gone by the time
+    anything wants to go back to them
   * every barcode has at least one count
   * gene ids alongside gene symbols, where the source had them
-  * the genome the counts were made against, recorded and cross-checked
-    against the declared species
+  * the species, cross-checked against whatever the data itself records
 
 That last one is the check the count-matrix route otherwise had nowhere to put.
 A 10x `.h5` records its reference in `var['genome']`; an mtx directory records
 nothing, so verification is skipped rather than faked.
 
 Run standalone:
-    python skills/standardize_count_data/standardize_count_data.py <adata.h5ad> --run-dir <out>
+    python skills/post_load_validate/post_load_validate.py <adata.h5ad> --run-dir <out>
 """
 
 from __future__ import annotations
@@ -38,12 +40,13 @@ if str(_PROJECT_ROOT) not in sys.path:
 from src import matrix_io  # noqa: E402
 from src import species as species_table  # noqa: E402
 
-TOOL_NAME = "standardize_count_data"
+TOOL_NAME = "post_load_validate"
 INPUT_FIELDS = (
     "artifacts.cell_calling_review",
     "artifacts.load_filtered_counts",
     "artifacts.load_raw_counts",
-    "artifacts.resolve_species",
+    "artifacts.matrix_preflight",
+    "artifacts.resolve_reference",
     "run_dir",
 )
 OUTPUT_FIELDS = (
@@ -144,11 +147,21 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
             "should have removed them upstream"
         )
 
+    # --- keep the counts reachable after normalisation ----------------------
+    # `normalize_hvg_prepare` writes normalised values into X. Anything that
+    # needs the originals afterwards — differential expression, re-filtering,
+    # export — has nowhere to look unless a copy is put aside first, and by then
+    # it is too late.
+    if "counts" not in adata.layers:
+        adata.layers["counts"] = adata.X.copy()
+        normalizations.append("copied raw counts into layers['counts']")
+
     # --- the genome these counts were made against --------------------------
     genomes = matrix_io.recorded_genomes(adata)
+    artifacts = payload.get("artifacts") or {}
+    entry = (artifacts.get("matrix_preflight") or {}) or (artifacts.get("resolve_reference") or {})
     declared = species_table.canonical(
-        ((payload.get("artifacts") or {}).get("resolve_species") or {}).get("declared_species")
-        or (payload.get("config") or {}).get("species")
+        entry.get("declared_species") or (payload.get("config") or {}).get("species")
     )
     verified, verify_errors, verify_warnings, verify_notes = _verify_genome(genomes, declared)
     warnings.extend(verify_warnings)
@@ -157,7 +170,7 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
         return _result(errors=verify_errors, genome=sorted(genomes))
 
     if "gene_ids" not in adata.var:
-        warnings.append(
+        notes.append(
             "the matrix carries no gene ids, only symbols; downstream annotation "
             "cannot fall back to a stable identifier"
         )

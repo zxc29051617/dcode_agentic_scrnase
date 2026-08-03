@@ -12,12 +12,12 @@ Count matrix 再拆成：
 
 ```mermaid
 flowchart TD
-    A[Input bundle] --> B[ingest_validate]
-    B --> SP[resolve_species<br/>table lookup, both routes]
-    SP --> C{Main input type}
+    A[Input bundle] --> B[ingest_validate<br/>FASTQ or count matrix?]
+    B --> C{Main input type}
 
-    C -->|FASTQ bundle| RR[resolve_reference<br/>32 GB index, FASTQ only]
-    C -->|Count matrix bundle| M0[count_matrix_classify]
+    C -->|FASTQ bundle| RR[resolve_reference<br/>species, genome, annotation version]
+    C -->|Count matrix bundle| MP[matrix_preflight<br/>format, gene ID, species, orientation]
+    MP --> M0[count_matrix_classify]
 
     %% FASTQ route
     RR --> F1[fastq_preflight<br/>structure, ms]
@@ -39,7 +39,7 @@ flowchart TD
     J3 -->|not chosen| H1[Human review]
 
     P0 --> P1[load_filtered_counts]
-    P1 --> STD[standardize_count_data<br/>one shape, genome checked]
+    P1 --> STD[post_load_validate<br/>one AnnData, counts layer, gene ID]
     STD --> D0
 
     %% Main Scanpy line
@@ -121,14 +121,14 @@ flowchart TD
 
 ## 這版的意思
 
-- **`resolve_species` 在分岔前，`resolve_reference` 在 FASTQ 分支上。**
-  物種常數（粒線體前綴、紅血球基因、marker 資料庫）兩條路都要，是查表；
-  32 GB 的 transcriptome 只有 FASTQ 路線要。混在一起會讓矩陣路線經過一個
-  它根本用不到的 reference 節點。
+- **兩條路各有自己的入口檢查。** `resolve_reference`（FASTQ）解析 32 GB 的
+  transcriptome 並讀 `reference.json` 驗物種；`matrix_preflight`（矩陣）讀矩陣本身，
+  驗格式、gene ID 慣例、物種、方向。兩者都輸出同一組 QC 常數
+  （來自 `species.constants_for`），所以主線不管走哪條路讀到的形狀都一樣。
 - **Cell Ranger 同時產生 raw 和 filtered**，所以 `cellranger_count` 是**選擇**
   用哪一份往下走（要自訂細胞數就走 raw），不是讓下游去猜。使用者直接給矩陣時
   才是真的要分類。`count_matrix_classify` 兩種情況都會驗證檔案內容符合宣稱。
-- **`standardize_count_data` 是匯流點。** 三個 step 都可能產出矩陣，
+- **`post_load_validate` 是匯流點。** 三個 step 都可能產出矩陣，
   所以由一個節點保證下游拿到的形狀一致，並在這裡把 genome 跟宣告的物種對照
   —— 這是矩陣路線原本沒地方做的檢查。
 - **主入口只有 FASTQ 和 Count matrix。**

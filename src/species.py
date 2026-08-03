@@ -123,6 +123,128 @@ SPECIES_ALIASES: dict[str, str] = {
 }
 
 
+#: Ensembl stable-ID prefixes. A count matrix that carries gene ids says which
+#: organism it is even when it records no genome — which is the usual case, since
+#: an mtx directory has nowhere to put one.
+ENSEMBL_PREFIXES: dict[str, str] = {
+    "ENSG": "human",
+    "ENSMUSG": "mouse",
+    "ENSRNOG": "rat",
+    "ENSDARG": "zebrafish",
+    "ENSSSCG": "pig",
+    "ENSMMUG": "macaque",
+    "FBGN": "drosophila",
+}
+
+
+def identify_from_gene_ids(gene_ids: Any) -> set[str]:
+    """Which organism a list of stable gene ids belongs to. Empty if unclear."""
+    found: set[str] = set()
+    for gene_id in gene_ids:
+        text = str(gene_id).upper()
+        for prefix, name in ENSEMBL_PREFIXES.items():
+            if text.startswith(prefix):
+                found.add(name)
+                break
+    return found
+
+
+def identify_from_symbols(symbols: Any) -> set[str]:
+    """Guess human vs mouse from symbol casing — `CD3E` against `Cd3e`.
+
+    Only these two, and only as a last resort. The convention is real but it is
+    a convention, not a guarantee, so a caller should treat this as weaker
+    evidence than a gene id or a recorded genome.
+    """
+    upper = title = 0
+    for symbol in symbols:
+        text = str(symbol)
+        if not text or not text[0].isalpha() or not any(c.isalpha() for c in text[1:]):
+            continue
+        # Stable ids are uppercase by convention regardless of organism, so
+        # ENSMUSG00000001 would otherwise be counted as evidence for human.
+        if text.upper().startswith(("ENS", "LOC", "FBGN", "WBGENE")):
+            continue
+        letters = [c for c in text if c.isalpha()]
+        if all(c.isupper() for c in letters):
+            upper += 1
+        elif letters[0].isupper() and all(c.islower() for c in letters[1:]):
+            title += 1
+
+    total = upper + title
+    if total < 20:
+        return set()
+    if upper / total > 0.8:
+        return {"human"}
+    if title / total > 0.8:
+        return {"mouse"}
+    return set()
+
+
+def constants_for(config: dict[str, Any]) -> dict[str, Any]:
+    """The species-dependent constants a run needs, with where each came from.
+
+    Both route-entry steps call this — `resolve_reference` on the FASTQ side and
+    `matrix_preflight` on the matrix side — so the lookup lives in one place even
+    though each route asks its own species question in its own way.
+
+    Config always wins: a curated table is a default, not an override of the
+    person who knows their own annotation.
+    """
+    declared = config.get("species")
+    canon = canonical(declared)
+    prof = profile(declared)
+
+    notes: list[str] = []
+    warnings: list[str] = []
+
+    if not declared:
+        warnings.append(
+            "no species declared, so the data's own genome cannot be cross-checked. "
+            "Set config.species"
+        )
+    elif canon is None:
+        warnings.append(
+            f"species {declared!r} is not recognised; QC constants must come from config"
+        )
+    elif prof is None:
+        warnings.append(
+            f"{canon} is recognised but has no vetted gene lists — only "
+            f"{', '.join(known())} do. Supply mito_prefix and erythroid_genes in "
+            f"config, or QC will measure nothing"
+        )
+    if prof is not None and not prof.qc_defaults_native:
+        notes.append(
+            f"QC starting points for {prof.canonical} were derived from another "
+            "species' data; review the thresholds rather than trusting the defaults"
+        )
+
+    mito_prefix = config.get("mito_prefix") or (prof.mito_prefix if prof else None)
+    if not mito_prefix:
+        warnings.append(
+            "no mitochondrial gene prefix known, so run_qc_metrics will report zero "
+            "rather than fail"
+        )
+
+    return {
+        "species": canon,
+        "declared_species": declared,
+        "mito_prefix": mito_prefix,
+        "erythroid_genes": list(
+            config.get("erythroid_genes") or (prof.erythroid if prof else [])
+        ),
+        "marker_db": prof.marker_db if prof else None,
+        "constants_source": {
+            "mito_prefix": "config" if config.get("mito_prefix") else
+                           ("species table" if prof else "unavailable"),
+            "erythroid_genes": "config" if config.get("erythroid_genes") else
+                               ("species table" if prof else "unavailable"),
+        },
+        "warnings": warnings,
+        "notes": notes,
+    }
+
+
 def canonical(species: str | None) -> str | None:
     """Map whatever the user typed to a key of `SPECIES_SIGNATURES`, or None."""
     return SPECIES_ALIASES.get((species or "").strip().lower())

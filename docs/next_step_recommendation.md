@@ -16,8 +16,9 @@ Orchestrator 層是**真的**，分析層是**假的**：
 - provenance 每步寫 JSONL audit log
 - **24 個 registry step 裡實作了 11 個**，其餘 13 個（Scanpy 主線）還是 `NotImplementedError`
 - FASTQ 上游整段 + raw/filtered 分流 + 載入 + cell calling + 匯流標準化都是真的
-- `resolve_species`（查表，兩條路都走）和 `resolve_reference`（32 GB index，只有 FASTQ 走）已分開
-- `standardize_count_data` 是匯流點，保證下游形狀一致並在此驗證 genome 與物種
+- 兩條路各有入口檢查：`resolve_reference`（FASTQ）與 `matrix_preflight`（矩陣），
+  各自用該路線有的證據驗物種，並輸出同一組 QC 常數
+- `post_load_validate` 是匯流點：統一 AnnData、建立 counts layer、最後一次驗物種
 - **細胞數由操作者決定**：`cell_calling_review` 給證據後停下來，不自己挑數字
 
 ## 一個待決定的落差

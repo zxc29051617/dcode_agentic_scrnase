@@ -1,9 +1,9 @@
-"""Unit tests for `resolve_species`, `resolve_reference`, and the species table.
+"""Unit tests for the species table and `resolve_reference`.
 
-`resolve_species` is a table lookup both routes need; `resolve_reference`
-resolves the 32 GB transcriptome only the FASTQ route uses. They were one step
-until it became clear a count-matrix run was passing through something called
-"resolve_reference" for a reference it never touches.
+`resolve_reference` is the FASTQ route's entry check. The matrix route has its
+own — `matrix_preflight` — and both emit the same QC constants from
+`species.constants_for`, so the mainline reads one shape whichever way the run
+came in.
 
 Run with `python tests/test_resolve_reference.py` (or `python tests/run_all.py`).
 """
@@ -21,7 +21,6 @@ from src.registry import load_skill  # noqa: E402
 from tests import fixtures  # noqa: E402
 
 resolve = load_skill("resolve_reference")
-resolve_species = load_skill("resolve_species")
 
 
 class Skip(Exception):
@@ -82,7 +81,8 @@ def test_registered_species_resolves_to_a_project_local_path():
     assert result["reference_available"] is True
     assert result["species_verified"] is True
     assert result["recommended_next_tool"] == "fastq_preflight"
-    assert "mito_prefix" not in result, "species constants belong to resolve_species now"
+    assert result["mito_prefix"] == "MT-", "the entry step carries the QC constants"
+    assert "HBB" in result["erythroid_genes"]
 
 
 def test_species_mismatch_is_an_error():
@@ -113,48 +113,39 @@ def test_missing_reference_blocks_and_says_how_to_get_it():
     assert any("cf.10xgenomics.com" in e for e in result["errors"]), "must say how to get it"
 
 
-def test_a_matrix_run_never_reaches_the_reference_step():
-    """The split is the point: only the FASTQ branch needs a transcriptome.
-
-    `resolve_species` is what a count-matrix run passes through, and it cannot
-    fail on a missing file because it never opens one.
-    """
-    result = resolve_species.run({"config": {"species": "human"}, "artifacts": {}})
-    assert result["errors"] == []
-    assert result["mito_prefix"] == "MT-"
-    assert result["erythroid_genes"], "QC constants come from here, not the reference"
-    assert result["recommended_next_tool"] == "count_matrix_classify"
+def test_constants_come_from_the_table():
+    constants = species.constants_for({"species": "human"})
+    assert constants["species"] == "human"
+    assert constants["mito_prefix"] == "MT-"
+    assert "HBB" in constants["erythroid_genes"]
+    assert constants["constants_source"]["mito_prefix"] == "species table"
+    assert constants["warnings"] == []
 
 
-def test_a_fastq_run_is_routed_to_the_reference_step():
-    result = resolve_species.run(
-        {
-            "config": {"species": "human"},
-            "artifacts": {"ingest_validate": {"needs_upstream_preprocessing": True}},
-        }
-    )
-    assert result["recommended_next_tool"] == "resolve_reference"
-
-
-def test_species_constants_take_config_over_the_table():
+def test_config_wins_over_the_table():
     """A curated table is a default, not an override of someone's own annotation."""
-    result = resolve_species.run(
-        {"config": {"species": "human", "mito_prefix": "mt:"}, "artifacts": {}}
-    )
-    assert result["mito_prefix"] == "mt:"
-    assert result["constants_source"]["mito_prefix"] == "config"
+    constants = species.constants_for({"species": "human", "mito_prefix": "mt:"})
+    assert constants["mito_prefix"] == "mt:"
+    assert constants["constants_source"]["mito_prefix"] == "config"
 
 
-def test_an_unregistered_species_asks_for_constants_rather_than_inventing_them():
-    result = resolve_species.run({"config": {"species": "rat"}, "artifacts": {}})
-    assert result["errors"] == [], "a non-model organism must not be blocked here"
-    assert any("no vetted gene lists" in w for w in result["warnings"])
-    assert result["erythroid_genes"] == []
+def test_an_unregistered_species_asks_rather_than_inventing():
+    constants = species.constants_for({"species": "rat"})
+    assert any("no vetted gene lists" in w for w in constants["warnings"])
+    assert constants["erythroid_genes"] == []
 
 
 def test_no_mito_prefix_is_called_out_as_a_silent_qc_failure():
-    result = resolve_species.run({"config": {"species": "rat"}, "artifacts": {}})
-    assert any("report zero rather than fail" in w for w in result["warnings"])
+    constants = species.constants_for({"species": "rat"})
+    assert any("report zero rather than fail" in w for w in constants["warnings"])
+
+
+def test_borrowed_qc_defaults_are_a_note_not_a_blocking_warning():
+    """Every mouse run would otherwise stop at its entry step for information
+    nobody can act on until QC thresholds are reviewed, several steps later."""
+    constants = species.constants_for({"species": "mouse"})
+    assert constants["warnings"] == []
+    assert any("derived from another species" in n for n in constants["notes"])
 
 
 def test_unregistered_species_blocks_without_an_explicit_path():
@@ -195,18 +186,6 @@ def test_directory_without_reference_json_is_not_a_reference():
         bare.mkdir()
         result = _run(species="human", transcriptome=str(bare))
     assert any("no reference.json" in e for e in result["errors"])
-
-
-def test_borrowed_qc_defaults_are_a_note_not_a_blocking_warning():
-    """Every mouse run would otherwise stop at step two, which teaches clicking through.
-
-    The information matters when QC thresholds are reviewed, several steps later
-    — not as a gate before the data has even been read.
-    """
-    result = resolve_species.run({"config": {"species": "mouse"}, "artifacts": {}})
-    assert result["errors"] == []
-    assert result["warnings"] == []
-    assert any("derived from another species" in n for n in result["notes"])
 
 
 def test_real_t2t_reference_if_linked():

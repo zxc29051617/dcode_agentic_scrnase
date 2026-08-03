@@ -1,11 +1,11 @@
 ---
-name: standardize_count_data
+name: post_load_validate
 description: The merge point — guarantee one shape of AnnData whichever route produced it, and cross-check the genome against the declared species.
 version: 0.1.0
 status: implemented
 ---
 
-# standardize_count_data
+# post_load_validate
 
 ## Purpose
 Three steps can hand a matrix to the mainline — `load_filtered_counts`,
@@ -20,6 +20,7 @@ here is promised the same object instead.
 |---|---|
 | names | `obs_names` and `var_names` unique |
 | `X` | raw non-negative integer counts, never something already normalised |
+| `layers["counts"]` | the same counts, kept reachable after normalisation overwrites `X` |
 | barcodes | every one has at least one count |
 | `var` | gene ids alongside symbols, where the source had them |
 | genome | recorded, and cross-checked against the declared species |
@@ -28,10 +29,16 @@ here is promised the same object instead.
 the good case; a non-empty list means a producer upstream emitted something the
 mainline could not have used as-is.
 
-## The check the matrix route had nowhere else to put
-A FASTQ run verifies its species against `reference.json` before counting. A run
-that arrives holding a matrix never touches a reference, so until this node
-existed nothing checked that the counts were the organism the run claimed.
+## Why the counts layer
+`normalize_hvg_prepare` writes normalised values into `X`. Anything afterwards
+that needs the originals — differential expression, re-filtering, export — has
+nowhere to look unless a copy was put aside first, and by then it is too late.
+
+## A second species check, on the object that actually reaches the mainline
+`matrix_preflight` checks the file on the way in and `resolve_reference` checks
+the reference on the FASTQ side. This one checks the AnnData that is actually
+being handed over, after loading and any cell-calling subset — the last point
+where a wrong organism can still be caught.
 
 A 10x `.h5` records its reference in `var['genome']` and scanpy keeps it, so the
 check is available for free. An mtx directory records nothing.

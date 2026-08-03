@@ -1,6 +1,6 @@
-"""Tests for the merge point: one shape of AnnData whichever route produced it.
+"""Tests for `post_load_validate`: one shape of AnnData whichever route produced it.
 
-Run with `python tests/test_standardize.py` (or `python tests/run_all.py`).
+Run with `python tests/test_post_load_validate.py` (or `python tests/run_all.py`).
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src import matrix_io  # noqa: E402
 from src.registry import load_skill  # noqa: E402
 
-standardize = load_skill("standardize_count_data")
+validate = load_skill("post_load_validate")
 
 REAL_OUTS = (
     Path.home() / ".claude/jobs/d529e0fc/tmp/cr_verify/cellranger_count/pbmc_1k_v3/outs"
@@ -46,7 +46,7 @@ def _adata(n_cells=50, n_genes=20, *, genome=None, counts=True):
 def _run(root: Path, adata, *, producer="load_filtered_counts", **config):
     path = root / "in.h5ad"
     matrix_io.write_h5ad(adata, path)
-    return standardize.run(
+    return validate.run(
         {
             "artifacts": {producer: {"adata_path": str(path)}},
             "run_dir": str(root / "run"),
@@ -58,14 +58,33 @@ def _run(root: Path, adata, *, producer="load_filtered_counts", **config):
 # --- the contract -----------------------------------------------------------
 
 
-def test_a_clean_matrix_needs_no_normalization():
+def test_a_clean_matrix_only_needs_the_counts_layer():
     with tempfile.TemporaryDirectory() as tmp:
         result = _run(Path(tmp), _adata(), species="human")
         # Inside the block: the written file goes away with the temp directory.
         assert Path(result["adata_path"]).is_file()
     assert result["errors"] == []
-    assert result["normalizations"] == [], "nothing should have needed fixing"
+    assert result["normalizations"] == ["copied raw counts into layers['counts']"]
     assert result["n_cells"] == 50 and result["n_genes"] == 20
+
+
+def test_the_counts_layer_survives_for_downstream():
+    """Normalisation overwrites X in place; without a copy the originals are gone."""
+    import anndata
+
+    with tempfile.TemporaryDirectory() as tmp:
+        result = _run(Path(tmp), _adata(), species="human")
+        written = anndata.read_h5ad(result["adata_path"])
+        assert "counts" in written.layers
+        assert written.layers["counts"].sum() == written.X.sum()
+
+
+def test_an_existing_counts_layer_is_left_alone():
+    with tempfile.TemporaryDirectory() as tmp:
+        adata = _adata()
+        adata.layers["counts"] = adata.X.copy()
+        result = _run(Path(tmp), adata, species="human")
+    assert result["normalizations"] == [], "nothing needed changing"
 
 
 def test_normalized_data_is_refused_rather_than_analysed():
@@ -113,7 +132,7 @@ def test_missing_gene_ids_are_flagged():
         adata = _adata()
         del adata.var["gene_ids"]
         result = _run(Path(tmp), adata, species="human")
-    assert any("no gene ids" in w for w in result["warnings"])
+    assert any("no gene ids" in n for n in result["notes"])
 
 
 # --- the species check the matrix route had nowhere to put ------------------
@@ -167,7 +186,7 @@ def test_cell_calling_review_wins_over_the_raw_loader():
         root = Path(tmp)
         matrix_io.write_h5ad(_adata(n_cells=10), root / "subset.h5ad")
         matrix_io.write_h5ad(_adata(n_cells=500), root / "raw.h5ad")
-        result = standardize.run(
+        result = validate.run(
             {
                 "artifacts": {
                     "load_raw_counts": {"adata_path": str(root / "raw.h5ad")},
@@ -182,7 +201,7 @@ def test_cell_calling_review_wins_over_the_raw_loader():
 
 
 def test_no_producer_is_an_error():
-    result = standardize.run({"artifacts": {}, "run_dir": ".", "config": {}})
+    result = validate.run({"artifacts": {}, "run_dir": ".", "config": {}})
     assert any("no loader ran before this" in e for e in result["errors"])
 
 
@@ -195,7 +214,7 @@ def test_real_filtered_matrix_standardizes_cleanly():
         raise Skip("no real cellranger output on this machine")
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        result = standardize.run(
+        result = validate.run(
             {
                 "artifacts": {"load_filtered_counts": {"adata_path": str(source)}},
                 "run_dir": str(root),
@@ -204,7 +223,9 @@ def test_real_filtered_matrix_standardizes_cleanly():
         )
         assert result["errors"] == []
         assert result["warnings"] == []
-        assert result["normalizations"] == [], "Cell Ranger output needs no repair"
+        assert result["normalizations"] == ["copied raw counts into layers['counts']"], (
+            "Cell Ranger output needs no repair beyond keeping the counts reachable"
+        )
         assert result["n_cells"] == 1_218
         assert result["species_verified"] is True
         assert result["genome"] == ["T2T_CHM13v2_RefSeqLiftoff_v5_3"]
@@ -215,7 +236,7 @@ def test_real_matrix_declared_as_the_wrong_species_is_blocked():
     if not source.is_file():
         raise Skip("no real cellranger output on this machine")
     with tempfile.TemporaryDirectory() as tmp:
-        result = standardize.run(
+        result = validate.run(
             {
                 "artifacts": {"load_filtered_counts": {"adata_path": str(source)}},
                 "run_dir": tmp,
