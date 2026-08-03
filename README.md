@@ -76,6 +76,9 @@ python skills/cellranger_count/cellranger_count.py \
 python tests/run_all.py
 ```
 
+測試資料在 `~/data/`：`pbmc_1k_v3/`（FASTQ，10x 官方）與 `10x_public/`
+（五份 10x 公開矩陣，含 v2 化學、CITE-seq、小鼠）。沒有這些目錄時相關測試會 skip。
+
 `--input` 給什麼由 `ingest_validate` 自己偵測（FASTQ / MTX / .h5 / .h5ad）。
 `--species` 決定用哪份 reference 和 QC 常數（`--reference` 可以明確覆寫）；
 物種和 reference 對不上會在第二步就停下來，不會等 count 跑完才發現。

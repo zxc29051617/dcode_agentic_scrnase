@@ -71,7 +71,66 @@ def load_matrix(path: str | Path) -> tuple[Any, dict[str, Any]]:
     genomes = recorded_genomes(adata)
     if genomes:
         provenance["genomes"] = sorted(genomes)
+
+    # What the reader kept, against what the file actually holds. The gap is
+    # what `gex_only=True` dropped, and the caller is expected to say so.
+    on_disk = feature_types_on_disk(path)
+    if on_disk:
+        provenance["feature_types_on_disk"] = on_disk
+        dropped = {
+            kind: count for kind, count in on_disk.items() if kind != "Gene Expression"
+        }
+        if dropped:
+            provenance["feature_types_dropped"] = dropped
     return adata, provenance
+
+
+def feature_types_on_disk(path: str | Path) -> dict[str, int]:
+    """Every feature type the file holds, counted — including ones the reader drops.
+
+    `scanpy.read_10x_h5` defaults to `gex_only=True` and silently discards
+    Antibody Capture, CRISPR Guide Capture and the rest. For a CITE-seq library
+    that is the right call for this pipeline and the wrong thing to do quietly:
+    the run should say which features it threw away.
+
+    Returns an empty dict when the format does not record feature types.
+    """
+    import collections
+    import gzip
+
+    path = Path(path).expanduser()
+    try:
+        if path.is_dir():
+            features = next(
+                (path / n for n in ("features.tsv.gz", "features.tsv") if (path / n).exists()),
+                None,
+            )
+            if features is None:
+                return {}
+            opener = gzip.open if features.name.endswith(".gz") else open
+            with opener(features, "rt", errors="replace") as handle:
+                types = [
+                    line.rstrip("\n").split("\t")[2]
+                    for line in handle
+                    if len(line.split("\t")) >= 3
+                ]
+            return dict(collections.Counter(types))
+
+        if path.name.endswith(".h5"):
+            import h5py
+
+            with h5py.File(path, "r") as handle:
+                node = handle.get("matrix/features/feature_type")
+                if node is None:
+                    return {}
+                return dict(
+                    collections.Counter(
+                        v.decode() if isinstance(v, bytes) else str(v) for v in node[:]
+                    )
+                )
+    except Exception:  # noqa: BLE001 - a missing inventory is not a failure
+        return {}
+    return {}
 
 
 def recorded_genomes(adata: Any) -> set[str]:

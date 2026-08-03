@@ -45,6 +45,7 @@ OUTPUT_FIELDS = (
     "readable",
     "matrix_format",
     "gene_id_convention",
+    "feature_types",
     "species",
     "species_evidence",
     "orientation",
@@ -151,6 +152,19 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
             constants=constants,
         )
 
+    # --- non-gene-expression features ---------------------------------------
+    # A warning, not a note: unlike missing gene ids there IS something to
+    # decide here. Either the antibody/CRISPR data was not wanted, or this is
+    # the wrong pipeline for it.
+    dropped = provenance.get("feature_types_dropped") or {}
+    if dropped:
+        summary = ", ".join(f"{count} {kind}" for kind, count in sorted(dropped.items()))
+        warnings.append(
+            f"the file also holds {summary} features, which were dropped — this "
+            f"pipeline analyses gene expression only. Use a multimodal tool if "
+            f"those were wanted"
+        )
+
     # --- gene ids -----------------------------------------------------------
     gene_ids = list(adata.var["gene_ids"]) if "gene_ids" in adata.var else []
     convention = _gene_id_convention(gene_ids)
@@ -203,6 +217,7 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
         matrix_format=provenance["source_format"],
         matrix_path=str(path),
         gene_id_convention=convention,
+        feature_types=provenance.get("feature_types_on_disk") or {},
         species_verified=verified,
         species_evidence=evidence,
         orientation=orientation,
@@ -226,6 +241,7 @@ def _result(
     matrix_format: str | None = None,
     matrix_path: str | None = None,
     gene_id_convention: str | None = None,
+    feature_types: dict[str, int] | None = None,
     species_verified: bool = False,
     species_evidence: str | None = None,
     orientation: str | None = None,
@@ -242,6 +258,7 @@ def _result(
         "matrix_format": matrix_format,
         "matrix_path": matrix_path,
         "gene_id_convention": gene_id_convention,
+        "feature_types": feature_types or {},
         "orientation": orientation,
         "species": constants.get("species"),
         "declared_species": constants.get("declared_species"),

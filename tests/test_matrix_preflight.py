@@ -20,6 +20,10 @@ REAL_OUTS = (
     Path.home() / ".claude/jobs/d529e0fc/tmp/cr_verify/cellranger_count/pbmc_1k_v3/outs"
 )
 
+#: 10x's own public matrices. Third-party files the pipeline did not produce, so
+#: they catch assumptions that hold only for output we generated ourselves.
+TENX_PUBLIC = Path.home() / "data" / "10x_public"
+
 
 class Skip(Exception):
     """Raised by a test that needs data this machine does not have."""
@@ -182,6 +186,62 @@ def test_a_missing_path_is_an_error():
     assert any("does not exist" in e for e in result["errors"])
 
 
+# --- non-gene-expression features -------------------------------------------
+
+
+def test_antibody_features_are_reported_not_silently_dropped():
+    """scanpy's read_10x_h5 defaults to gex_only=True and says nothing.
+
+    Dropping them is right for this pipeline; doing it quietly is not. Found by
+    running 10x's own pbmc_1k_protein_v3, where 17 Antibody Capture features
+    vanished between the file and the AnnData with no trace.
+    """
+    import h5py
+    import numpy as np
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "cite.h5"
+        with h5py.File(path, "w") as handle:
+            matrix = handle.create_group("matrix")
+            n_genes, n_ab, n_cells = 20, 3, 5
+            kinds = [b"Gene Expression"] * n_genes + [b"Antibody Capture"] * n_ab
+            features = matrix.create_group("features")
+            features.create_dataset("feature_type", data=np.array(kinds))
+            features.create_dataset(
+                "id", data=np.array([f"F{i}".encode() for i in range(n_genes + n_ab)])
+            )
+            features.create_dataset(
+                "name", data=np.array([f"S{i}".encode() for i in range(n_genes + n_ab)])
+            )
+            features.create_dataset("genome", data=np.array([b"GRCh38"] * (n_genes + n_ab)))
+            matrix.create_dataset(
+                "barcodes", data=np.array([f"BC{i}".encode() for i in range(n_cells)])
+            )
+            matrix.create_dataset("shape", data=np.array([n_genes + n_ab, n_cells]))
+            matrix.create_dataset("data", data=np.ones(n_cells, dtype="int32"))
+            matrix.create_dataset("indices", data=np.zeros(n_cells, dtype="int64"))
+            matrix.create_dataset("indptr", data=np.arange(n_cells + 1, dtype="int64"))
+
+        inventory = matrix_io.feature_types_on_disk(path)
+
+    assert inventory == {"Gene Expression": 20, "Antibody Capture": 3}
+
+
+def test_the_dropped_features_reach_the_operator_as_a_warning():
+    """Unlike missing gene ids, there IS a decision here: wrong pipeline, or not wanted."""
+    path = TENX_PUBLIC / "pbmc_1k_protein_v3.h5"
+    if not path.is_file():
+        raise Skip("pbmc_1k_protein_v3 not downloaded")
+    result = preflight.run(
+        {
+            "artifacts": {"ingest_validate": {"matrix_path": str(path)}},
+            "config": {"species": "human"},
+        }
+    )
+    assert result["feature_types"]["Antibody Capture"] == 17
+    assert any("Antibody Capture" in w and "dropped" in w for w in result["warnings"])
+
+
 # --- real data --------------------------------------------------------------
 
 
@@ -217,6 +277,46 @@ def test_real_10x_h5_is_identified_from_its_recorded_genome():
     assert result["errors"] == []
     assert "recorded genome" in result["species_evidence"]
     assert "T2T_CHM13v2_RefSeqLiftoff_v5_3" in result["species_evidence"]
+
+
+def test_10x_public_matrices_all_pass_their_own_species_check():
+    """Five third-party matrices: two chemistries, a CITE-seq library, and mouse."""
+    cases = {
+        "pbmc_1k_v2.h5": ("human", 996),
+        "pbmc_10k_v3.h5": ("human", 11_769),
+        "PBMC_LT_ChromiumX.h5": ("human", 587),
+        "pbmc_1k_protein_v3.h5": ("human", 713),
+        "neuron_1k_v3.h5": ("mouse", 1_301),
+    }
+    available = {n: v for n, v in cases.items() if (TENX_PUBLIC / n).is_file()}
+    if not available:
+        raise Skip("10x public matrices not downloaded")
+
+    for filename, (declared, n_cells) in available.items():
+        result = preflight.run(
+            {
+                "artifacts": {"ingest_validate": {"matrix_path": str(TENX_PUBLIC / filename)}},
+                "config": {"species": declared},
+            }
+        )
+        assert result["errors"] == [], f"{filename}: {result['errors']}"
+        assert result["species_verified"] is True, filename
+        assert result["metrics"]["n_barcodes"] == n_cells, filename
+        assert result["orientation"] == "cells x genes", filename
+
+
+def test_a_mouse_matrix_declared_as_human_is_blocked():
+    """The cross-species guard, on a real mouse dataset rather than a fixture."""
+    path = TENX_PUBLIC / "neuron_1k_v3.h5"
+    if not path.is_file():
+        raise Skip("neuron_1k_v3 not downloaded")
+    result = preflight.run(
+        {
+            "artifacts": {"ingest_validate": {"matrix_path": str(path)}},
+            "config": {"species": "human"},
+        }
+    )
+    assert any("species mismatch" in e and "mm10" in e for e in result["errors"])
 
 
 def main() -> int:
