@@ -145,7 +145,7 @@ Judge 預設用 `StubJudge`（不需要模型，只看 status/warnings/errors）
 
 ```bash
 export SCRNA_JUDGE_BASE_URL=http://<host>:11434/v1   # 注意結尾的 /v1
-export SCRNA_JUDGE_MODEL=gpt-oss:20b
+export SCRNA_JUDGE_MODEL=gpt-oss:120b
 python -m src.run --judge local ...
 
 # 先確認端點通不通、模型在不在
@@ -153,11 +153,20 @@ python scripts/check_judge_endpoint.py
 ```
 
 實驗室的 DGX 位址放在 `.env.example`，不進 git 的部分放 `.env`。
-`gpt-oss:20b` 實測判一步約 12 秒，strict `json_schema` 結構化輸出可用。
+模型實測（同一個真實 `apply_cell_qc_filter` payload，都支援 strict `json_schema`）：
 
-⚠️ **模型給的建議數字要當成建議，不是設定值。** 實測 `gpt-oss:20b` 會建議
+| 模型 | 一步耗時 | 品質 |
+|---|---|---|
+| `gpt-oss:120b` | 100 秒 | 引用數字**並推出結論**（推薦）|
+| `gpt-oss:20b` | 74 秒 | 引用數字，不下結論 |
+| `medgemma:27b` | 514 秒 | 只是換句話說 warning，且把等待決定的 step 判成 `fail` |
+
+⚠️ **模型給的建議數字要當成建議，不是設定值。** 舊版 prompt 下 `gpt-oss:20b` 曾建議
 `max_pct_mito=0.1`——但這個欄位的單位是 0–100 的百分比，照做會砍掉幾乎所有細胞。
 judge 不能寫入 `artifacts`（見 `src/nodes.py:109`），這條限制不是形式主義。
+
+判斷品質**取決於 prompt 遠大於取決於模型**。`prompts/local_judge_base.md` 要求每條
+理由都要引用 payload 裡的數字；沒有這條要求時，三個模型都只會把 warning 換句話說。
 
 ## src/ 分層
 
