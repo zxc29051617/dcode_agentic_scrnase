@@ -22,6 +22,7 @@ from tests import (  # noqa: E402
     test_merge_samples,
     test_resolve_reference,
     test_post_load_validate,
+    test_apply_cell_qc_filter,
     test_run_qc_metrics,
 )
 
@@ -39,6 +40,7 @@ MODULES = (
     test_merge_samples,
     test_post_load_validate,
     test_run_qc_metrics,
+    test_apply_cell_qc_filter,
     test_graph_smoke,
 )
 

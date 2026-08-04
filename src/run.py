@@ -66,6 +66,20 @@ def main(argv: list[str] | None = None) -> int:
         metavar="X",
         help="keep barcodes with at least X UMI instead of Cell Ranger's cell call",
     )
+    # Cell QC thresholds. No defaults on purpose: published "standard" values
+    # come from specific tissues and protocols, and applying one silently to a
+    # different one is how good cells get thrown away unnoticed. Omit them and
+    # apply_cell_qc_filter reports what each candidate would cost, then stops.
+    qc = parser.add_argument_group("cell QC thresholds (omit to see the evidence first)")
+    qc.add_argument("--min-genes", type=float, metavar="N",
+                    help="drop cells with fewer than N genes detected")
+    qc.add_argument("--min-counts", type=float, metavar="N",
+                    help="drop cells with fewer than N UMIs")
+    qc.add_argument("--max-pct-mito", type=float, metavar="PCT",
+                    help="drop cells above PCT%% mitochondrial reads")
+    qc.add_argument("--max-pct-erythroid", type=float, metavar="PCT",
+                    help="drop cells above PCT%% haemoglobin reads")
+
     parser.add_argument("--sample-qc-triage", action="store_true")
     parser.add_argument("--judge", choices=["stub", "local"], default="stub")
     parser.add_argument(
@@ -88,6 +102,10 @@ def main(argv: list[str] | None = None) -> int:
             "transcriptome": args.reference,
             "force_cells": args.force_cells,
             "min_umi": args.min_umi,
+            "min_genes": args.min_genes,
+            "min_counts": args.min_counts,
+            "max_pct_mito": args.max_pct_mito,
+            "max_pct_erythroid": args.max_pct_erythroid,
             "sample_qc_triage": args.sample_qc_triage,
         },
         policy=GatePolicy(

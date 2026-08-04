@@ -32,12 +32,12 @@
 
 ## 目前狀態
 
-Orchestrator 可以跑。Skill **25 個裡實作了 12 個**，FASTQ 上游整段已經是真的：
+Orchestrator 可以跑。Skill **25 個裡實作了 14 個**，FASTQ 上游整段與 QC 都已經是真的：
 
 | | |
 |---|---|
-| ✅ 已實作 | `ingest_validate`、`resolve_reference`、`matrix_preflight`、`fastq_preflight`、`fastq_qc`、`cellranger_count`、`count_matrix_classify`、`load_raw_counts`、`load_filtered_counts`、`cell_calling_review`、`merge_samples`、`post_load_validate` |
-| ⬜ scaffold | 其餘 13 個（Scanpy 主線），`run()` 直接 raise `NotImplementedError` |
+| ✅ 已實作 | `ingest_validate`、`resolve_reference`、`matrix_preflight`、`fastq_preflight`、`fastq_qc`、`cellranger_count`、`count_matrix_classify`、`load_raw_counts`、`load_filtered_counts`、`cell_calling_review`、`merge_samples`、`post_load_validate`、`run_qc_metrics`、`apply_cell_qc_filter` |
+| ⬜ scaffold | 其餘 11 個（doublet 之後的 Scanpy 主線），`run()` 直接 raise `NotImplementedError` |
 
 FASTQ 路線：偵測輸入 → 選 reference 並驗證物種 → 結構檢查 → **FastQC/MultiQC 品質評估** → count
 
@@ -101,6 +101,20 @@ bash scripts/link_reference.sh         # reference 怎麼放
 --force-cells 1500                      # 每個樣本都留 1500
 --force-cells '{"A": 1500, "B": 2400}'  # 逐樣本（config 用 dict）
 ```
+
+**QC 閾值也由你決定**。沒給閾值時 `apply_cell_qc_filter` 會列出每個候選值會濾掉多少細胞，
+然後停下來——程式碼裡沒有任何預設閾值：
+
+```bash
+# 第一次：看證據
+python -m src.run --input <matrix>
+
+# 決定後
+python -m src.run --input <matrix> --min-genes 200 --max-pct-mito 15
+```
+
+發表論文常見的 200 / 20% 是特定組織、特定 protocol 的值。你自己的標準值放 config，
+不要放程式碼——config 裡的值會進 audit log，程式碼裡的預設不會。
 
 **細胞數由你決定**。走 raw 矩陣時，`cell_calling_review` 會先給你證據
 （斷崖位置、各個候選細胞數對應的 UMI 門檻）然後停下來，不會替你挑數字：

@@ -39,16 +39,28 @@ IMPLEMENTED = [
     "merge_samples",
     "post_load_validate",
     "run_qc_metrics",
+    "apply_cell_qc_filter",
 ]
 """Skills with a real `run()` on the filtered-matrix route; everything else is a scaffold."""
+
+
+#: Operator decisions the mainline cannot proceed without. Supplied by default
+#: so these tests exercise *routing*; each has its own suite for the refusal
+#: behaviour, and a test that wants the blocked path overrides them to None.
+#:
+#: Deliberately permissive — the fixture matrices carry a handful of genes per
+#: cell, so a realistic `min_genes` would empty them. These numbers are here to
+#: let routing be tested, not to suggest what a real run should use.
+OPERATOR_CHOICES = {"min_genes": 1, "max_pct_mito": 100}
 
 
 def _run(config, *, policy=WALK, judge=None):
     """Run the graph on a fixture bundle with a working reference.
 
-    A reference is supplied by default so these tests exercise *routing*;
-    reference resolution has its own suite. Pass `transcriptome` in `config` to
-    override it, or point it somewhere missing to test the blocked path.
+    A reference and the operator's QC thresholds are supplied by default so
+    these tests exercise *routing*; reference resolution and threshold refusal
+    each have their own suite. Pass `transcriptome` in `config` to override it,
+    or point it somewhere missing to test the blocked path.
     """
     graph = build_graph(policy=policy, judge=judge or StubJudge())
     with tempfile.TemporaryDirectory() as tmp:
@@ -57,7 +69,12 @@ def _run(config, *, policy=WALK, judge=None):
         reference = fixtures.make_reference(root, "ref", genomes=["GRCh38"])
         state = new_run_state(
             project="test",
-            config={"species": "human", "transcriptome": str(reference), **config},
+            config={
+                "species": "human",
+                "transcriptome": str(reference),
+                **OPERATOR_CHOICES,
+                **config,
+            },
             input_bundle={"paths": [str(bundle)]},
             runs_dir=root / "runs",
         )
@@ -227,7 +244,7 @@ def test_scaffolds_are_reported_not_hidden():
     assert report["verdicts"]["ingest_validate"] == "pass"
     assert report["verdicts"]["post_load_validate"] == "pass"
     assert report["verdicts"]["run_qc_metrics"] == "pass"
-    assert report["verdicts"]["apply_cell_qc_filter"] == "pass (scaffold)"
+    assert report["verdicts"]["detect_doublets"] == "pass (scaffold)"
 
     for verdict in final["judge_results"]:
         if verdict["step"] in IMPLEMENTED:
@@ -292,6 +309,17 @@ def test_fastq_preflight_passes_with_a_valid_reference_and_real_reads():
     assert "cellranger_count" in steps
     preflight_verdict = next(j for j in final["judge_results"] if j["step"] == "fastq_preflight")
     assert preflight_verdict["verdict"] == "pass"
+
+
+def test_unchosen_qc_thresholds_cannot_be_accepted_into_the_mainline():
+    """Cutting cells is destructive, so the thresholds are the operator's call."""
+    final = _run({"input_type": "matrix", "matrix_kind": "filtered",
+                  "min_genes": None, "max_pct_mito": None}, policy=WALK)
+    steps = _steps(final)
+    assert "apply_cell_qc_filter" in steps
+    assert final["artifacts"]["apply_cell_qc_filter"]["filter_state"] == "needs_review"
+    assert "detect_doublets" not in steps, "unfiltered cells must not continue"
+    assert "build_report" not in steps
 
 
 def test_ingest_detection_drives_routing_not_config():

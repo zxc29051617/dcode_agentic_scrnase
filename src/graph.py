@@ -71,6 +71,17 @@ def branch_merge(state: WorkflowState) -> str:
     return "standardize"
 
 
+def branch_after_qc_filter(state: WorkflowState) -> str:
+    """Unfiltered cells cannot enter the rest of the mainline, even on `accept`.
+
+    QC thresholds are the operator's call, and cutting is destructive — a cell
+    removed here is gone from every plot, marker test and cluster downstream.
+    Until thresholds are given there is no filtered object to hand on.
+    """
+    out = step_output(state, "apply_cell_qc_filter")
+    return "mainline" if out.get("filter_state") == "applied" else HUMAN_GATE
+
+
 def branch_after_cell_calling(state: WorkflowState) -> str:
     """An unresolved cell count cannot enter the mainline, even on `accept`.
 
@@ -185,8 +196,15 @@ def build_graph(
     linear("post_load_validate", MAINLINE[0])
 
     # ---- Scanpy mainline ----------------------------------------------------
+    # `apply_cell_qc_filter` branches like `cell_calling_review` does: cutting
+    # cells is destructive and the thresholds are the operator's, so an
+    # unfiltered object must not reach the rest of the mainline by being
+    # accepted at the gate.
     for current, following in zip(MAINLINE, MAINLINE[1:] + (FINAL_GATE,)):
-        linear(current, following)
+        if current == "apply_cell_qc_filter":
+            branching(current, branch_after_qc_filter, {"mainline": following})
+        else:
+            linear(current, following)
 
     # ---- gates and report ---------------------------------------------------
     # `human_review_decision` is the mainline gate (H2); `human_gate` is the

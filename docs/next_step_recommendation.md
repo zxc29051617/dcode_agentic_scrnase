@@ -14,7 +14,7 @@ Orchestrator 層是**真的**，分析層是**假的**：
 - 每個 step 後面都有 judge node，verdict 符合 `schemas/judge_result.schema.json`
 - human gate 預設不放行 warn/fail，headless 執行預設 `stop`
 - provenance 每步寫 JSONL audit log
-- **25 個 registry step 裡實作了 13 個**，其餘 12 個還是 `NotImplementedError`
+- **25 個 registry step 裡實作了 14 個**，其餘 11 個還是 `NotImplementedError`
 - FASTQ 上游整段 + raw/filtered 分流 + 載入 + cell calling + 匯流標準化都是真的
 - 兩條路各有入口檢查：`resolve_reference`（FASTQ）與 `matrix_preflight`（矩陣），
   各自用該路線有的證據驗物種，並輸出同一組 QC 常數
@@ -66,8 +66,12 @@ QC filter / doublet / normalize / PCA / clustering 這些空殼步驟開始有�
 → `run_integration` → `run_clustering` → `run_umap` → `find_markers` →
 `annotate_cells` → `human_review_decision` → `build_report`，共 11 個。
 
-`apply_cell_qc_filter` 是下一個——它會用到 `run_qc_metrics` 剛算出來的
-`pct_counts_mt` / `pct_counts_erythroid` / `n_genes_by_counts`，介面已經接好了。
+~~`apply_cell_qc_filter`~~ 已完成——跟 `cell_calling_review` 同一個形狀：沒給閾值就
+列證據然後停，程式碼裡沒有預設值。真實資料驗證過 `max_pct_mito=5` 會砍掉 55% 的細胞
+（因為合併後的中位數就是 5.4），而且對兩個 chemistry 影響差很多。
+
+**下一個是 `detect_doublets`**——它吃 `apply_cell_qc_filter` 濾好的 AnnData，
+`environment.yml` 裡已經有 scrublet。同樣的形狀：doublet rate 也是一個要人決定的參數。
 
 `--matrix-kind` 和 `--cell-calling-resolved` 兩個 scaffold fallback 都已經移除；
 分支現在讀的都是上游 step 真正做出的決定，這條路上沒有 config fallback 了。

@@ -61,7 +61,7 @@ REGISTRY: dict[str, StepSpec] = {
         # consumer grow per-route special cases.
         StepSpec("post_load_validate", "analysis", "judge_post_load"),
         StepSpec("run_qc_metrics", "analysis", "judge_qc"),
-        StepSpec("apply_cell_qc_filter", "analysis", "judge_cell_qc_filter"),
+        StepSpec("apply_cell_qc_filter", "analysis", "judge_cell_qc_filter", branches=True),
         StepSpec("detect_doublets", "analysis", "judge_doublets"),
         StepSpec("normalize_hvg_prepare", "analysis", "judge_preprocess"),
         StepSpec("run_pca", "analysis", "judge_pca"),
