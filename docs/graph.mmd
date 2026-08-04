@@ -1,0 +1,166 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	ingest_validate(ingest_validate)
+	judge_ingest(judge_ingest)
+	sample_qc_triage(sample_qc_triage)
+	judge_sample_qc(judge_sample_qc)
+	resolve_reference(resolve_reference)
+	judge_reference(judge_reference)
+	fastq_preflight(fastq_preflight)
+	judge_fastq_preflight(judge_fastq_preflight)
+	fastq_qc(fastq_qc)
+	judge_fastq_qc(judge_fastq_qc)
+	cellranger_count(cellranger_count)
+	judge_cellranger_count(judge_cellranger_count)
+	matrix_preflight(matrix_preflight)
+	judge_matrix_preflight(judge_matrix_preflight)
+	count_matrix_classify(count_matrix_classify)
+	judge_matrix_classify(judge_matrix_classify)
+	load_raw_counts(load_raw_counts)
+	judge_raw_counts(judge_raw_counts)
+	cell_calling_review(cell_calling_review)
+	judge_cell_calling(judge_cell_calling)
+	load_filtered_counts(load_filtered_counts)
+	judge_filtered_counts(judge_filtered_counts)
+	merge_samples(merge_samples)
+	judge_merge(judge_merge)
+	post_load_validate(post_load_validate)
+	judge_post_load(judge_post_load)
+	run_qc_metrics(run_qc_metrics)
+	judge_qc(judge_qc)
+	apply_cell_qc_filter(apply_cell_qc_filter)
+	judge_cell_qc_filter(judge_cell_qc_filter)
+	detect_doublets(detect_doublets)
+	judge_doublets(judge_doublets)
+	normalize_hvg_prepare(normalize_hvg_prepare)
+	judge_preprocess(judge_preprocess)
+	run_pca(run_pca)
+	judge_pca(judge_pca)
+	run_integration(run_integration)
+	judge_integration(judge_integration)
+	run_clustering(run_clustering)
+	judge_clustering(judge_clustering)
+	run_umap(run_umap)
+	judge_umap(judge_umap)
+	find_markers(find_markers)
+	judge_markers(judge_markers)
+	annotate_cells(annotate_cells)
+	judge_annotation(judge_annotation)
+	human_review_decision(human_review_decision)
+	build_report(build_report)
+	judge_report(judge_report)
+	human_gate(human_gate)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> ingest_validate;
+	annotate_cells --> judge_annotation;
+	apply_cell_qc_filter --> judge_cell_qc_filter;
+	build_report --> judge_report;
+	cell_calling_review --> judge_cell_calling;
+	cellranger_count --> judge_cellranger_count;
+	count_matrix_classify --> judge_matrix_classify;
+	detect_doublets --> judge_doublets;
+	fastq_preflight --> judge_fastq_preflight;
+	fastq_qc --> judge_fastq_qc;
+	find_markers --> judge_markers;
+	human_gate -. &nbsp;end&nbsp; .-> __end__;
+	human_gate -.-> annotate_cells;
+	human_gate -.-> apply_cell_qc_filter;
+	human_gate -.-> build_report;
+	human_gate -.-> cell_calling_review;
+	human_gate -.-> cellranger_count;
+	human_gate -.-> count_matrix_classify;
+	human_gate -.-> detect_doublets;
+	human_gate -.-> fastq_preflight;
+	human_gate -.-> fastq_qc;
+	human_gate -.-> find_markers;
+	human_gate -.-> ingest_validate;
+	human_gate -.-> load_filtered_counts;
+	human_gate -.-> load_raw_counts;
+	human_gate -.-> matrix_preflight;
+	human_gate -.-> merge_samples;
+	human_gate -.-> normalize_hvg_prepare;
+	human_gate -.-> post_load_validate;
+	human_gate -.-> resolve_reference;
+	human_gate -.-> run_clustering;
+	human_gate -.-> run_integration;
+	human_gate -.-> run_pca;
+	human_gate -.-> run_qc_metrics;
+	human_gate -.-> run_umap;
+	human_gate -.-> sample_qc_triage;
+	human_review_decision -. &nbsp;end&nbsp; .-> __end__;
+	human_review_decision -.-> annotate_cells;
+	human_review_decision -.-> build_report;
+	ingest_validate --> judge_ingest;
+	judge_annotation -.-> human_gate;
+	judge_annotation -. &nbsp;continue&nbsp; .-> human_review_decision;
+	judge_cell_calling -.-> human_gate;
+	judge_cell_calling -. &nbsp;standardize&nbsp; .-> merge_samples;
+	judge_cell_qc_filter -. &nbsp;mainline&nbsp; .-> detect_doublets;
+	judge_cell_qc_filter -.-> human_gate;
+	judge_cellranger_count -. &nbsp;continue&nbsp; .-> count_matrix_classify;
+	judge_cellranger_count -.-> human_gate;
+	judge_clustering -.-> human_gate;
+	judge_clustering -. &nbsp;continue&nbsp; .-> run_umap;
+	judge_doublets -.-> human_gate;
+	judge_doublets -. &nbsp;continue&nbsp; .-> normalize_hvg_prepare;
+	judge_fastq_preflight -. &nbsp;continue&nbsp; .-> fastq_qc;
+	judge_fastq_preflight -.-> human_gate;
+	judge_fastq_qc -. &nbsp;continue&nbsp; .-> cellranger_count;
+	judge_fastq_qc -.-> human_gate;
+	judge_filtered_counts -.-> human_gate;
+	judge_filtered_counts -. &nbsp;continue&nbsp; .-> merge_samples;
+	judge_ingest -.-> human_gate;
+	judge_ingest -. &nbsp;matrix&nbsp; .-> matrix_preflight;
+	judge_ingest -. &nbsp;fastq&nbsp; .-> resolve_reference;
+	judge_ingest -. &nbsp;sample_qc&nbsp; .-> sample_qc_triage;
+	judge_integration -.-> human_gate;
+	judge_integration -. &nbsp;continue&nbsp; .-> run_clustering;
+	judge_markers -. &nbsp;continue&nbsp; .-> annotate_cells;
+	judge_markers -.-> human_gate;
+	judge_matrix_classify -.-> human_gate;
+	judge_matrix_classify -. &nbsp;filtered&nbsp; .-> load_filtered_counts;
+	judge_matrix_classify -. &nbsp;raw&nbsp; .-> load_raw_counts;
+	judge_matrix_preflight -. &nbsp;continue&nbsp; .-> count_matrix_classify;
+	judge_matrix_preflight -.-> human_gate;
+	judge_merge -.-> human_gate;
+	judge_merge -. &nbsp;continue&nbsp; .-> post_load_validate;
+	judge_pca -.-> human_gate;
+	judge_pca -. &nbsp;continue&nbsp; .-> run_integration;
+	judge_post_load -.-> human_gate;
+	judge_post_load -. &nbsp;continue&nbsp; .-> run_qc_metrics;
+	judge_preprocess -.-> human_gate;
+	judge_preprocess -. &nbsp;continue&nbsp; .-> run_pca;
+	judge_qc -. &nbsp;continue&nbsp; .-> apply_cell_qc_filter;
+	judge_qc -.-> human_gate;
+	judge_raw_counts -. &nbsp;review&nbsp; .-> cell_calling_review;
+	judge_raw_counts -.-> human_gate;
+	judge_raw_counts -. &nbsp;mainline&nbsp; .-> merge_samples;
+	judge_reference -. &nbsp;continue&nbsp; .-> fastq_preflight;
+	judge_reference -.-> human_gate;
+	judge_sample_qc -.-> human_gate;
+	judge_sample_qc -. &nbsp;matrix&nbsp; .-> matrix_preflight;
+	judge_sample_qc -. &nbsp;fastq&nbsp; .-> resolve_reference;
+	judge_umap -. &nbsp;continue&nbsp; .-> find_markers;
+	judge_umap -.-> human_gate;
+	load_filtered_counts --> judge_filtered_counts;
+	load_raw_counts --> judge_raw_counts;
+	matrix_preflight --> judge_matrix_preflight;
+	merge_samples --> judge_merge;
+	normalize_hvg_prepare --> judge_preprocess;
+	post_load_validate --> judge_post_load;
+	resolve_reference --> judge_reference;
+	run_clustering --> judge_clustering;
+	run_integration --> judge_integration;
+	run_pca --> judge_pca;
+	run_qc_metrics --> judge_qc;
+	run_umap --> judge_umap;
+	sample_qc_triage --> judge_sample_qc;
+	judge_report --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
