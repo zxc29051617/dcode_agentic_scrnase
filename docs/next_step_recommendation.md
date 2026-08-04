@@ -14,7 +14,7 @@ Orchestrator 層是**真的**，分析層是**假的**：
 - 每個 step 後面都有 judge node，verdict 符合 `schemas/judge_result.schema.json`
 - human gate 預設不放行 warn/fail，headless 執行預設 `stop`
 - provenance 每步寫 JSONL audit log
-- **25 個 registry step 裡實作了 14 個**，其餘 11 個還是 `NotImplementedError`
+- **25 個 registry step 裡實作了 15 個**，其餘 10 個還是 `NotImplementedError`
 - FASTQ 上游整段 + raw/filtered 分流 + 載入 + cell calling + 匯流標準化都是真的
 - 兩條路各有入口檢查：`resolve_reference`（FASTQ）與 `matrix_preflight`（矩陣），
   各自用該路線有的證據驗物種，並輸出同一組 QC 常數
@@ -70,8 +70,18 @@ QC filter / doublet / normalize / PCA / clustering 這些空殼步驟開始有�
 列證據然後停，程式碼裡沒有預設值。真實資料驗證過 `max_pct_mito=5` 會砍掉 55% 的細胞
 （因為合併後的中位數就是 5.4），而且對兩個 chemistry 影響差很多。
 
-**下一個是 `detect_doublets`**——它吃 `apply_cell_qc_filter` 濾好的 AnnData，
-`environment.yml` 裡已經有 scrublet。同樣的形狀：doublet rate 也是一個要人決定的參數。
+~~`detect_doublets`~~ 已完成——但形狀跟前兩個**不一樣**，值得記下為什麼：
+
+- `cell_calling_review` / `apply_cell_qc_filter` 沒有人決定就**沒有輸出**，所以會停
+- `detect_doublets` 一定有輸出（標記好的 AnnData），刪不刪是另一個問題，所以**不擋流程**
+
+expected doublet rate 從 10x 的 loading table 推（每 1,000 顆細胞 0.76%），
+不是 Scrublet 那個假設回收 8,000 顆的 0.06 預設——對 1,200 顆的 library
+那個預設會多找 7 倍的 doublet。每個 library 各自跑（doublet 只在同一個 GEM well 形成）。
+真實資料：v2 11/1,015、v3 11/1,218，兩邊都貼近 loading 預測的值。
+
+**下一個是 `normalize_hvg_prepare`**——normalization 方法、HVG 數量、要不要 regress out
+都是要人決定的參數，但跟 doublet 一樣，沒決定時有合理預設可以先產出結果。
 
 `--matrix-kind` 和 `--cell-calling-resolved` 兩個 scaffold fallback 都已經移除；
 分支現在讀的都是上游 step 真正做出的決定，這條路上沒有 config fallback 了。

@@ -80,6 +80,18 @@ def main(argv: list[str] | None = None) -> int:
     qc.add_argument("--max-pct-erythroid", type=float, metavar="PCT",
                     help="drop cells above PCT%% haemoglobin reads")
 
+    # Doublets. The rate is derived per library from 10x's loading table, so the
+    # override exists for a known-unusual loading rather than as a routine knob.
+    # Removal stays opt-in: the call is a probability, and the annotated object
+    # is a complete result on its own.
+    dbl = parser.add_argument_group("doublets")
+    dbl.add_argument("--expected-doublet-rate", type=float, metavar="RATE",
+                     help="override the rate derived from the recovered cell count")
+    dbl.add_argument("--doublet-threshold", type=float, metavar="SCORE",
+                     help="override Scrublet's automatic score threshold")
+    dbl.add_argument("--remove-doublets", action="store_true",
+                     help="drop called doublets instead of only annotating them")
+
     parser.add_argument("--sample-qc-triage", action="store_true")
     parser.add_argument("--judge", choices=["stub", "local"], default="stub")
     parser.add_argument(
@@ -106,6 +118,9 @@ def main(argv: list[str] | None = None) -> int:
             "min_counts": args.min_counts,
             "max_pct_mito": args.max_pct_mito,
             "max_pct_erythroid": args.max_pct_erythroid,
+            "expected_doublet_rate": args.expected_doublet_rate,
+            "doublet_threshold": args.doublet_threshold,
+            "remove_doublets": args.remove_doublets,
             "sample_qc_triage": args.sample_qc_triage,
         },
         policy=GatePolicy(

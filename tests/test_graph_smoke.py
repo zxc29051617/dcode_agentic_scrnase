@@ -40,6 +40,7 @@ IMPLEMENTED = [
     "post_load_validate",
     "run_qc_metrics",
     "apply_cell_qc_filter",
+    "detect_doublets",
 ]
 """Skills with a real `run()` on the filtered-matrix route; everything else is a scaffold."""
 
@@ -244,7 +245,7 @@ def test_scaffolds_are_reported_not_hidden():
     assert report["verdicts"]["ingest_validate"] == "pass"
     assert report["verdicts"]["post_load_validate"] == "pass"
     assert report["verdicts"]["run_qc_metrics"] == "pass"
-    assert report["verdicts"]["detect_doublets"] == "pass (scaffold)"
+    assert report["verdicts"]["normalize_hvg_prepare"] == "pass (scaffold)"
 
     for verdict in final["judge_results"]:
         if verdict["step"] in IMPLEMENTED:

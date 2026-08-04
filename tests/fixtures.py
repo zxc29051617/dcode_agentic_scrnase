@@ -61,6 +61,14 @@ def make_mtx_dir(
 
     # Real entries, not just a header: the loaders read these files with scanpy,
     # so a header-only matrix fails rather than classifying.
+    #
+    # The counts vary between barcodes on purpose. An earlier version gave every
+    # barcode the same genes at the same values, which classifies and loads fine
+    # but has zero variance — so Scrublet's HVG selection returned no genes and
+    # its PCA failed. A fixture that cannot be analysed is not a fixture.
+    import random
+
+    rng = random.Random(0)
     non_empty = min(nnz, n_barcodes)
     per_barcode = max(1, nnz // non_empty)
     with gzip.open(directory / "matrix.mtx.gz", "wt") as handle:
@@ -68,15 +76,19 @@ def make_mtx_dir(
         handle.write(f"{n_features} {n_barcodes} {nnz}\n")
         written = 0
         for barcode in range(1, non_empty + 1):
+            # Two populations loading different halves of the gene space, so
+            # there is structure for a neighbour graph to find.
+            shift = 0 if barcode % 2 else n_features // 2
             for offset in range(per_barcode):
                 if written >= nnz:
                     break
-                handle.write(f"{(offset % n_features) + 1} {barcode} {offset + 1}\n")
+                gene = ((offset + shift) % n_features) + 1
+                handle.write(f"{gene} {barcode} {rng.randint(1, 30)}\n")
                 written += 1
         # Any remainder goes to the first barcode, on genes it does not have yet.
         gene = per_barcode
         while written < nnz and gene < n_features:
-            handle.write(f"{gene + 1} 1 1\n")
+            handle.write(f"{gene + 1} 1 {rng.randint(1, 30)}\n")
             written += 1
             gene += 1
     return directory
