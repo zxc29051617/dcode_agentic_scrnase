@@ -14,3 +14,4 @@ data/*
 !data/README.md
 tools/*
 !tools/README.md
+.env

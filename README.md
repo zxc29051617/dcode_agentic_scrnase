@@ -141,13 +141,23 @@ python -m src.run --input <raw_feature_bc_matrix.h5> --force-cells 1500
 工具會把跟 Cell Ranger 判定的差異列出來讓你判斷。
 
 Judge 預設用 `StubJudge`（不需要模型，只看 status/warnings/errors）。
-要接本地模型：
+要接本地模型（任何 OpenAI 相容端點：Ollama、vLLM、llama.cpp）：
 
 ```bash
-export SCRNA_JUDGE_BASE_URL=http://localhost:11434/v1
-export SCRNA_JUDGE_MODEL=qwen2.5:7b-instruct
+export SCRNA_JUDGE_BASE_URL=http://<host>:11434/v1   # 注意結尾的 /v1
+export SCRNA_JUDGE_MODEL=gpt-oss:20b
 python -m src.run --judge local ...
+
+# 先確認端點通不通、模型在不在
+python scripts/check_judge_endpoint.py
 ```
+
+實驗室的 DGX 位址放在 `.env.example`，不進 git 的部分放 `.env`。
+`gpt-oss:20b` 實測判一步約 12 秒，strict `json_schema` 結構化輸出可用。
+
+⚠️ **模型給的建議數字要當成建議，不是設定值。** 實測 `gpt-oss:20b` 會建議
+`max_pct_mito=0.1`——但這個欄位的單位是 0–100 的百分比，照做會砍掉幾乎所有細胞。
+judge 不能寫入 `artifacts`（見 `src/nodes.py:109`），這條限制不是形式主義。
 
 ## src/ 分層
 
