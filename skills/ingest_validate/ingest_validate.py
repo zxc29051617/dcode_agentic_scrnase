@@ -13,9 +13,16 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from src import matrix_io  # noqa: E402
 
 TOOL_NAME = "ingest_validate"
 INPUT_FIELDS = (
@@ -311,6 +318,15 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
     warnings.extend(kind_warnings)
     chosen = _preferred_matrix(detections, matrix_kind)
 
+    # Every matrix of the settled kind travels on, not just the preferred one.
+    # Emitting a single `matrix_path` here used to mean N inputs became one
+    # library with nothing said about it: downstream steps fall back to the
+    # singular key and name it `sample1`, so a two-sample run silently reported
+    # on one. The plural mapping is what makes `merge_samples` see them all.
+    matching = [d for d in detections if d.matrix_kind == matrix_kind] or detections
+    matrix_paths = matrix_io.name_samples([d.path for d in matching])
+    samples = sorted(matrix_paths)
+
     return _result(
         input_type="matrix",
         artifact_kind=chosen.artifact_kind,
@@ -318,11 +334,17 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
         needs_upstream_preprocessing=False,
         needs_cell_calling={"raw": True, "filtered": False}.get(matrix_kind),
         matrix_path=chosen.path,
+        matrix_paths=matrix_paths,
+        sample_ids=samples,
         detections=detections,
         warnings=warnings,
         errors=errors,
         next_tool=_next_tool("matrix", config, payload),
-        metrics={"n_artifacts": len(detections), **chosen.evidence},
+        metrics={
+            "n_artifacts": len(detections),
+            "n_samples": len(matrix_paths),
+            **chosen.evidence,
+        },
     )
 
 
@@ -365,6 +387,7 @@ def _result(
     needs_upstream_preprocessing: bool | None = None,
     needs_cell_calling: bool | None = None,
     matrix_path: str | None = None,
+    matrix_paths: dict[str, str] | None = None,
     sample_ids: list[str] | None = None,
     fastq_layout: dict[str, Any] | None = None,
     detections: list[Detection] | None = None,
@@ -380,6 +403,7 @@ def _result(
         "needs_upstream_preprocessing": needs_upstream_preprocessing,
         "needs_cell_calling": needs_cell_calling,
         "matrix_path": matrix_path,
+        "matrix_paths": matrix_paths or ({"sample1": matrix_path} if matrix_path else {}),
         "sample_ids": sample_ids or [],
         "fastq_layout": fastq_layout or {},
         "detected": [asdict(d) for d in detections or []],

@@ -32,6 +32,7 @@ from tests import (  # noqa: E402
     test_find_markers,
     test_annotate_cells,
     test_provenance,
+    test_build_report,
     test_run_qc_metrics,
 )
 
@@ -59,6 +60,7 @@ MODULES = (
     test_find_markers,
     test_annotate_cells,
     test_provenance,
+    test_build_report,
     test_graph_smoke,
 )
 

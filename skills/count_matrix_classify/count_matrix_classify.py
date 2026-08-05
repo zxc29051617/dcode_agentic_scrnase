@@ -21,8 +21,15 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
+import sys
 from pathlib import Path
 from typing import Any
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from src import matrix_io  # noqa: E402
 
 TOOL_NAME = "count_matrix_classify"
 INPUT_FIELDS = (
@@ -264,12 +271,15 @@ def _hinted_paths_and_kind(payload: dict[str, Any]) -> tuple[dict[str, str], str
         if path:
             return {"sample1": str(path)}, hint, step
 
+    # Every listed path is a library. Keeping only `listed[0]` here meant a
+    # multi-input run classified one matrix and carried that verdict for all of
+    # them, with nothing said about the rest.
     bundle = payload.get("input_bundle") or {}
     if isinstance(bundle, (str, Path)):
-        return {"sample1": str(bundle)}, None, "input_bundle"
+        return {matrix_io.sample_name_for(bundle): str(bundle)}, None, "input_bundle"
     raw = bundle.get("paths") or bundle.get("path") or []
     listed = [str(raw)] if isinstance(raw, (str, Path)) else [str(p) for p in raw]
-    return ({"sample1": listed[0]} if listed else {}), None, "input_bundle"
+    return (matrix_io.name_samples(listed) if listed else {}), None, "input_bundle"
 
 
 def run(payload: dict[str, Any]) -> dict[str, Any]:

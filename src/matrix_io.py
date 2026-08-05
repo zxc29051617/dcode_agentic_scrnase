@@ -12,7 +12,7 @@ and passes the path on, which also makes every step resumable from disk.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 #: A barcode-rank curve is read on log-log axes, so ranks are sampled
 #: geometrically rather than evenly — the interesting structure is in the first
@@ -27,6 +27,64 @@ MAX_PLAUSIBLE_CELLS = 50_000
 
 #: Below this the curve is quantisation noise, not structure.
 MIN_CLIFF_RANK = 10
+
+
+#: Names 10x gives every matrix, which therefore name no particular sample.
+#: An mtx directory is itself called `filtered_feature_bc_matrix`, so for those
+#: the sample is the directory above.
+GENERIC_MATRIX_NAMES = frozenset({
+    "filtered_feature_bc_matrix",
+    "raw_feature_bc_matrix",
+    "filtered_gene_bc_matrices",
+    "raw_gene_bc_matrices",
+    "sample_filtered_feature_bc_matrix",
+    "sample_raw_feature_bc_matrix",
+    "outs",
+})
+
+
+def sample_name_for(path: str | Path) -> str:
+    """The name a person would call the library at `path`.
+
+    Cell Ranger lays a count run out as `<sample>/outs/<matrix>`, so the
+    directory above `outs` is the sample. Every matrix it writes is called some
+    variation of `filtered_feature_bc_matrix`, so those names are walked past
+    rather than used — a report listing `filtered_feature_bc_matrix_2` as a
+    sample would tell a reader nothing about which library it was.
+    """
+    target = Path(path)
+    parts = target.parts
+    if "outs" in parts:
+        index = parts.index("outs")
+        if index > 0:
+            return parts[index - 1]
+
+    stem = target.name if target.is_dir() else Path(target.stem).stem
+    if stem.lower() not in GENERIC_MATRIX_NAMES:
+        return stem
+    for parent in target.parents:
+        if parent.name and parent.name.lower() not in GENERIC_MATRIX_NAMES:
+            return parent.name
+    return stem
+
+
+def name_samples(paths: Sequence[str | Path]) -> dict[str, str]:
+    """`{sample: path}` for a list of matrices, with names guaranteed unique.
+
+    Names matter more than they look: they become `obs["sample"]`, and every
+    per-library number in the report is keyed by them. Two libraries collapsing
+    onto one name would merge them silently, so a collision is disambiguated
+    rather than allowed.
+    """
+    named: dict[str, str] = {}
+    for path in paths:
+        base = sample_name_for(path)
+        name, suffix = base, 2
+        while name in named:
+            name = f"{base}_{suffix}"
+            suffix += 1
+        named[name] = str(path)
+    return named
 
 
 def load_matrix(path: str | Path) -> tuple[Any, dict[str, Any]]:

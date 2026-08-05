@@ -54,12 +54,15 @@ def resolve_matrices(payload: dict[str, Any]) -> dict[str, str]:
         if path:
             return {"sample1": str(path)}
 
+    # Falling back to the bundle: every path listed becomes a library, not just
+    # the first. Taking `listed[0]` here silently analysed one of N inputs and
+    # reported on it as though it were the whole run.
     bundle = payload.get("input_bundle") or {}
     if isinstance(bundle, (str, Path)):
-        return {"sample1": str(bundle)}
+        return {matrix_io.sample_name_for(bundle): str(bundle)}
     raw = bundle.get("paths") or bundle.get("path") or []
     listed = [str(raw)] if isinstance(raw, (str, Path)) else [str(p) for p in raw]
-    return {"sample1": listed[0]} if listed else {}
+    return matrix_io.name_samples(listed) if listed else {}
 
 
 def run(payload: dict[str, Any]) -> dict[str, Any]:

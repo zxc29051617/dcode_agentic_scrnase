@@ -101,17 +101,30 @@ def _identify_species(adata: Any) -> tuple[set[str], str]:
     return set(), "none available"
 
 
-def _resolve_matrix(payload: dict[str, Any]) -> str | None:
+def _resolve_matrices(payload: dict[str, Any]) -> dict[str, str]:
+    """Every matrix on the way in, not just the first.
+
+    This step decides the species for the whole run, so it has to look at every
+    library: checking one and carrying that verdict for the rest is how a
+    mouse sample smuggled into a human run would go unnoticed. It also has to
+    pass them all on, because whatever it emits is what
+    `count_matrix_classify` reads — it is consulted before `ingest_validate`.
+    """
     artifacts = payload.get("artifacts") or {}
-    path = (artifacts.get("ingest_validate") or {}).get("matrix_path")
-    if path:
-        return str(path)
+    ingest = artifacts.get("ingest_validate") or {}
+    paths = ingest.get("matrix_paths")
+    if paths:
+        return {str(k): str(v) for k, v in paths.items()}
+    single = ingest.get("matrix_path")
+    if single:
+        return {matrix_io.sample_name_for(single): str(single)}
+
     bundle = payload.get("input_bundle") or {}
     if isinstance(bundle, (str, Path)):
-        return str(bundle)
+        return {matrix_io.sample_name_for(bundle): str(bundle)}
     raw = bundle.get("paths") or bundle.get("path") or []
-    paths = [str(raw)] if isinstance(raw, (str, Path)) else [str(p) for p in raw]
-    return paths[0] if paths else None
+    listed = [str(raw)] if isinstance(raw, (str, Path)) else [str(p) for p in raw]
+    return matrix_io.name_samples(listed) if listed else {}
 
 
 def run(payload: dict[str, Any]) -> dict[str, Any]:
@@ -120,12 +133,23 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
     warnings: list[str] = list(constants["warnings"])
     notes: list[str] = list(constants["notes"])
 
-    source = _resolve_matrix(payload)
-    if not source:
+    matrices = _resolve_matrices(payload)
+    if not matrices:
         return _result(errors=["no matrix to inspect"], constants=constants)
+
+    # Every library is checked, but the structural report describes the first.
+    # A second library that disagrees on species is caught by the loop at the
+    # end; one that is unreadable is an error naming which one.
+    ordered = sorted(matrices.items())
+    per_matrix: dict[str, Any] = {}
+    for name, candidate in ordered:
+        as_path = Path(candidate).expanduser()
+        if not as_path.exists():
+            return _result(errors=[f"{name}: matrix path does not exist: {as_path}"],
+                           constants=constants)
+
+    first_name, source = ordered[0]
     path = Path(source).expanduser()
-    if not path.exists():
-        return _result(errors=[f"matrix path does not exist: {path}"], constants=constants)
 
     try:
         adata, provenance = matrix_io.load_matrix(path)
@@ -212,10 +236,46 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
         else:
             verified = True
 
+    # --- the other libraries ------------------------------------------------
+    # Only the species is re-checked, and only where a matrix carries evidence:
+    # it is the one property that must hold across every library, and the one
+    # whose failure would file a whole organism's worth of numbers wrongly.
+    per_matrix[first_name] = {"path": str(path), "species": sorted(seen) or None}
+    for name, other in ordered[1:]:
+        try:
+            other_adata, _ = matrix_io.load_matrix(Path(other).expanduser())
+        except Exception as exc:  # noqa: BLE001 - an unreadable library is a finding
+            return _result(
+                errors=[f"{name}: cannot read {other} as a count matrix: "
+                        f"{type(exc).__name__}: {exc}"],
+                constants=constants,
+            )
+        other_seen, other_evidence = _identify_species(other_adata)
+        per_matrix[name] = {"path": str(other), "species": sorted(other_seen) or None}
+        if len(other_seen) == 1 and declared is not None and other_seen != {declared}:
+            return _result(
+                errors=[
+                    f"species mismatch: the run declares {declared!r} but {name} looks "
+                    f"like {other_seen.pop()!r} from its {other_evidence}. Merging "
+                    f"libraries from different organisms would file every number "
+                    f"downstream under the wrong one"
+                ],
+                constants=constants,
+            )
+
+    if len(ordered) > 1:
+        notes.append(
+            f"{len(ordered)} libraries were detected ({', '.join(n for n, _ in ordered)}); "
+            f"the structural report above describes {first_name}, and the species of "
+            "every library was checked"
+        )
+
     return _result(
         readable=True,
         matrix_format=provenance["source_format"],
         matrix_path=str(path),
+        matrix_paths={name: value["path"] for name, value in per_matrix.items()},
+        per_matrix=per_matrix,
         gene_id_convention=convention,
         feature_types=provenance.get("feature_types_on_disk") or {},
         species_verified=verified,
@@ -240,6 +300,8 @@ def _result(
     readable: bool = False,
     matrix_format: str | None = None,
     matrix_path: str | None = None,
+    matrix_paths: dict[str, str] | None = None,
+    per_matrix: dict[str, Any] | None = None,
     gene_id_convention: str | None = None,
     feature_types: dict[str, int] | None = None,
     species_verified: bool = False,
@@ -257,6 +319,8 @@ def _result(
         "readable": readable,
         "matrix_format": matrix_format,
         "matrix_path": matrix_path,
+        "matrix_paths": matrix_paths or ({"sample1": matrix_path} if matrix_path else {}),
+        "per_matrix": per_matrix or {},
         "gene_id_convention": gene_id_convention,
         "feature_types": feature_types or {},
         "orientation": orientation,

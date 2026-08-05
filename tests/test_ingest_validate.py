@@ -182,6 +182,37 @@ def test_sample_qc_triage_takes_priority_when_enabled():
     assert result["recommended_next_tool"] == "sample_qc_triage"
 
 
+def test_every_matrix_travels_on_not_just_the_first():
+    """N inputs became one library, silently, until this was pinned.
+
+    `ingest_validate` emitted only a singular `matrix_path`; downstream steps
+    fall back to it and call the result `sample1`, so a two-sample run analysed
+    one library and reported on it as though it were the whole thing — with no
+    warning, because nothing noticed.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        first = fixtures.make_mtx_dir(root / "libA", "filtered_feature_bc_matrix")
+        second = fixtures.make_mtx_dir(root / "libB", "filtered_feature_bc_matrix")
+        result = ingest.run({"input_bundle": {"paths": [str(first), str(second)]}, "config": {}})
+
+    assert result["errors"] == []
+    assert len(result["matrix_paths"]) == 2, result["matrix_paths"]
+    assert len(result["sample_ids"]) == 2
+    assert result["metrics"]["n_samples"] == 2
+    assert set(result["matrix_paths"].values()) == {str(first), str(second)}
+
+
+def test_sample_names_come_from_the_path_not_a_counter():
+    """`sample1` tells a reader nothing; the directory name is what they call it."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        first = fixtures.make_mtx_dir(root / "pbmc_donor_A", "filtered_feature_bc_matrix")
+        second = fixtures.make_mtx_dir(root / "pbmc_donor_B", "filtered_feature_bc_matrix")
+        result = ingest.run({"input_bundle": {"paths": [str(first), str(second)]}, "config": {}})
+    assert set(result["sample_ids"]) == {"pbmc_donor_A", "pbmc_donor_B"}
+
+
 def main() -> int:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     failures, skipped = [], 0
