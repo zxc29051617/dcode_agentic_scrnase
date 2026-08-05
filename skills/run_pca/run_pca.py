@@ -149,6 +149,7 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
         "n_comps": n_comps,
         "n_comps_requested": int(config.get("n_comps", DEFAULT_N_COMPS)),
         "n_genes_used": n_genes_used,
+        "random_state": int(config.get("random_state", 0)),
         "used_highly_variable": mask_var is not None,
         "variance_ratio": [round(v, 4) for v in variance_ratio[:N_VARIANCE_RATIOS_REPORTED]],
         "cumulative_variance_explained": round(cumulative, 4),

@@ -160,17 +160,25 @@ def _available_criteria(adata: Any, qc: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def _mask_for(adata: Any, thresholds: dict[str, Any], available: dict[str, str]) -> tuple[Any, dict[str, int]]:
-    """Boolean keep-mask, plus how many cells each criterion rejected on its own.
+def _mask_for(
+    adata: Any, thresholds: dict[str, Any], available: dict[str, str]
+) -> tuple[Any, dict[str, int], dict[str, Any]]:
+    """Boolean keep-mask, per-criterion reject counts, and the per-cell flags.
 
     The per-criterion counts overlap: a cell can fail two cuts, and is counted
     in both. That is deliberate — "which criterion is doing the work" is the
     question being answered, not a partition.
+
+    The per-cell flags are returned as well as the counts, because the counts
+    cannot be taken apart again. Given "26 failed min_genes, 72 failed
+    max_pct_mito, 74 removed", there is no way to recover how many failed both;
+    only the flags say that.
     """
     import numpy as np
 
     keep = np.ones(adata.n_obs, dtype=bool)
     attribution: dict[str, int] = {}
+    flags: dict[str, Any] = {}
     for name, value in thresholds.items():
         if value is None:
             continue
@@ -178,8 +186,33 @@ def _mask_for(adata: Any, thresholds: dict[str, Any], available: dict[str, str])
         values = np.asarray(adata.obs[column], dtype=float)
         failing = values < value if CRITERIA[name][1] == "min" else values > value
         attribution[name] = int(failing.sum())
+        flags[name] = failing
         keep &= ~failing
-    return keep, attribution
+    return keep, attribution, flags
+
+
+def _write_cell_flags(
+    adata: Any, keep: Any, flags: dict[str, Any], path: Path
+) -> str:
+    """One row per pre-filter cell: which criteria it failed, and whether it survived.
+
+    Written as a table rather than onto the output object, because the output
+    holds survivors only — every flag there would be False by construction. The
+    question "how much did these criteria overlap" can only be asked of the
+    cells that were removed.
+    """
+    import pandas as pd
+
+    frame = pd.DataFrame(index=adata.obs_names.copy())
+    frame.index.name = "barcode"
+    if "sample" in adata.obs:
+        frame["sample"] = adata.obs["sample"].astype(str).values
+    for name, failing in sorted(flags.items()):
+        frame[f"fail_{name}"] = failing
+    frame["qc_pass"] = keep
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_csv(path)
+    return str(path)
 
 
 def run(payload: dict[str, Any]) -> dict[str, Any]:
@@ -276,6 +309,11 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
 
         keep = np.zeros(adata.n_obs, dtype=bool)
         attribution: dict[str, int] = {}
+        # Per-sample thresholds still produce one flag column per criterion over
+        # the whole object; a cell simply gets judged against its own sample's
+        # cut. A cell in a sample with no threshold for a criterion is not a
+        # failure of it.
+        flags: dict[str, Any] = {}
         for sample in samples:
             in_sample = np.asarray(adata.obs["sample"] == sample)
             sample_thresholds = {
@@ -295,11 +333,15 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
                 }
                 continue
             subset = adata[in_sample]
-            sample_keep, sample_attr = _mask_for(subset, sample_thresholds, available)
+            sample_keep, sample_attr, sample_flags = _mask_for(subset, sample_thresholds, available)
             indices = np.flatnonzero(in_sample)
             keep[indices[sample_keep]] = True
             for name, count in sample_attr.items():
                 attribution[name] = attribution.get(name, 0) + count
+            for name, failing in sample_flags.items():
+                if name not in flags:
+                    flags[name] = np.zeros(adata.n_obs, dtype=bool)
+                flags[name][indices] = failing
             per_sample[sample] = {
                 "thresholds": sample_thresholds,
                 "n_before": int(in_sample.sum()),
@@ -309,7 +351,7 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
     else:
         flat = {name: _for(value, samples[0] if samples else "") for name, value in requested.items()}
         flat = {k: v for k, v in flat.items() if v is not None}
-        keep, attribution = _mask_for(adata, flat, available)
+        keep, attribution, flags = _mask_for(adata, flat, available)
         requested = flat
         for sample in samples:
             in_sample = np.asarray(adata.obs["sample"] == sample)
@@ -349,6 +391,15 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
     filtered = adata[keep].copy()
     out_dir = Path(payload.get("run_dir") or ".") / TOOL_NAME
     adata_path = matrix_io.write_h5ad(filtered, out_dir / "adata.h5ad")
+    flags_path = _write_cell_flags(adata, keep, flags, out_dir / "cell_qc_flags.csv")
+
+    # How many removed cells failed more than one cut. The attribution counts
+    # above cannot answer this, and it changes how the numbers read: 26 + 72
+    # against 74 removed only makes sense once the overlap is stated.
+    n_multi = 0
+    if flags:
+        failed_count = np.sum([f.astype(int) for f in flags.values()], axis=0)
+        n_multi = int(((failed_count > 1) & ~keep).sum())
 
     summary = {
         "n_before": n_before,
@@ -357,6 +408,8 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
         "pct_removed": round(100 * removed / n_before, 1),
         # Overlapping counts: a cell failing two cuts appears in both.
         "removed_by_criterion": attribution,
+        "n_removed_by_more_than_one": n_multi,
+        "cell_flags_path": flags_path,
     }
     return _result(
         adata_path=adata_path,

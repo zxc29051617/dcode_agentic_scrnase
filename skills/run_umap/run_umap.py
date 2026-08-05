@@ -69,6 +69,42 @@ DEFAULT_PERPLEXITY = 30
 #: says so.
 MIN_CELLS_FOR_MEANINGFUL_TSNE = 30
 
+#: Scanpy's own default, and what `run_clustering` uses when nothing says
+#: otherwise. Only used as a fallback for the diagnostic embedding.
+DEFAULT_N_NEIGHBORS = 15
+
+#: The pre-integration embedding, and the neighbour graph behind it. Kept
+#: under their own keys so the mainline `neighbors`/`X_umap` that clustering
+#: and the report depend on are never overwritten.
+UNINTEGRATED_UMAP_KEY = "X_umap_unintegrated"
+UNINTEGRATED_NEIGHBORS_KEY = "neighbors_unintegrated"
+
+
+def _should_embed_unintegrated(payload: dict[str, Any], adata: Any, embedding_key: str) -> bool:
+    """Only when there is a correction to show, and something to show it against.
+
+    Three conditions, all necessary: integration actually ran, the uncorrected
+    representation is still on the object, and there is more than one batch. A
+    before/after picture of a single library compares an embedding to itself.
+    """
+    artifacts = payload.get("artifacts") or {}
+    summary = (artifacts.get("run_integration") or {}).get("integration_summary") or {}
+    integrated = summary.get("integrated")
+    if integrated is None:
+        # Standalone use, with no artifact to read: infer from the embedding.
+        integrated = embedding_key != "X_pca"
+    if not integrated or "X_pca" not in adata.obsm:
+        return False
+    batch_key = summary.get("batch_key") or "sample"
+    return batch_key in adata.obs and adata.obs[batch_key].nunique() > 1
+
+
+def _neighbors_used(payload: dict[str, Any]) -> int:
+    """Match the neighbour count clustering used, so only the input differs."""
+    artifacts = payload.get("artifacts") or {}
+    summary = (artifacts.get("run_clustering") or {}).get("clustering_summary") or {}
+    return int(summary.get("n_neighbors") or DEFAULT_N_NEIGHBORS)
+
 
 def _resolve(payload: dict[str, Any]) -> tuple[str | None, str]:
     """Return the AnnData path and the embedding key to read for t-SNE."""
@@ -122,6 +158,35 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
             return _result(errors=[f"UMAP failed: {type(exc).__name__}: {exc}"])
         computed.append("umap")
 
+        # ---- the integration diagnostic ------------------------------------
+        # Computed here rather than at report time on purpose: a UMAP has a
+        # seed, a neighbour count and a package version behind it, so
+        # recomputing it later would produce a figure that no longer matches
+        # the run it claims to describe. It is a diagnostic, not a proof —
+        # it shows whether libraries mix, and cannot by itself distinguish
+        # correction from over-correction.
+        if _should_embed_unintegrated(payload, adata, embedding_key):
+            try:
+                sc.pp.neighbors(
+                    adata,
+                    use_rep="X_pca",
+                    n_neighbors=_neighbors_used(payload),
+                    key_added=UNINTEGRATED_NEIGHBORS_KEY,
+                )
+                sc.tl.umap(
+                    adata,
+                    neighbors_key=UNINTEGRATED_NEIGHBORS_KEY,
+                    key_added=UNINTEGRATED_UMAP_KEY,
+                    random_state=int(config.get("random_state", 0)),
+                )
+                computed.append("umap_unintegrated")
+            except Exception as exc:  # noqa: BLE001 - losing a diagnostic must not lose the run
+                warnings.append(
+                    f"the pre-integration embedding could not be computed "
+                    f"({type(exc).__name__}: {exc}); the before/after comparison "
+                    "will be missing from the report"
+                )
+
     if method in ("tsne", "both"):
         if embedding_key not in adata.obsm:
             return _result(errors=[f"{source} has no obsm['{embedding_key}']; run_integration must run first"])
@@ -157,8 +222,15 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
         "method": method,
         "computed": computed,
         "embedding_key": embedding_key,
+        "random_state": int(config.get("random_state", 0)),
         "umap_key": "X_umap" if "umap" in computed else None,
         "tsne_key": "X_tsne" if "tsne" in computed else None,
+        # Present only when integration ran on more than one batch. The report
+        # renders a before/after panel from this and says nothing about it
+        # otherwise, rather than implying the comparison was possible.
+        "unintegrated_umap_key": (
+            UNINTEGRATED_UMAP_KEY if "umap_unintegrated" in computed else None
+        ),
     }
 
     return _result(

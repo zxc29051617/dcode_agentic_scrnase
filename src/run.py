@@ -103,6 +103,10 @@ def main(argv: list[str] | None = None) -> int:
                      help="which 2D embedding(s) to compute (default umap)")
     ana.add_argument("--celltypist-model", metavar="NAME",
                      help="e.g. Immune_All_Low.pkl; omit to list the candidates and stop")
+    # One seed for every stochastic step, recorded in run_metadata.json so a
+    # report can state it rather than leaving it implicit.
+    ana.add_argument("--random-state", type=int, metavar="N",
+                     help="seed for PCA, Harmony, Leiden, UMAP, t-SNE and Scrublet (default 0)")
 
     parser.add_argument("--sample-qc-triage", action="store_true")
     parser.add_argument("--judge", choices=["stub", "local"], default="stub")
@@ -139,6 +143,7 @@ def main(argv: list[str] | None = None) -> int:
             "resolution": args.resolution,
             "method": args.method,
             "celltypist_model": args.celltypist_model,
+            "random_state": args.random_state,
             "sample_qc_triage": args.sample_qc_triage,
         }.items()
         if value is not None

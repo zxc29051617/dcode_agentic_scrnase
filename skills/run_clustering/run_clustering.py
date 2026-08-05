@@ -155,6 +155,7 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
         "embedding_key": embedding_key,
         "n_neighbors": n_neighbors,
         "resolution": resolution,
+        "random_state": int(config.get("random_state", 0)),
         "n_clusters": n_clusters,
         "cluster_sizes": {str(k): int(v) for k, v in sizes.items()},
         "smallest_cluster": smallest,

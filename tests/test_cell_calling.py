@@ -179,6 +179,41 @@ def test_no_choice_means_no_decision():
     assert any("no cell count chosen" in w for w in result["warnings"])
 
 
+def test_the_rank_curve_is_saved_before_a_decision_is_made():
+    """The curve is what the operator decides from, so it cannot wait for the decision."""
+    import numpy as np
+
+    with tempfile.TemporaryDirectory() as tmp:
+        result = _reviewed(Path(tmp))
+        assert result["cell_calling_state"] == "needs_review"
+        path = Path(result["evidence"]["rank_curve_path"])
+        assert path.exists()
+        curve = np.load(path)["sorted_umi_counts"]
+    assert curve.size == 300 + 5_000, "every barcode belongs on the curve, not just the cells"
+    assert (np.diff(curve) <= 0).all(), "a rank curve is sorted descending"
+
+
+def test_the_saved_curve_reproduces_the_reported_knee():
+    """If the curve and the scalars disagree, the plot would contradict the text."""
+    import numpy as np
+
+    with tempfile.TemporaryDirectory() as tmp:
+        result = _reviewed(Path(tmp))
+        evidence = result["evidence"]
+        curve = np.load(Path(evidence["rank_curve_path"]))["sorted_umi_counts"]
+    if evidence.get("knee_rank"):
+        assert int(curve[evidence["knee_rank"] - 1]) == evidence["knee_umi"]
+    if evidence.get("inflection_rank"):
+        assert int(curve[evidence["inflection_rank"] - 1]) == evidence["inflection_umi"]
+
+
+def test_the_curve_survives_a_resolved_decision_too():
+    with tempfile.TemporaryDirectory() as tmp:
+        result = _reviewed(Path(tmp), force_cells=300)
+        assert result["cell_calling_state"] == "resolved"
+        assert Path(result["evidence"]["rank_curve_path"]).exists()
+
+
 def test_the_evidence_prices_each_candidate_count():
     """A table of what N costs in UMIs is what makes the choice possible."""
     with tempfile.TemporaryDirectory() as tmp:

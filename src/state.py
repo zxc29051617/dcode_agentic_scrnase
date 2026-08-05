@@ -7,6 +7,7 @@ judge nodes only append verdicts; the human gate only appends decisions.
 
 from __future__ import annotations
 
+import json
 import operator
 import uuid
 from datetime import datetime, timezone
@@ -33,6 +34,7 @@ class WorkflowState(TypedDict, total=False):
     sample_metadata: dict[str, Any]
     input_bundle: dict[str, Any]
     audit_log_path: str
+    run_metadata_path: str
 
     current_step: str
     artifacts: Annotated[dict[str, Any], merge_dicts]
@@ -55,16 +57,34 @@ def new_run_state(
     sample_metadata: dict[str, Any] | None = None,
     runs_dir: str | Path = "runs",
 ) -> WorkflowState:
-    """Build a fresh state with a run id and an audit log path."""
+    """Build a fresh state, and record what the environment was at run start.
+
+    The metadata is written here rather than gathered when a report is built:
+    those are different moments, and a report regenerated later would otherwise
+    describe an environment that never produced these results.
+    """
+    from .provenance import capture_run_metadata
+
     run_id = f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:8]}"
-    audit_path = Path(runs_dir) / run_id / "audit.jsonl"
+    run_dir = Path(runs_dir) / run_id
+    audit_path = run_dir / "audit.jsonl"
+    metadata_path = run_dir / "run_metadata.json"
+
+    resolved_config = dict(config or {})
+    metadata = capture_run_metadata(run_id=run_id, config=resolved_config)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    metadata_path.write_text(
+        json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
     return WorkflowState(
         run_id=run_id,
         project=project,
-        config=dict(config or {}),
+        config=resolved_config,
         sample_metadata=dict(sample_metadata or {}),
         input_bundle=dict(input_bundle or {}),
         audit_log_path=str(audit_path),
+        run_metadata_path=str(metadata_path),
         current_step="",
         artifacts={},
         metrics={},
@@ -116,4 +136,5 @@ def summarize(state: WorkflowState) -> dict[str, Any]:
         "halted": bool(state.get("halted")),
         "halt_reason": state.get("halt_reason"),
         "audit_log_path": state.get("audit_log_path"),
+        "run_metadata_path": state.get("run_metadata_path"),
     }

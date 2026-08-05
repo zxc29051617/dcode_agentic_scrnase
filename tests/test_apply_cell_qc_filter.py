@@ -59,6 +59,55 @@ def _run(root: Path, adata, **config):
     )
 
 
+# --- the per-cell record of why each cell went ------------------------------
+
+
+def test_every_pre_filter_cell_gets_a_row_not_only_the_survivors():
+    """Flags on the output object would all be False; the removed cells are the point."""
+    import pandas as pd
+
+    with tempfile.TemporaryDirectory() as tmp:
+        result = _run(Path(tmp), _annotated(100), min_genes=500, max_pct_mito=20)
+        frame = pd.read_csv(result["filter_summary"]["cell_flags_path"])
+    assert len(frame) == 100, "the table covers the cells as they were before the cut"
+    assert int(frame["qc_pass"].sum()) == result["filter_summary"]["n_after"]
+    assert {"barcode", "qc_pass", "fail_min_genes", "fail_max_pct_mito"} <= set(frame.columns)
+
+
+def test_criterion_overlap_is_recoverable_from_the_flags():
+    """Attribution counts alone cannot say how many cells failed two cuts."""
+    import pandas as pd
+
+    with tempfile.TemporaryDirectory() as tmp:
+        result = _run(Path(tmp), _annotated(100), min_genes=500, max_pct_mito=20)
+        frame = pd.read_csv(result["filter_summary"]["cell_flags_path"])
+
+    summary = result["filter_summary"]
+    a = int(frame["fail_min_genes"].sum())
+    b = int(frame["fail_max_pct_mito"].sum())
+    both = int((frame["fail_min_genes"] & frame["fail_max_pct_mito"]).sum())
+    assert a == summary["removed_by_criterion"]["min_genes"]
+    assert b == summary["removed_by_criterion"]["max_pct_mito"]
+    # Inclusion-exclusion has to land exactly on the reported removal count.
+    assert a + b - both == summary["n_removed"]
+    assert summary["n_removed_by_more_than_one"] == both
+
+
+def test_per_sample_thresholds_still_produce_whole_object_flags():
+    import pandas as pd
+
+    with tempfile.TemporaryDirectory() as tmp:
+        result = _run(
+            Path(tmp),
+            _annotated(100, samples=["A", "B"]),
+            min_genes={"A": 500, "B": 1_500},
+        )
+        frame = pd.read_csv(result["filter_summary"]["cell_flags_path"])
+    assert len(frame) == 100
+    assert set(frame["sample"]) == {"A", "B"}
+    assert int(frame["qc_pass"].sum()) == result["filter_summary"]["n_after"]
+
+
 # --- measure first, cut only when told --------------------------------------
 
 

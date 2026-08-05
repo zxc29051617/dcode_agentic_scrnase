@@ -31,6 +31,7 @@ from tests import (  # noqa: E402
     test_run_umap,
     test_find_markers,
     test_annotate_cells,
+    test_provenance,
     test_run_qc_metrics,
 )
 
@@ -57,6 +58,7 @@ MODULES = (
     test_run_umap,
     test_find_markers,
     test_annotate_cells,
+    test_provenance,
     test_graph_smoke,
 )
 

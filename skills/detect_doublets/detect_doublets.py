@@ -272,7 +272,12 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
     out_dir = Path(payload.get("run_dir") or ".") / TOOL_NAME
     adata_path = matrix_io.write_h5ad(adata, out_dir / "adata.h5ad")
 
+    from src import provenance
+
     summary = {
+        "method": "scrublet",
+        "scrublet_version": provenance.package_versions(("scrublet",))["scrublet"],
+        "random_state": seed,
         "n_cells_in": n_assessed + (len(scores) - n_assessed),
         "n_assessed": n_assessed,
         "n_doublets": n_called,

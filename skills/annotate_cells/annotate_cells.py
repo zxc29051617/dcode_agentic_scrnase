@@ -53,7 +53,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from src import matrix_io  # noqa: E402
+from src import matrix_io, provenance  # noqa: E402
 
 TOOL_NAME = "annotate_cells"
 INPUT_FIELDS = (
@@ -118,6 +118,25 @@ def _model_catalogue() -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 - offline is a finding, not a crash
         catalogue["available_error"] = f"{type(exc).__name__}: {exc}"
     return catalogue
+
+
+def _model_identity(model_name: str) -> dict[str, Any]:
+    """Where the model file is and what it hashes to.
+
+    The filename alone is not an identity: CellTypist models are versioned in
+    place, so a rerun months later can load different weights under the same
+    name and produce different labels with nothing in the record to show it.
+    """
+    identity: dict[str, Any] = {"model": model_name, "model_path": None, "model_sha256": None}
+    try:
+        from celltypist import models
+
+        path = models.get_model_path(model_name)
+    except Exception:  # noqa: BLE001 - identity is provenance, never the point of failure
+        return identity
+    identity["model_path"] = str(path)
+    identity["model_sha256"] = provenance.file_digest(path)
+    return identity
 
 
 def _plot(adata: Any, out_dir: Path, cluster_key: str) -> dict[str, str]:
@@ -266,7 +285,8 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
 
     types = adata.obs["cell_type"].value_counts()
     annotation_summary = {
-        "model": str(model_name),
+        **_model_identity(str(model_name)),
+        "celltypist_version": provenance.package_versions(("celltypist",))["celltypist"],
         "majority_voting": majority_voting,
         "over_clustering": cluster_key if majority_voting else None,
         "label_source": label_key,

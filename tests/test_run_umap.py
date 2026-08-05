@@ -102,6 +102,95 @@ def test_invalid_method_is_an_error():
     assert any("is not one of" in e for e in result["errors"])
 
 
+# --- the integration diagnostic -------------------------------------------------
+
+
+def _integrated(root: Path, adata, *, integrated=True, batch_key="sample", **config):
+    """Run as if run_integration had corrected batches, or had skipped."""
+    path = matrix_io.write_h5ad(adata, root / "in.h5ad")
+    return um.run(
+        {
+            "artifacts": {
+                "run_integration": {
+                    "adata_path": str(path),
+                    "integration_summary": {
+                        "integrated": integrated,
+                        "batch_key": batch_key,
+                        "embedding_key": "X_pca_harmony" if integrated else "X_pca",
+                    },
+                },
+                "run_clustering": {
+                    "adata_path": str(path),
+                    "clustering_summary": {
+                        "embedding_key": "X_pca_harmony" if integrated else "X_pca",
+                        "n_neighbors": 15,
+                    },
+                },
+            },
+            "run_dir": str(root / "run"),
+            "config": config,
+        }
+    )
+
+
+def _two_batch_adata(n_cells=200):
+    import pandas as pd
+
+    adata = _adata(n_cells, with_neighbors=True, key="X_pca")
+    import numpy as np
+
+    rng = np.random.default_rng(1)
+    adata.obsm["X_pca_harmony"] = rng.normal(size=(n_cells, 10)).astype("float32")
+    adata.obs["sample"] = pd.Categorical([f"S{i % 2}" for i in range(n_cells)])
+    return adata
+
+
+def test_the_pre_integration_embedding_is_computed_when_batches_were_corrected():
+    """Saved at analysis time, so the report renders rather than recomputes."""
+    import anndata
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        result = _integrated(root, _two_batch_adata())
+        assert result["errors"] == []
+        assert "umap_unintegrated" in result["embedding_summary"]["computed"]
+        assert result["embedding_summary"]["unintegrated_umap_key"] == "X_umap_unintegrated"
+        written = anndata.read_h5ad(result["adata_path"])
+        assert "X_umap_unintegrated" in written.obsm
+        assert written.obsm["X_umap_unintegrated"].shape == written.obsm["X_umap"].shape
+
+
+def test_the_mainline_neighbor_graph_is_not_overwritten():
+    """Clustering's graph has to survive: the report reads both."""
+    import anndata
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        result = _integrated(root, _two_batch_adata())
+        written = anndata.read_h5ad(result["adata_path"])
+    assert "neighbors" in written.uns
+    assert "neighbors_unintegrated" in written.uns
+
+
+def test_nothing_is_computed_when_integration_was_skipped():
+    """A before/after picture of one library compares an embedding to itself."""
+    with tempfile.TemporaryDirectory() as tmp:
+        result = _integrated(Path(tmp), _two_batch_adata(), integrated=False)
+    assert result["errors"] == []
+    assert "umap_unintegrated" not in result["embedding_summary"]["computed"]
+    assert result["embedding_summary"]["unintegrated_umap_key"] is None
+
+
+def test_nothing_is_computed_for_a_single_batch():
+    import pandas as pd
+
+    adata = _two_batch_adata()
+    adata.obs["sample"] = pd.Categorical(["only"] * adata.n_obs)
+    with tempfile.TemporaryDirectory() as tmp:
+        result = _integrated(Path(tmp), adata)
+    assert result["embedding_summary"]["unintegrated_umap_key"] is None
+
+
 # --- UMAP needs the neighbor graph ---------------------------------------------
 
 

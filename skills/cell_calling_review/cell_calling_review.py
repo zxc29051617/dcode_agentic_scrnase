@@ -152,6 +152,29 @@ def _compare_with_cellranger(
     }
 
 
+def _save_rank_curve(totals: Any, path: Path) -> str:
+    """Store the sorted UMI-per-barcode vector so the curve can be redrawn.
+
+    The whole vector, not a downsample. Barcode-rank is plotted log-rank against
+    log-UMI, and the knee occupies a narrow band of ranks: sampling evenly in
+    rank space spends nearly every point on the flat tail and can miss the bend
+    entirely. Keeping all of it costs little — 300,000 barcodes as int32 is
+    about 1.2 MB before compression, against gigabytes for the raw matrix it
+    would otherwise have to be recomputed from.
+
+    Only the counts are stored: rank is the index, and barcode identity is not
+    needed to draw the curve (the selected barcodes are already in the AnnData).
+    """
+    import numpy as np
+
+    ordered = np.sort(np.asarray(totals))[::-1]
+    # int64 only where the counts genuinely need it; int32 covers ~2.1e9 UMI.
+    dtype = np.int32 if ordered.max(initial=0) < np.iinfo(np.int32).max else np.int64
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(path, sorted_umi_counts=ordered.astype(dtype))
+    return str(path)
+
+
 def run(payload: dict[str, Any]) -> dict[str, Any]:
     import numpy as np
 
@@ -204,6 +227,11 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
         evidence["preview"] = _preview(totals, evidence)
         if called is not None:
             evidence["cellranger_cells"] = len(called)
+
+        # Saved on both paths, including `needs_review`: the curve is the
+        # evidence the operator is deciding from, so it has to exist before a
+        # decision is made, not only after one.
+        evidence["rank_curve_path"] = _save_rank_curve(totals, out_dir / f"{name}_barcode_rank.npz")
 
         want_cells = _for(force_cells, name)
         want_umi = _for(min_umi, name)

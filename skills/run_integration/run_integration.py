@@ -137,12 +137,13 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
 
     batch_key = str(config.get("batch_key", DEFAULT_BATCH_KEY))
     force = bool(config.get("force_integration", False))
+    random_state = int(config.get("random_state", 0))
 
     if batch_key not in adata.obs:
         if force:
             return _result(errors=[f"force_integration requested but obs['{batch_key}'] is absent"])
         notes.append(f"no obs['{batch_key}']; nothing to integrate against, using X_pca as-is")
-        return _finish(payload, adata, integrated=False, batch_key=None, notes=notes, warnings=warnings)
+        return _finish(payload, adata, integrated=False, batch_key=None, notes=notes, warnings=warnings, random_state=random_state)
 
     batch_counts = adata.obs[batch_key].value_counts()
     n_batches = int(batch_counts.shape[0])
@@ -152,7 +153,7 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
             f"only one value in obs['{batch_key}'] ({batch_counts.index[0]!r}); "
             "nothing to integrate against, using X_pca as-is"
         )
-        return _finish(payload, adata, integrated=False, batch_key=batch_key, notes=notes, warnings=warnings)
+        return _finish(payload, adata, integrated=False, batch_key=batch_key, notes=notes, warnings=warnings, random_state=random_state)
 
     small = batch_counts[batch_counts < MIN_CELLS_PER_BATCH]
     if len(small) and not force:
@@ -161,7 +162,7 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
             f"({dict(small)}); Harmony's per-batch fit is not reliable there. Using X_pca "
             "as-is rather than an integration nobody should trust"
         )
-        return _finish(payload, adata, integrated=False, batch_key=batch_key, notes=notes, warnings=warnings)
+        return _finish(payload, adata, integrated=False, batch_key=batch_key, notes=notes, warnings=warnings, random_state=random_state)
 
     try:
         adata.obsm["X_pca_harmony"] = _run_harmony(
@@ -169,7 +170,7 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
             adata.obs[[batch_key]],
             batch_key,
             max_iter_harmony=int(config.get("max_iter_harmony", 10)),
-            random_state=int(config.get("random_state", 0)),
+            random_state=random_state,
         )
     except Exception as exc:  # noqa: BLE001 - a failed fit is a finding, not a crash
         return _result(errors=[f"Harmony failed: {type(exc).__name__}: {exc}"])
@@ -177,6 +178,7 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
     return _finish(
         payload, adata, integrated=True, batch_key=batch_key,
         n_batches=n_batches, batch_counts=batch_counts, notes=notes, warnings=warnings,
+        random_state=random_state,
     )
 
 
@@ -186,6 +188,7 @@ def _finish(
     *,
     integrated: bool,
     batch_key: str | None,
+    random_state: int,
     n_batches: int | None = None,
     batch_counts: Any = None,
     notes: list[str],
@@ -203,6 +206,7 @@ def _finish(
         ),
         "batch_sizes": {str(k): int(v) for k, v in batch_counts.items()} if batch_counts is not None else {},
         "embedding_key": "X_pca_harmony" if integrated else "X_pca",
+        "random_state": random_state,
         "method": "harmony" if integrated else None,
     }
 
