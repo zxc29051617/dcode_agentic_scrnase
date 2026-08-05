@@ -32,12 +32,12 @@
 
 ## 目前狀態
 
-Orchestrator 可以跑。Skill **25 個裡實作了 21 個**，FASTQ 上游整段與 QC 都已經是真的：
+Orchestrator 可以跑。Skill **25 個裡實作了 22 個**，FASTQ 上游整段與 QC 都已經是真的：
 
 | | |
 |---|---|
-| ✅ 已實作 | `ingest_validate`、`resolve_reference`、`matrix_preflight`、`fastq_preflight`、`fastq_qc`、`cellranger_count`、`count_matrix_classify`、`load_raw_counts`、`load_filtered_counts`、`cell_calling_review`、`merge_samples`、`post_load_validate`、`run_qc_metrics`、`apply_cell_qc_filter`、`detect_doublets`、`normalize_hvg_prepare`、`run_pca`、`run_integration`、`run_clustering`、`run_umap`、`find_markers` |
-| ⬜ scaffold | 其餘 4 個（annotation 之後），`run()` 直接 raise `NotImplementedError` |
+| ✅ 已實作 | `ingest_validate`、`resolve_reference`、`matrix_preflight`、`fastq_preflight`、`fastq_qc`、`cellranger_count`、`count_matrix_classify`、`load_raw_counts`、`load_filtered_counts`、`cell_calling_review`、`merge_samples`、`post_load_validate`、`run_qc_metrics`、`apply_cell_qc_filter`、`detect_doublets`、`normalize_hvg_prepare`、`run_pca`、`run_integration`、`run_clustering`、`run_umap`、`find_markers`、`annotate_cells` |
+| ⬜ scaffold | 其餘 3 個（`build_report`、`sample_qc_triage`、`human_review_decision`），`run()` 直接 raise `NotImplementedError` |
 
 FASTQ 路線：偵測輸入 → 選 reference 並驗證物種 → 結構檢查 → **FastQC/MultiQC 品質評估** → count
 
@@ -172,9 +172,24 @@ judge 不能寫入 `artifacts`（見 `src/nodes.py:109`），這條限制不是�
 t-SNE 直接讀 embedding、不需要先跑過 clustering：
 
 ```bash
---method tsne    # 只算 t-SNE
---method both    # 兩個都算，互不覆蓋（分別存在 X_umap / X_tsne）
+--embedding-method tsne    # 只算 t-SNE
+--embedding-method both    # 兩個都算，互不覆蓋（分別存在 X_umap / X_tsne）
 ```
+
+**細胞類型標註用 CellTypist，但模型要你選**。用錯組織/物種的模型不會報錯，
+只會給你一堆很有自信的錯答案，所以沒指定模型時 `annotate_cells` 什麼都不標，
+直接把 61 個候選模型和說明列出來讓你（或之後的 advisor）挑：
+
+```bash
+# 先看有哪些模型
+python skills/annotate_cells/annotate_cells.py --list-models x
+
+# 決定後
+python -m src.run --input <matrix> --celltypist-model Immune_All_Low.pkl
+```
+
+會輸出 `cell_type`（每群共識標籤）、`cell_type_per_cell`（逐細胞預測）、
+`conf_score`（信心分數），以及把三者畫在 UMAP/t-SNE 上的 PNG。
 
 ## src/ 分層
 

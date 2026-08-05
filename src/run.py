@@ -92,6 +92,18 @@ def main(argv: list[str] | None = None) -> int:
     dbl.add_argument("--remove-doublets", action="store_true",
                      help="drop called doublets instead of only annotating them")
 
+    # Downstream analysis knobs. Each has a documented default except the
+    # CellTypist model, which is deliberately unset: a model trained on the
+    # wrong tissue returns confident wrong labels rather than failing, so
+    # annotate_cells reports the candidates and stops instead of guessing.
+    ana = parser.add_argument_group("clustering, embedding and annotation")
+    ana.add_argument("--resolution", type=float, metavar="R",
+                     help="Leiden resolution (default 1.0)")
+    ana.add_argument("--embedding-method", choices=["umap", "tsne", "both"], dest="method",
+                     help="which 2D embedding(s) to compute (default umap)")
+    ana.add_argument("--celltypist-model", metavar="NAME",
+                     help="e.g. Immune_All_Low.pkl; omit to list the candidates and stop")
+
     parser.add_argument("--sample-qc-triage", action="store_true")
     parser.add_argument("--judge", choices=["stub", "local"], default="stub")
     parser.add_argument(
@@ -106,10 +118,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--runs-dir", default="runs")
     args = parser.parse_args(argv)
 
-    final = run_workflow(
-        project=args.project,
-        input_bundle={"paths": args.input},
-        config={
+    # A flag the operator never typed must not reach a skill as an explicit
+    # `None`: several read their defaults with `config.get(key, DEFAULT)`, which
+    # returns the None rather than the default and then fails converting it.
+    # Absent means absent.
+    config = {
+        key: value
+        for key, value in {
             "species": args.species,
             "transcriptome": args.reference,
             "force_cells": args.force_cells,
@@ -121,8 +136,18 @@ def main(argv: list[str] | None = None) -> int:
             "expected_doublet_rate": args.expected_doublet_rate,
             "doublet_threshold": args.doublet_threshold,
             "remove_doublets": args.remove_doublets,
+            "resolution": args.resolution,
+            "method": args.method,
+            "celltypist_model": args.celltypist_model,
             "sample_qc_triage": args.sample_qc_triage,
-        },
+        }.items()
+        if value is not None
+    }
+
+    final = run_workflow(
+        project=args.project,
+        input_bundle={"paths": args.input},
+        config=config,
         policy=GatePolicy(
             autocontinue_on_warn=args.allow_warn,
             headless_decision=args.headless_decision,

@@ -47,6 +47,7 @@ IMPLEMENTED = [
     "run_clustering",
     "run_umap",
     "find_markers",
+    "annotate_cells",
 ]
 """Skills with a real `run()` on the filtered-matrix route; everything else is a scaffold."""
 
@@ -285,7 +286,7 @@ def test_scaffolds_are_reported_not_hidden():
     assert report["verdicts"]["ingest_validate"] == "pass"
     assert report["verdicts"]["post_load_validate"] == "pass"
     assert report["verdicts"]["run_qc_metrics"] == "pass"
-    assert report["verdicts"]["annotate_cells"] == "pass (scaffold)"
+    assert report["verdicts"]["build_report"] == "pass (scaffold)"
 
     for verdict in final["judge_results"]:
         if verdict["step"] in IMPLEMENTED:

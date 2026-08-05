@@ -14,7 +14,7 @@ Orchestrator 層是**真的**，分析層是**假的**：
 - 每個 step 後面都有 judge node，verdict 符合 `schemas/judge_result.schema.json`
 - human gate 預設不放行 warn/fail，headless 執行預設 `stop`
 - provenance 每步寫 JSONL audit log
-- **25 個 registry step 裡實作了 21 個**，其餘 4 個還是 `NotImplementedError`
+- **25 個 registry step 裡實作了 22 個**，其餘 3 個還是 `NotImplementedError`
 - FASTQ 上游整段 + raw/filtered 分流 + 載入 + cell calling + 匯流標準化都是真的
 - 兩條路各有入口檢查：`resolve_reference`（FASTQ）與 `matrix_preflight`（矩陣），
   各自用該路線有的證據驗物種，並輸出同一組 QC 常數
@@ -140,8 +140,25 @@ abort **整個** ranking（不是只跳過那一群），所以呼叫前就先�
 PBMC 族群（S100A8/A9=monocyte、GNLY/NKG7=NK、MS4A1/CD79A=B、FCGR3A=CD16+ mono、
 TCF4=pDC、TUBB1=platelet、KLRB1/SLC4A10=MAIT）。這代表前面每一步都對。
 
-**下一個是 `annotate_cells`**——把 marker 對應到細胞類型名稱。這步比較特別：
-`environment.yml` 裡已經有 `celltypist`，但也可以只用 marker 表配對照表。
+~~`annotate_cells`~~ 已完成——只用 CellTypist（依使用者決定，因為之後要接 agent
+討論選哪個 reference 模型，marker 對照表用人工反而難解釋）。
+
+三個關鍵設計：
+
+1. **模型是決定，不是預設**。61 個模型各自針對特定組織/物種，用錯不會報錯只會
+   給自信的錯答案，所以沒指定就什麼都不標、把候選清單當 evidence 列出來然後停
+   （跟 `apply_cell_qc_filter` 同一個形狀）。這份清單正好就是之後 advisor 要讀的東西。
+2. **表現量要重新正規化到 10,000**。CellTypist 明確要求 log1p + 每細胞 10,000 counts，
+   而我們主線是 median depth（真實資料是 6,780）。直接餵進去它只會印一行 warning
+   然後照樣回傳看起來正常的預測——這正是 `post_load_validate` 堅持保留 counts layer
+   換來的：從 counts 重建一份給 CellTypist 用，主線 `X` 不動。
+3. **majority voting 跑在我們自己的 Leiden 上**，不是 CellTypist 自己的 over-clustering，
+   這樣標籤跟 `find_markers` 的每群表格、跟報告裡的 UMAP 都對得起來。
+
+**獨立驗證**：CellTypist 訓練自外部參考資料、完全沒看過我們的 marker，但 15 個 cluster
+全部跟 `find_markers` 的結果一致（XBP1→Plasma cells、SLC4A10→MAIT、TUBB1→platelets）。
+
+**下一個是 `build_report`**——把前面所有 step 的 summary、marker 表、標註圖組成報告。
 
 `--matrix-kind` 和 `--cell-calling-resolved` 兩個 scaffold fallback 都已經移除；
 分支現在讀的都是上游 step 真正做出的決定，這條路上沒有 config fallback 了。
