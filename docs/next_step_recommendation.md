@@ -14,7 +14,7 @@ Orchestrator 層是**真的**，分析層是**假的**：
 - 每個 step 後面都有 judge node，verdict 符合 `schemas/judge_result.schema.json`
 - human gate 預設不放行 warn/fail，headless 執行預設 `stop`
 - provenance 每步寫 JSONL audit log
-- **25 個 registry step 裡實作了 16 個**，其餘 9 個還是 `NotImplementedError`
+- **25 個 registry step 裡實作了 17 個**，其餘 8 個還是 `NotImplementedError`
 - FASTQ 上游整段 + raw/filtered 分流 + 載入 + cell calling + 匯流標準化都是真的
 - 兩條路各有入口檢查：`resolve_reference`（FASTQ）與 `matrix_preflight`（矩陣），
   各自用該路線有的證據驗物種，並輸出同一組 QC 常數
@@ -92,8 +92,17 @@ expected doublet rate 從 10x 的 loading table 推（每 1,000 顆細胞 0.76%�
 的邊角案例——小型的 targeted panel（例如 spatial 的幾百個基因）在真實資料上
 也會踩到。
 
-**下一個是 `run_pca`**——PCA 的成分數（`n_comps`）通常有標準預設（Scanpy 是 50），
-同樣屬於不擋流程的那類決定。
+~~`run_pca`~~ 已完成——同樣不擋流程，50 個成分是 Scanpy/Seurat 共同的標準預設。
+只在 `highly_variable` 標記的基因上 fit（`mask_var`），但 embedding 跟 loadings
+仍然覆蓋所有細胞跟所有基因，跟 HVG 步驟「標記不刪除」的原則一致。
+
+成分數在呼叫前就先夾住（跟 `detect_doublets` 的 `_components_for` 同一個思路）：
+`arpack` solver 對超過 rank 的請求會直接丟例外，所以先算 `min(n_obs, n_genes_used)-1`
+再送進去，而不是先丟給它再處理錯誤。
+
+**下一個是 `run_integration`**——這步要判斷「這個物件需要不需要做批次校正」
+（單樣本可能不需要），是這條主線第一個要做「是否執行」判斷而不只是「用什麼參數」
+的步驟。
 
 `--matrix-kind` 和 `--cell-calling-resolved` 兩個 scaffold fallback 都已經移除；
 分支現在讀的都是上游 step 真正做出的決定，這條路上沒有 config fallback 了。
