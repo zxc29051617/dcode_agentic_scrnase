@@ -14,7 +14,7 @@ Orchestrator 層是**真的**，分析層是**假的**：
 - 每個 step 後面都有 judge node，verdict 符合 `schemas/judge_result.schema.json`
 - human gate 預設不放行 warn/fail，headless 執行預設 `stop`
 - provenance 每步寫 JSONL audit log
-- **25 個 registry step 裡實作了 18 個**，其餘 7 個還是 `NotImplementedError`
+- **25 個 registry step 裡實作了 19 個**，其餘 6 個還是 `NotImplementedError`
 - FASTQ 上游整段 + raw/filtered 分流 + 載入 + cell calling + 匯流標準化都是真的
 - 兩條路各有入口檢查：`resolve_reference`（FASTQ）與 `matrix_preflight`（矩陣），
   各自用該路線有的證據驗物種，並輸出同一組 QC 常數
@@ -111,8 +111,14 @@ expected doublet rate 從 10x 的 loading table 推（每 1,000 顆細胞 0.76%�
 沒有去鎖死一個舊版本套件，而是自己呼叫 `harmonypy`、依實際回傳的 shape 判斷方向——
 不管裝的是哪個版本都正確。
 
-**下一個是 `run_clustering`**——Leiden resolution 有標準預設（Scanpy 是 1.0），
-同樣屬於不擋流程的那類決定。
+~~`run_clustering`~~ 已完成——resolution 預設 1.0（Scanpy 自己的預設），可調整
+（`config.resolution`），不擋流程。讀 `run_integration` 記錄的 `embedding_key`
+而不是寫死 `X_pca`，所以不管有沒有做過批次校正都讀對物件。用 `flavor="igraph"`
+而不是 `sc.tl.leiden` 自己的預設 `"leidenalg"`——Scanpy 文件現在建議的做法，
+給定種子後結果是決定性的，leidenalg 那條路不是。
+
+**下一個是 `run_umap`**——這步主要是視覺化用的 2D embedding，同樣有標準預設
+（Scanpy 的 UMAP 參數），不擋流程。
 
 `--matrix-kind` 和 `--cell-calling-resolved` 兩個 scaffold fallback 都已經移除；
 分支現在讀的都是上游 step 真正做出的決定，這條路上沒有 config fallback 了。

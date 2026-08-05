@@ -32,12 +32,12 @@
 
 ## 目前狀態
 
-Orchestrator 可以跑。Skill **25 個裡實作了 18 個**，FASTQ 上游整段與 QC 都已經是真的：
+Orchestrator 可以跑。Skill **25 個裡實作了 19 個**，FASTQ 上游整段與 QC 都已經是真的：
 
 | | |
 |---|---|
-| ✅ 已實作 | `ingest_validate`、`resolve_reference`、`matrix_preflight`、`fastq_preflight`、`fastq_qc`、`cellranger_count`、`count_matrix_classify`、`load_raw_counts`、`load_filtered_counts`、`cell_calling_review`、`merge_samples`、`post_load_validate`、`run_qc_metrics`、`apply_cell_qc_filter`、`detect_doublets`、`normalize_hvg_prepare`、`run_pca`、`run_integration` |
-| ⬜ scaffold | 其餘 7 個（clustering 之後的 Scanpy 主線），`run()` 直接 raise `NotImplementedError` |
+| ✅ 已實作 | `ingest_validate`、`resolve_reference`、`matrix_preflight`、`fastq_preflight`、`fastq_qc`、`cellranger_count`、`count_matrix_classify`、`load_raw_counts`、`load_filtered_counts`、`cell_calling_review`、`merge_samples`、`post_load_validate`、`run_qc_metrics`、`apply_cell_qc_filter`、`detect_doublets`、`normalize_hvg_prepare`、`run_pca`、`run_integration`、`run_clustering` |
+| ⬜ scaffold | 其餘 6 個（UMAP 之後的 Scanpy 主線），`run()` 直接 raise `NotImplementedError` |
 
 FASTQ 路線：偵測輸入 → 選 reference 並驗證物種 → 結構檢查 → **FastQC/MultiQC 品質評估** → count
 
