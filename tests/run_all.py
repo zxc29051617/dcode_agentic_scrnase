@@ -26,6 +26,7 @@ from tests import (  # noqa: E402
     test_detect_doublets,
     test_normalize_hvg_prepare,
     test_run_pca,
+    test_run_integration,
     test_run_qc_metrics,
 )
 
@@ -47,6 +48,7 @@ MODULES = (
     test_detect_doublets,
     test_normalize_hvg_prepare,
     test_run_pca,
+    test_run_integration,
     test_graph_smoke,
 )
 

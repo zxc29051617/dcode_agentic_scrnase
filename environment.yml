@@ -31,3 +31,4 @@ dependencies:
       - openai
       - celltypist
       - scrublet
+      - harmonypy

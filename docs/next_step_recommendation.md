@@ -14,7 +14,7 @@ Orchestrator 層是**真的**，分析層是**假的**：
 - 每個 step 後面都有 judge node，verdict 符合 `schemas/judge_result.schema.json`
 - human gate 預設不放行 warn/fail，headless 執行預設 `stop`
 - provenance 每步寫 JSONL audit log
-- **25 個 registry step 裡實作了 17 個**，其餘 8 個還是 `NotImplementedError`
+- **25 個 registry step 裡實作了 18 個**，其餘 7 個還是 `NotImplementedError`
 - FASTQ 上游整段 + raw/filtered 分流 + 載入 + cell calling + 匯流標準化都是真的
 - 兩條路各有入口檢查：`resolve_reference`（FASTQ）與 `matrix_preflight`（矩陣），
   各自用該路線有的證據驗物種，並輸出同一組 QC 常數
@@ -100,9 +100,19 @@ expected doublet rate 從 10x 的 loading table 推（每 1,000 顆細胞 0.76%�
 `arpack` solver 對超過 rank 的請求會直接丟例外，所以先算 `min(n_obs, n_genes_used)-1`
 再送進去，而不是先丟給它再處理錯誤。
 
-**下一個是 `run_integration`**——這步要判斷「這個物件需要不需要做批次校正」
-（單樣本可能不需要），是這條主線第一個要做「是否執行」判斷而不只是「用什麼參數」
-的步驟。
+~~`run_integration`~~ 已完成——第一個「是否執行」而不只是「用什麼參數」的主線步驟：
+單樣本或某個樣本細胞數太少（<20）就跳過，不當成需要人決定的閾值。用 Harmony 校正
+`X_pca` → `X_pca_harmony`，`X` 跟原始 counts 都不動。
+
+實作時撞到一個真的跨版本相容性 bug：scanpy 內建的 `harmony_integrate` 包裝函式
+寫死假設 `harmonypy.run_harmony` 回傳的 `Z_corr` 是 `(n_pcs, n_obs)`，但這只在
+`harmonypy 0.0.10` 成立——0.1.0 之後（包括現在的 2.0.0）全部改成 `(n_obs, n_pcs)`,
+包裝函式的 `.T` 因此把方向轉錯，assign 進 `obsm` 時噴 shape 錯誤，跟資料本身無關。
+沒有去鎖死一個舊版本套件，而是自己呼叫 `harmonypy`、依實際回傳的 shape 判斷方向——
+不管裝的是哪個版本都正確。
+
+**下一個是 `run_clustering`**——Leiden resolution 有標準預設（Scanpy 是 1.0），
+同樣屬於不擋流程的那類決定。
 
 `--matrix-kind` 和 `--cell-calling-resolved` 兩個 scaffold fallback 都已經移除；
 分支現在讀的都是上游 step 真正做出的決定，這條路上沒有 config fallback 了。
