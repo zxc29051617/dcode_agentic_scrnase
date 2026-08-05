@@ -41,6 +41,7 @@ IMPLEMENTED = [
     "run_qc_metrics",
     "apply_cell_qc_filter",
     "detect_doublets",
+    "normalize_hvg_prepare",
 ]
 """Skills with a real `run()` on the filtered-matrix route; everything else is a scaffold."""
 
@@ -197,10 +198,17 @@ def test_ambiguous_matrix_cannot_be_accepted_into_the_mainline():
 
 
 def test_default_policy_will_not_wave_the_final_gate_through():
+    """`normalize_hvg_prepare` is real now, and the fixture is genuinely thin.
+
+    100 fixture genes leave only 6 after the min-cells filter, below what
+    seurat_v3's loess fit can do reliably — a real, correctly-raised warning,
+    not a scaffold placeholder. The default policy halts there rather than at
+    a later scaffold, which is the more accurate thing for it to do.
+    """
     final = _run({"input_type": "matrix", "matrix_kind": "filtered"}, policy=GatePolicy())
     assert final["halted"] is True
     assert "build_report" not in _steps(final), "report must not be built without a decision"
-    assert "annotate_cells" in _steps(final)
+    assert final["halt_reason"] == "human stopped the run at normalize_hvg_prepare"
 
 
 def test_failing_verdict_halts_the_run():
@@ -272,7 +280,7 @@ def test_scaffolds_are_reported_not_hidden():
     assert report["verdicts"]["ingest_validate"] == "pass"
     assert report["verdicts"]["post_load_validate"] == "pass"
     assert report["verdicts"]["run_qc_metrics"] == "pass"
-    assert report["verdicts"]["normalize_hvg_prepare"] == "pass (scaffold)"
+    assert report["verdicts"]["run_pca"] == "pass (scaffold)"
 
     for verdict in final["judge_results"]:
         if verdict["step"] in IMPLEMENTED:

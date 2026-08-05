@@ -19,6 +19,8 @@ dependencies:
   - networkx
   - igraph
   - leidenalg
+  # seurat_v3 HVG selection (normalize_hvg_prepare) needs its loess fit
+  - scikit-misc
   # Sequencing QC for the FASTQ route (fastq_qc skill)
   - fastqc
   - multiqc

@@ -14,7 +14,7 @@ Orchestrator 層是**真的**，分析層是**假的**：
 - 每個 step 後面都有 judge node，verdict 符合 `schemas/judge_result.schema.json`
 - human gate 預設不放行 warn/fail，headless 執行預設 `stop`
 - provenance 每步寫 JSONL audit log
-- **25 個 registry step 裡實作了 15 個**，其餘 10 個還是 `NotImplementedError`
+- **25 個 registry step 裡實作了 16 個**，其餘 9 個還是 `NotImplementedError`
 - FASTQ 上游整段 + raw/filtered 分流 + 載入 + cell calling + 匯流標準化都是真的
 - 兩條路各有入口檢查：`resolve_reference`（FASTQ）與 `matrix_preflight`（矩陣），
   各自用該路線有的證據驗物種，並輸出同一組 QC 常數
@@ -80,8 +80,20 @@ expected doublet rate 從 10x 的 loading table 推（每 1,000 顆細胞 0.76%�
 那個預設會多找 7 倍的 doublet。每個 library 各自跑（doublet 只在同一個 GEM well 形成）。
 真實資料：v2 11/1,015、v3 11/1,218，兩邊都貼近 loading 預測的值。
 
-**下一個是 `normalize_hvg_prepare`**——normalization 方法、HVG 數量、要不要 regress out
-都是要人決定的參數，但跟 doublet 一樣，沒決定時有合理預設可以先產出結果。
+~~`normalize_hvg_prepare`~~ 已完成——跟 doublet 一樣有合理預設、不擋流程：
+`seurat_v3` 選 2,000 個 HVG（Scanpy/Seurat 共同的標準預設，不是借用別人組織的閾值），
+有 `sample` 欄位時用 `batch_key` 避免把 batch 差異誤判成生物訊號。
+
+實作時撞到一個真的穩定性問題：`seurat_v3` 的 loess fit 在基因數太少時
+（graph fixture 過濾後只剩 6 個基因）**不一定乾淨地丟例外**——同樣的退化資料，
+單獨跑是 `ValueError`，但在完整測試套件裡直接讓直譯器 core dump，`try/except`
+接不住。修法是在呼叫前先檢查基因數（`MIN_GENES_FOR_SEURAT_V3=50`），
+不夠就自動退回數值上更穩的 `flavor="seurat"` 並記錄警告。這不只是測試 fixture
+的邊角案例——小型的 targeted panel（例如 spatial 的幾百個基因）在真實資料上
+也會踩到。
+
+**下一個是 `run_pca`**——PCA 的成分數（`n_comps`）通常有標準預設（Scanpy 是 50），
+同樣屬於不擋流程的那類決定。
 
 `--matrix-kind` 和 `--cell-calling-resolved` 兩個 scaffold fallback 都已經移除；
 分支現在讀的都是上游 step 真正做出的決定，這條路上沒有 config fallback 了。
