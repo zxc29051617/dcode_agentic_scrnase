@@ -223,6 +223,33 @@ def test_failing_verdict_halts_the_run():
     assert final["human_decisions"][-1]["step"] == "run_qc_metrics"
 
 
+def test_accepting_a_warned_last_mainline_step_reaches_the_final_gate():
+    """A real judge can warn on a step StubJudge always passes.
+
+    `annotate_cells` is the last MAINLINE step before FINAL_GATE, so accepting a
+    warn there routes straight to FINAL_GATE rather than to another step node.
+    That target was missing from the escalation gate's path map — accepting
+    KeyErrored instead of reaching the mainline gate. This pins the fix.
+    """
+
+    class WarnAtAnnotate(StubJudge):
+        def judge(self, step, payload):
+            if step != "annotate_cells":
+                return super().judge(step, payload)
+            return JudgeResult(
+                step=step, verdict="warn", score=50,
+                reasons=["synthetic warning"], evidence={}, needs_human_review=True,
+            )
+
+    final = _run(
+        {"input_type": "matrix", "matrix_kind": "filtered"},
+        policy=GatePolicy(headless_decision="accept"),
+        judge=WarnAtAnnotate(),
+    )
+    assert final["errors"] == []
+    assert "human_review_decision" in _steps(final) or "build_report" in _steps(final)
+
+
 def test_every_step_is_judged_and_audited():
     final = _run({"input_type": "matrix", "matrix_kind": "filtered"})
     judged = {j["step"] for j in final["judge_results"]}

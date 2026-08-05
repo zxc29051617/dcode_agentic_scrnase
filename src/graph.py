@@ -221,11 +221,15 @@ def build_graph(
     successors["build_report"] = lambda _state: END
 
     # ---- escalation gate ----------------------------------------------------
+    # `added` covers every step node, but the last mainline step's successor can
+    # resolve to FINAL_GATE itself (it is a node, not a step, so add_step never
+    # ran for it) — omit it here and an `accept` on that step KeyErrors instead
+    # of reaching the mainline gate.
     graph.add_node(HUMAN_GATE, make_human_gate_node(policy, node_name=HUMAN_GATE))
     graph.add_conditional_edges(
         HUMAN_GATE,
         _make_escalation_router(successors),
-        {**{name: name for name in added}, "end": END},
+        {**{name: name for name in added}, FINAL_GATE: FINAL_GATE, "end": END},
     )
 
     graph.add_edge(START, "ingest_validate")
