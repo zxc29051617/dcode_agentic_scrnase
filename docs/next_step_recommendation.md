@@ -14,7 +14,7 @@ Orchestrator 層是**真的**，分析層是**假的**：
 - 每個 step 後面都有 judge node，verdict 符合 `schemas/judge_result.schema.json`
 - human gate 預設不放行 warn/fail，headless 執行預設 `stop`
 - provenance 每步寫 JSONL audit log
-- **25 個 registry step 裡實作了 20 個**，其餘 5 個還是 `NotImplementedError`
+- **25 個 registry step 裡實作了 21 個**，其餘 4 個還是 `NotImplementedError`
 - FASTQ 上游整段 + raw/filtered 分流 + 載入 + cell calling + 匯流標準化都是真的
 - 兩條路各有入口檢查：`resolve_reference`（FASTQ）與 `matrix_preflight`（矩陣），
   各自用該路線有的證據驗物種，並輸出同一組 QC 常數
@@ -124,8 +124,24 @@ UMAP 圖跟 cluster label 用同一個鄰居結構）；t-SNE 直接讀 `embeddi
 （`min(30, (n_obs-1)//3)`，sklearn 自己的經驗法則），避免 `perplexity >= n_samples`
 直接丟例外。
 
-**下一個是 `find_markers`**——差異表現分析，第一個真正要讀 `X`（表現量）而不是
-embedding 的下游步驟。
+~~`find_markers`~~ 已完成——第一個讀 `X`（表現量）而不是 embedding 的下游步驟。
+用 `wilcoxon`（scanpy 教學建議，非其預設的 t-test），**測全部基因而不只是 HVG**——
+這正是 `normalize_hvg_prepare` 當初「只標記不刪除」換來的：canonical marker 不一定
+在變異度前 2,000 名內。
+
+一個關鍵的 crash guard：只要有任何一個 cluster 只有 1 顆細胞，scanpy 會直接
+abort **整個** ranking（不是只跳過那一群），所以呼叫前就先把太小的 cluster 從
+`groups=` 排除。
+
+完整表格（326,775 列）寫到 CSV，state 裡只留每群前 25 個——大結果走路徑、
+摘要走 state，跟 AnnData 一樣的規則。
+
+**真實資料驗證是目前最強的一次**：15 個 cluster 的 top marker 全部對得上教科書
+PBMC 族群（S100A8/A9=monocyte、GNLY/NKG7=NK、MS4A1/CD79A=B、FCGR3A=CD16+ mono、
+TCF4=pDC、TUBB1=platelet、KLRB1/SLC4A10=MAIT）。這代表前面每一步都對。
+
+**下一個是 `annotate_cells`**——把 marker 對應到細胞類型名稱。這步比較特別：
+`environment.yml` 裡已經有 `celltypist`，但也可以只用 marker 表配對照表。
 
 `--matrix-kind` 和 `--cell-calling-resolved` 兩個 scaffold fallback 都已經移除；
 分支現在讀的都是上游 step 真正做出的決定，這條路上沒有 config fallback 了。
