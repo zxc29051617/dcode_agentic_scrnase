@@ -158,7 +158,25 @@ TCF4=pDC、TUBB1=platelet、KLRB1/SLC4A10=MAIT）。這代表前面每一步都�
 **獨立驗證**：CellTypist 訓練自外部參考資料、完全沒看過我們的 marker，但 15 個 cluster
 全部跟 `find_markers` 的結果一致（XBP1→Plasma cells、SLC4A10→MAIT、TUBB1→platelets）。
 
-**下一個是 `build_report`**——把前面所有 step 的 summary、marker 表、標註圖組成報告。
+**下一個是 `build_report`**，但**先補齊了它需要的 provenance**（見 `docs/report_contract.md`）。
+
+盤點文獻圖表慣例後發現 6 個「事後無法重建」的缺口，全部先補完才動報告：
+
+1. **run metadata** — 完全沒有記錄。改在 run 開始時寫（不是報告時現查，那是不同的環境），
+   含 git commit **與 dirty 狀態**、seed、15 個套件版本
+2. **random seed** — 6 個步驟都在用，但沒有一個記錄下來，報告連 seed=0 都寫不出來
+3. **barcode-rank 曲線** — 只存了 knee/inflection 純量，曲線畫不出來。改存完整排序後的
+   UMI 向量（**不是降採樣**：log-log 曲線上均勻抽點會全落在平坦長尾）。
+   真實資料 329,735 個 barcode 壓縮後只有 4.3 KB
+4. **QC 逐細胞旗標** — 只留整數計數，拆不回重疊。真實資料：26 個 min_genes 失敗、
+   72 個 mito 失敗、共移除 74 個——**其中 24 個同時違反兩者**，所以 min_genes
+   其實只獨立砍掉 2 顆細胞，這在只有計數時完全看不出來
+5. **整合前 embedding** — 原本打算在 build_report 重算，這是錯的：UMAP 有種子、
+   鄰居數、套件版本，報告階段重算會跟它宣稱描述的那次執行漂移。改由 `run_umap` 存
+6. **模型與方法身分** — CellTypist 只記檔名（模型會原地改版），補上 SHA-256
+
+報告分三層（論文主圖 / QC 附錄 / pipeline 稽核），12 個**條件式**圖組，
+`report.md` 與 `report.html` 共用同一份 ReportModel。詳見 `docs/report_contract.md`。
 
 `--matrix-kind` 和 `--cell-calling-resolved` 兩個 scaffold fallback 都已經移除；
 分支現在讀的都是上游 step 真正做出的決定，這條路上沒有 config fallback 了。
