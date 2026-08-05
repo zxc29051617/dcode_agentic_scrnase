@@ -14,7 +14,7 @@ Orchestrator 層是**真的**，分析層是**假的**：
 - 每個 step 後面都有 judge node，verdict 符合 `schemas/judge_result.schema.json`
 - human gate 預設不放行 warn/fail，headless 執行預設 `stop`
 - provenance 每步寫 JSONL audit log
-- **25 個 registry step 裡實作了 19 個**，其餘 6 個還是 `NotImplementedError`
+- **25 個 registry step 裡實作了 20 個**，其餘 5 個還是 `NotImplementedError`
 - FASTQ 上游整段 + raw/filtered 分流 + 載入 + cell calling + 匯流標準化都是真的
 - 兩條路各有入口檢查：`resolve_reference`（FASTQ）與 `matrix_preflight`（矩陣），
   各自用該路線有的證據驗物種，並輸出同一組 QC 常數
@@ -117,8 +117,15 @@ expected doublet rate 從 10x 的 loading table 推（每 1,000 顆細胞 0.76%�
 而不是 `sc.tl.leiden` 自己的預設 `"leidenalg"`——Scanpy 文件現在建議的做法，
 給定種子後結果是決定性的，leidenalg 那條路不是。
 
-**下一個是 `run_umap`**——這步主要是視覺化用的 2D embedding，同樣有標準預設
-（Scanpy 的 UMAP 參數），不擋流程。
+~~`run_umap`~~ 已完成——`config.method` 可選 `umap`（預設）/ `tsne` / `both`。
+兩個方法讀的東西不一樣：UMAP 讀 `run_clustering` 建好的 neighbor graph（保證
+UMAP 圖跟 cluster label 用同一個鄰居結構）；t-SNE 直接讀 `embedding_key`，
+不需要先跑過 clustering。t-SNE 的 perplexity 在呼叫前就先夾住
+（`min(30, (n_obs-1)//3)`，sklearn 自己的經驗法則），避免 `perplexity >= n_samples`
+直接丟例外。
+
+**下一個是 `find_markers`**——差異表現分析，第一個真正要讀 `X`（表現量）而不是
+embedding 的下游步驟。
 
 `--matrix-kind` 和 `--cell-calling-resolved` 兩個 scaffold fallback 都已經移除；
 分支現在讀的都是上游 step 真正做出的決定，這條路上沒有 config fallback 了。

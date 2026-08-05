@@ -28,6 +28,7 @@ from tests import (  # noqa: E402
     test_run_pca,
     test_run_integration,
     test_run_clustering,
+    test_run_umap,
     test_run_qc_metrics,
 )
 
@@ -51,6 +52,7 @@ MODULES = (
     test_run_pca,
     test_run_integration,
     test_run_clustering,
+    test_run_umap,
     test_graph_smoke,
 )
 

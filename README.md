@@ -32,12 +32,12 @@
 
 ## 目前狀態
 
-Orchestrator 可以跑。Skill **25 個裡實作了 19 個**，FASTQ 上游整段與 QC 都已經是真的：
+Orchestrator 可以跑。Skill **25 個裡實作了 20 個**，FASTQ 上游整段與 QC 都已經是真的：
 
 | | |
 |---|---|
-| ✅ 已實作 | `ingest_validate`、`resolve_reference`、`matrix_preflight`、`fastq_preflight`、`fastq_qc`、`cellranger_count`、`count_matrix_classify`、`load_raw_counts`、`load_filtered_counts`、`cell_calling_review`、`merge_samples`、`post_load_validate`、`run_qc_metrics`、`apply_cell_qc_filter`、`detect_doublets`、`normalize_hvg_prepare`、`run_pca`、`run_integration`、`run_clustering` |
-| ⬜ scaffold | 其餘 6 個（UMAP 之後的 Scanpy 主線），`run()` 直接 raise `NotImplementedError` |
+| ✅ 已實作 | `ingest_validate`、`resolve_reference`、`matrix_preflight`、`fastq_preflight`、`fastq_qc`、`cellranger_count`、`count_matrix_classify`、`load_raw_counts`、`load_filtered_counts`、`cell_calling_review`、`merge_samples`、`post_load_validate`、`run_qc_metrics`、`apply_cell_qc_filter`、`detect_doublets`、`normalize_hvg_prepare`、`run_pca`、`run_integration`、`run_clustering`、`run_umap` |
+| ⬜ scaffold | 其餘 5 個（markers 之後的 Scanpy 主線），`run()` 直接 raise `NotImplementedError` |
 
 FASTQ 路線：偵測輸入 → 選 reference 並驗證物種 → 結構檢查 → **FastQC/MultiQC 品質評估** → count
 
@@ -167,6 +167,14 @@ judge 不能寫入 `artifacts`（見 `src/nodes.py:109`），這條限制不是�
 
 判斷品質**取決於 prompt 遠大於取決於模型**。`prompts/local_judge_base.md` 要求每條
 理由都要引用 payload 裡的數字；沒有這條要求時，三個模型都只會把 warning 換句話說。
+
+**UMAP/t-SNE 都可以選**。`run_umap` 預設只算 UMAP（讀 clustering 用的 neighbor graph），
+t-SNE 直接讀 embedding、不需要先跑過 clustering：
+
+```bash
+--method tsne    # 只算 t-SNE
+--method both    # 兩個都算，互不覆蓋（分別存在 X_umap / X_tsne）
+```
 
 ## src/ 分層
 
