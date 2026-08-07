@@ -30,6 +30,31 @@ PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "local_judge_
 #: instruction changed nothing, so it is the instruction doing the work.
 STEP_PROMPT_DIR = PROMPT_PATH.parent / "steps"
 
+#: Optional `{step: model}` overrides. Absent, every step uses one model.
+#:
+#: The reason to have this is not that some steps need a stronger model — the
+#: largest model on the endpoint already judges everything. It is that most
+#: steps may not need it. A structural check with six numbers in its payload
+#: and a marker reconciliation across fifteen clusters are the same cost today,
+#: and only one of them is hard. Which steps can drop to a smaller model is a
+#: measurement, so this file is where the answer gets recorded.
+STEP_MODELS_PATH = PROMPT_PATH.parent / "step_models.json"
+
+
+def load_step_models(path: Path | None = None) -> dict[str, str]:
+    """Read `prompts/step_models.json`, or return {} when it is absent."""
+    target = path or STEP_MODELS_PATH
+    if not target.exists():
+        return {}
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    models = data.get("steps") if isinstance(data, dict) else None
+    if not isinstance(models, dict):
+        return {}
+    return {str(k): str(v) for k, v in models.items() if isinstance(v, str) and v}
+
 
 class Advice(BaseModel):
     """A value the model thinks the operator should use, and why.
@@ -156,17 +181,37 @@ class LocalLLMJudge:
         base_url: str | None = None,
         api_key: str | None = None,
         temperature: float = 0.0,
+        step_models: dict[str, str] | None = None,
     ) -> None:
         from langchain_openai import ChatOpenAI
 
         self.system_prompt = PROMPT_PATH.read_text(encoding="utf-8")
         self._step_prompts: dict[str, str] = {}
-        self.llm = ChatOpenAI(
-            model=model or os.environ.get("SCRNA_JUDGE_MODEL", "qwen2.5:7b-instruct"),
-            base_url=base_url or os.environ.get("SCRNA_JUDGE_BASE_URL", "http://localhost:11434/v1"),
-            api_key=api_key or os.environ.get("SCRNA_JUDGE_API_KEY", "not-needed"),
-            temperature=temperature,
-        )
+        self._step_models = dict(step_models or load_step_models())
+        self._clients: dict[str, Any] = {}
+
+        self._chat_openai = ChatOpenAI
+        self._settings = {
+            "base_url": base_url or os.environ.get(
+                "SCRNA_JUDGE_BASE_URL", "http://localhost:11434/v1"),
+            "api_key": api_key or os.environ.get("SCRNA_JUDGE_API_KEY", "not-needed"),
+            "temperature": temperature,
+        }
+        self.default_model = model or os.environ.get("SCRNA_JUDGE_MODEL", "qwen2.5:7b-instruct")
+        self.llm = self._client_for_model(self.default_model)
+
+    def _client_for_model(self, name: str) -> Any:
+        """One client per model, built on first use and reused after."""
+        if name not in self._clients:
+            self._clients[name] = self._chat_openai(model=name, **self._settings)
+        return self._clients[name]
+
+    def model_for(self, step: str) -> str:
+        """Which model judges this step. The default unless `step_models` says otherwise."""
+        return self._step_models.get(step, self.default_model)
+
+    def llm_for(self, step: str) -> Any:
+        return self._client_for_model(self.model_for(step))
 
     def system_prompt_for(self, step: str) -> str:
         """The base prompt, plus `prompts/steps/<step>.md` when that file exists."""
@@ -181,17 +226,18 @@ class LocalLLMJudge:
         return f"{self.system_prompt}\n\n{extra}" if extra else self.system_prompt
 
     def judge(self, step: str, payload: dict[str, Any]) -> JudgeResult:
+        llm = self.llm_for(step)
         messages = [
             ("system", self.system_prompt_for(step)),
             ("human", f"Step: {step}\n\nEvidence:\n{json.dumps(payload, indent=2, default=repr)}"),
         ]
         try:
-            result = self.llm.with_structured_output(JudgeResult).invoke(messages)
+            result = llm.with_structured_output(JudgeResult).invoke(messages)
             if isinstance(result, JudgeResult):
                 return result.model_copy(update={"step": step})
             return JudgeResult.model_validate({**dict(result), "step": step})
         except Exception:
-            response = self.llm.invoke(messages)
+            response = llm.invoke(messages)
             data = _extract_json(getattr(response, "content", str(response)))
             data["step"] = step
             return JudgeResult.model_validate(data)

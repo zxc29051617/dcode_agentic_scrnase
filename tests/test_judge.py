@@ -139,11 +139,16 @@ class _FakeLLM:
         return Response()
 
 
-def _local(llm) -> LocalLLMJudge:
+def _local(llm, *, step_models: dict[str, str] | None = None) -> LocalLLMJudge:
     """A LocalLLMJudge with its client swapped, so nothing is dialled."""
     instance = LocalLLMJudge.__new__(LocalLLMJudge)
     instance.system_prompt = judge_module.PROMPT_PATH.read_text(encoding="utf-8")
     instance._step_prompts = {}
+    instance._step_models = dict(step_models or {})
+    instance.default_model = "test-default"
+    instance._clients = {"test-default": llm}
+    instance._chat_openai = None          # asking for another model must not dial
+    instance._settings = {}
     instance.llm = llm
     return instance
 
@@ -374,6 +379,57 @@ def test_the_cross_check_addendum_says_unflagged_is_not_the_same_as_sound():
     text = path.read_text(encoding="utf-8").lower()
     assert "flags" in text and "not thereby sound" in text
     assert "celltypist_label" in text, "the judge needs the field name to cite it"
+
+
+# --- per-step models -----------------------------------------------------------------
+
+
+def test_a_step_with_no_override_uses_the_default_model():
+    instance = _local(_FakeLLM(structured=JudgeResult(**VALID)))
+    assert instance.model_for("run_pca") == "test-default"
+    assert instance.llm_for("run_pca") is instance.llm
+
+
+def test_an_override_routes_only_that_step():
+    instance = _local(_FakeLLM(structured=JudgeResult(**VALID)),
+                      step_models={"find_markers": "big-model"})
+    assert instance.model_for("find_markers") == "big-model"
+    assert instance.model_for("run_pca") == "test-default"
+
+
+def test_step_models_is_read_from_disk_and_survives_a_missing_or_broken_file(tmp=None):
+    """A malformed override file must not take the whole run down with it."""
+    import json as _json
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+
+        assert judge_module.load_step_models(root / "absent.json") == {}
+
+        broken = root / "broken.json"
+        broken.write_text("{not json", encoding="utf-8")
+        assert judge_module.load_step_models(broken) == {}
+
+        wrong_shape = root / "wrong.json"
+        wrong_shape.write_text(_json.dumps({"steps": ["run_pca"]}), encoding="utf-8")
+        assert judge_module.load_step_models(wrong_shape) == {}
+
+        good = root / "good.json"
+        good.write_text(_json.dumps(
+            {"steps": {"run_pca": "small", "find_markers": "big", "bad": 7}}),
+            encoding="utf-8")
+        assert judge_module.load_step_models(good) == {"run_pca": "small",
+                                                       "find_markers": "big"}
+
+
+def test_any_step_named_in_the_override_file_is_a_real_step():
+    """A typo there routes nothing and reports nothing."""
+    from src.registry import REGISTRY
+
+    for step in judge_module.load_step_models():
+        assert step in REGISTRY, \
+            f"step_models.json names {step!r}, which is not a registry step"
 
 
 # --- choosing a backend --------------------------------------------------------------
