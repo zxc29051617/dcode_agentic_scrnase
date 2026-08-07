@@ -115,6 +115,47 @@ def make_step_node(step: str) -> NodeFn:
     return node
 
 
+#: How much of a step's output the judge is shown, where the full output is far
+#: larger than a verdict needs. Named per step and per field on purpose: this is
+#: a projection of known structure, not a size limit. A byte cap would cut
+#: wherever the budget ran out, which could be the evidence the verdict turns
+#: on, and the judge would never know something was missing.
+#:
+#: `find_markers` reports 25 markers for each of 15 clusters, ~47 KB, when a
+#: handful per cluster is already enough to say whether the ranking looks
+#: sensible. Only the judge's view narrows — the step's own output and
+#: markers.csv keep every gene.
+JUDGE_OUTPUT_PREVIEWS: dict[str, dict[str, int]] = {
+    "find_markers": {"top_markers": 5},
+}
+
+
+def _judge_view(step: str, output: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """The step's output as the judge should see it, and what was shortened.
+
+    Returns the note as well as the payload, because a judge shown a subset
+    without being told is a judge that can conclude something is absent when it
+    was only elided.
+    """
+    limits = JUDGE_OUTPUT_PREVIEWS.get(step)
+    if not limits:
+        return output, []
+
+    view = dict(output)
+    notes: list[str] = []
+    for field, keep in limits.items():
+        value = view.get(field)
+        if isinstance(value, dict) and value:
+            first = next(iter(value.values()))
+            if isinstance(first, list) and len(first) > keep:
+                view[field] = {k: v[:keep] for k, v in value.items()}
+                notes.append(f"{field}: showing the top {keep} of {len(first)} per group")
+        elif isinstance(value, list) and len(value) > keep:
+            view[field] = value[:keep]
+            notes.append(f"{field}: showing the first {keep} of {len(value)}")
+    return view, notes
+
+
 def make_judge_node(step: str, judge_tool: str, client: JudgeClient) -> NodeFn:
     """Score the most recent result of `step` and append a verdict."""
 
@@ -124,14 +165,17 @@ def make_judge_node(step: str, judge_tool: str, client: JudgeClient) -> NodeFn:
             (r for r in reversed(state.get("step_results") or []) if r["step"] == step),
             {"step": step, "status": "error", "warnings": [], "errors": ["step never ran"]},
         )
+        view, shortened = _judge_view(step, step_output(state, step))
         payload = {
             "step": step,
             "status": record["status"],
             "warnings": record["warnings"],
             "errors": record["errors"],
-            "output": step_output(state, step),
+            "output": view,
             "metrics": (state.get("metrics") or {}).get(step, {}),
         }
+        if shortened:
+            payload["output_is_abridged"] = shortened
 
         try:
             verdict = client.judge(step, payload)

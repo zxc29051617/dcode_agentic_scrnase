@@ -142,6 +142,67 @@ def test_a_judge_can_write_nothing_but_its_verdict():
     assert set(delta) == {"judge_results"}
 
 
+def _markers_output(genes_per_cluster=25, clusters=15):
+    return {
+        "marker_table_path": "runs/x/find_markers/markers.csv",
+        "top_markers": {
+            str(c): [{"gene": f"G{i}", "logfoldchange": 1.0} for i in range(genes_per_cluster)]
+            for c in range(clusters)
+        },
+        "marker_summary": {"n_clusters_tested": clusters},
+    }
+
+
+def test_the_judge_sees_fewer_markers_per_cluster_but_every_cluster():
+    """Narrowing must not drop a group — that would hide a cluster entirely."""
+    full = _markers_output()
+    view, notes = nodes._judge_view("find_markers", full)
+    assert len(view["top_markers"]) == 15, "every cluster still has to be there"
+    assert all(len(g) == 5 for g in view["top_markers"].values())
+    assert notes == ["top_markers: showing the top 5 of 25 per group"]
+
+
+def test_narrowing_leaves_the_step_output_alone():
+    """Only the judge's view narrows; the artifact keeps every gene."""
+    full = _markers_output()
+    nodes._judge_view("find_markers", full)
+    assert len(full["top_markers"]["0"]) == 25
+    assert full["marker_table_path"].endswith("markers.csv")
+
+
+def test_a_step_with_no_preview_rule_is_passed_through_untouched():
+    output = {"pca_summary": {"n_comps": 50}}
+    view, notes = nodes._judge_view("run_pca", output)
+    assert view == output and notes == []
+
+
+def test_an_output_already_small_enough_is_not_marked_abridged():
+    """Saying 'abridged' when nothing was cut would be its own kind of lie."""
+    view, notes = nodes._judge_view("find_markers", _markers_output(genes_per_cluster=3))
+    assert notes == []
+    assert len(view["top_markers"]["0"]) == 3
+
+
+def test_the_judge_is_told_when_it_is_seeing_a_subset():
+    """Otherwise it can read an elision as an absence and judge on that."""
+    seen = {}
+
+    class Recording(StubJudge):
+        def judge(self, step, payload):
+            seen.update(payload)
+            return super().judge(step, payload)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        state = _state(
+            Path(tmp),
+            step_results=[{"step": "find_markers", "status": "ok", "warnings": [], "errors": []}],
+            artifacts={"find_markers": _markers_output()},
+        )
+        nodes.make_judge_node("find_markers", "judge_markers", Recording())(state)
+    assert seen["output_is_abridged"] == ["top_markers: showing the top 5 of 25 per group"]
+    assert len(seen["output"]["top_markers"]["0"]) == 5
+
+
 def test_advice_reaches_the_gate_but_not_the_artifacts():
     """The suggestion is for a person. Nothing may carry it into the results."""
     advising = JudgeResult(
