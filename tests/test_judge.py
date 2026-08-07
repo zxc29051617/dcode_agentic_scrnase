@@ -362,16 +362,10 @@ def test_the_addendum_reaches_the_model_not_just_the_getter():
     assert "database_candidates" in system
 
 
-def test_every_addendum_names_a_real_step():
-    """A file named for a step that does not exist would silently never load."""
-    from src.registry import REGISTRY
-
-    directory = judge_module.STEP_PROMPT_DIR
-    if not directory.exists():
-        return
-    for path in directory.glob("*.md"):
-        assert path.stem in REGISTRY, \
-            f"prompts/steps/{path.name} matches no registry step"
+# Validating the addenda themselves — filenames, required sections, and the
+# fields they cite — lives in `tests/test_step_prompts.py`, which owns that
+# contract. What stays here is the mechanism: that the base prompt is extended
+# for one step and left alone for every other.
 
 
 def test_the_cross_check_addendum_says_unflagged_is_not_the_same_as_sound():

@@ -77,6 +77,79 @@ def test_reads_embedding_key_from_run_integration():
     assert result["clustering_summary"]["embedding_key"] == "X_pca_harmony"
 
 
+def _override_the_correction(root: Path):
+    """Integration recommends X_pca_harmony; config insists on X_pca.
+
+    Called directly rather than through `_run_via_integration`, whose
+    `embedding_key` argument is the recommendation — the whole point here is
+    that the recommendation and the config key are two different things.
+    """
+    adata = _adata(key="X_pca", n_blobs=3)
+    adata.obsm["X_pca_harmony"] = adata.obsm["X_pca"].copy()
+    path = matrix_io.write_h5ad(adata, root / "in.h5ad")
+    return clus.run({
+        "artifacts": {
+            "run_integration": {
+                "adata_path": str(path),
+                "integration_summary": {"embedding_key": "X_pca_harmony"},
+            }
+        },
+        "run_dir": str(root / "run"),
+        "config": {"embedding_key": "X_pca"},
+    })
+
+
+def test_where_the_embedding_came_from_is_recorded():
+    """`embedding_key` alone cannot tell a correct basis from an overridden one.
+
+    A run with nothing to correct and a run that corrected a batch then
+    clustered around the correction both report `X_pca`, with every other
+    number identical. Only the provenance separates them.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        integrated = _run_via_integration(
+            Path(tmp), _adata(key="X_pca_harmony", n_blobs=3),
+            embedding_key="X_pca_harmony")
+    summary = integrated["clustering_summary"]
+    assert summary["integration_ran"] is True
+    assert summary["integration_recommended"] == "X_pca_harmony"
+    assert summary["embedding_source"] == "run_integration"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        summary = _override_the_correction(Path(tmp))["clustering_summary"]
+    assert summary["embedding_key"] == "X_pca"
+    assert summary["integration_ran"] is True
+    assert summary["integration_recommended"] == "X_pca_harmony"
+    assert summary["embedding_source"] == "config override"
+
+
+def test_clustering_past_a_correction_is_warned_about():
+    """The failure is invisible in the result — same cluster count either way."""
+    with tempfile.TemporaryDirectory() as tmp:
+        result = _override_the_correction(Path(tmp))
+
+    assert result["errors"] == []
+    assert any("run_integration recommended" in w for w in result["warnings"]), \
+        f"no warning about discarding the correction: {result['warnings']}"
+
+
+def test_no_integration_on_x_pca_is_not_flagged():
+    """Nothing to correct is not the same failure, and must not read as one."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        path = matrix_io.write_h5ad(_adata(n_blobs=3), root / "in.h5ad")
+        result = clus.run({
+            "artifacts": {"run_pca": {"adata_path": str(path)}},
+            "run_dir": str(root / "run"),
+            "config": {},
+        })
+
+    summary = result["clustering_summary"]
+    assert summary["integration_ran"] is False
+    assert summary["embedding_source"] == "run_pca"
+    assert not [w for w in result["warnings"] if "run_integration recommended" in w]
+
+
 def test_resolution_is_configurable():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)

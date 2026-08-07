@@ -66,12 +66,20 @@ DEFAULT_N_NEIGHBORS = 15
 MIN_USEFUL_CLUSTERS = 2
 
 
-def _resolve_adata_path(payload: dict[str, Any]) -> tuple[str | None, str]:
-    """Return the AnnData path and the embedding key to cluster on.
+def _resolve_adata_path(payload: dict[str, Any]) -> tuple[str | None, str, dict[str, Any]]:
+    """Return the AnnData path, the embedding key to cluster on, and where it came from.
 
     `config.embedding_key`, when given, always wins — it is how the standalone
     CLI points at a specific embedding without a `run_integration` artifact to
     read it from.
+
+    The third value is provenance, and it is not decoration. Clustering the
+    uncorrected PCA after Harmony has run produces clusters that are libraries
+    wearing the costume of cell types, and the failure is invisible in the
+    result: 15 clusters either way. From `embedding_key` alone a reader cannot
+    tell an uncorrected basis that was correct (no integration ran) from one
+    that was overridden past a correction that did — so the two are recorded
+    apart.
     """
     artifacts = payload.get("artifacts") or {}
     config = payload.get("config") or {}
@@ -80,11 +88,27 @@ def _resolve_adata_path(payload: dict[str, Any]) -> tuple[str | None, str]:
     integration = artifacts.get("run_integration") or {}
     if integration.get("adata_path"):
         summary = integration.get("integration_summary") or {}
-        return str(integration["adata_path"]), str(override or summary.get("embedding_key", "X_pca"))
+        recommended = str(summary.get("embedding_key", "X_pca"))
+        chosen = str(override or recommended)
+        return str(integration["adata_path"]), chosen, {
+            "embedding_source": "config override" if override else "run_integration",
+            "integration_ran": True,
+            "integration_recommended": recommended,
+        }
+
     pca = artifacts.get("run_pca") or {}
     if pca.get("adata_path"):
-        return str(pca["adata_path"]), str(override or "X_pca")
-    return config.get("adata_path"), str(override or "X_pca")
+        return str(pca["adata_path"]), str(override or "X_pca"), {
+            "embedding_source": "config override" if override else "run_pca",
+            "integration_ran": False,
+            "integration_recommended": None,
+        }
+
+    return config.get("adata_path"), str(override or "X_pca"), {
+        "embedding_source": "config override" if override else "default",
+        "integration_ran": False,
+        "integration_recommended": None,
+    }
 
 
 def run(payload: dict[str, Any]) -> dict[str, Any]:
@@ -92,9 +116,18 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
     warnings: list[str] = []
     notes: list[str] = []
 
-    source, embedding_key = _resolve_adata_path(payload)
+    source, embedding_key, provenance = _resolve_adata_path(payload)
     if not source:
         return _result(errors=["no AnnData path; run_integration must run first"])
+
+    # The one case the numbers downstream cannot recover: a correction was made
+    # and then clustered around.
+    if provenance["integration_ran"] and embedding_key != provenance["integration_recommended"]:
+        warnings.append(
+            f"clustering on {embedding_key!r} though run_integration recommended "
+            f"{provenance['integration_recommended']!r}; batch effect corrected and "
+            "then not used"
+        )
     if not Path(source).expanduser().exists():
         return _result(errors=[f"AnnData does not exist: {source}"])
 
@@ -153,6 +186,9 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
 
     clustering_summary = {
         "embedding_key": embedding_key,
+        # Where that key came from, so a reader can tell an uncorrected basis
+        # that was right from one that was overridden past a correction.
+        **provenance,
         "n_neighbors": n_neighbors,
         "resolution": resolution,
         "random_state": int(config.get("random_state", 0)),
