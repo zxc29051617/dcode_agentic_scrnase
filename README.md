@@ -202,6 +202,15 @@ python -m src.run --input <matrix> --celltypist-model Immune_All_Low.pkl
 judge verdict、人工決策、套件版本與模型 hash）。條件不成立的章節會寫明原因，
 不會靜默消失。詳見 `docs/report_contract.md`。
 
+**磁碟**。每一步各寫一份 AnnData——這是續跑能運作的原因，也是一次執行約 **410 MB**
+的原因（雙樣本 PBMC 測試，幾乎全是 `.h5ad`）。沒有任何自動刪除：哪一次執行還值得留
+是對工作的判斷，不是對位元組的判斷。
+
+```bash
+bash scripts/run_disk_usage.sh        # 各次執行多大、跑完了沒
+find runs/<run_id> -name adata.h5ad -delete   # 留報告，丟中間檔（就不能再續跑）
+```
+
 ## src/ 分層
 
 | 檔案 | 負責 |
@@ -215,7 +224,7 @@ judge verdict、人工決策、套件版本與模型 hash）。條件不成立�
 | `graph.py` | `workflows/fastq_count_main_graph.md` 的接線 |
 | `state.py` | node 之間傳遞的狀態 |
 | `provenance.py` | append-only audit log + run 開始時的環境快照 |
-| `persistence.py` | 暫停（checkpointer）與續跑（從 run_dir 的 artifact 判斷） |
+| `persistence.py` | 暫停（checkpointer）與續跑（從 run_dir 的 artifact 判斷）；磁碟成本的取捨寫在檔頭 |
 | `plots.py` | 報告的 12 個圖組 |
 
 ## 下一步

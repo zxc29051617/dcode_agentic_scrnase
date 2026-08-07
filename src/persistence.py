@@ -26,6 +26,17 @@ cannot be resumed in a new process, because a pending question is not an
 artifact. Resuming re-runs from the last completed step and asks again. If that
 ever becomes expensive, `make_checkpointer` is the one function that has to
 change.
+
+## The other cost is disk
+Every step writing its own AnnData is what makes resuming possible, and it is
+also what makes a run expensive to keep: the two-sample PBMC test costs about
+410 MB, nearly all of it `.h5ad`, and a study with more libraries or a deeper
+matrix scales from there. Nothing here deletes anything — which run is still
+worth keeping is a judgement about the work, not about the bytes.
+
+`scripts/run_disk_usage.sh` reports what is there and which runs finished.
+Deleting a run's `adata.h5ad` files keeps the report, figures, markers and
+provenance while giving up the ability to resume it.
 """
 
 from __future__ import annotations
