@@ -243,13 +243,23 @@ find runs/<run_id> -name adata.h5ad -delete   # 留報告，丟中間檔（就�
 
 ## 加一個新的 step
 
-25 個 registry step 都已實作，所以沒有空殼要填了。要新增一步：
+25 個 registry step 都已實作，沒有空殼要填。要新增一步，**以現有的 skill 為模板**：
 
-1. 寫 `skills/<name>/<name>.py` 的 `run(payload) -> dict`（契約見任一個現有 skill）
-2. 在 `src/registry.py` 加一個 `StepSpec`
+1. **挑一個結構最接近的現有 skill。** 讀矩陣算東西的挑 `run_pca`；要停下來等人
+   決定閾值的挑 `apply_cell_qc_filter`；只讀不算的挑 `build_report`
+2. **複製整個目錄** — `cp -r skills/run_pca skills/my_new_step`
+3. **改名**：目錄名、`.py` 檔名、`TOOL_NAME`
+4. **改契約**：`INPUT_FIELDS`（從 payload 的哪些鍵讀，如
+   `artifacts.run_pca`、`config.n_comps`）、`OUTPUT_FIELDS`、`_result()` 的欄位、
+   `main()` 的 argparse，以及 `SKILL.md`
+5. **在 `src/registry.py` 加一個 `StepSpec`**，並補上 `tests/test_my_new_step.py`
+   （測試風格見任一個現有的測試檔）
 
 **不用動 `graph.py`** — 接線是從 registry 生成的。`docs/graph.mmd` 是編譯後
 graph 的匯出（50 node / 105 edge），改完可以重新產生來確認接線。
 
-⚠️ `_generate_skills.py` 只會補沒有的檔案，不會覆寫已存在的（要覆寫得加 `--force`）。
-它**不會**產生 `judge_*` 資料夾——判官是 `src/judge.py` 的一份共用契約，不是每步一個工具。
+> 以前有一支 `_generate_skills.py` 產生空殼，已經刪掉。它產出的形狀停在專案早期
+> ——例如 `INPUT_FIELDS` 寫的是 `"AnnData"` 這種散文，而現在是
+> `"artifacts.normalize_hvg_prepare"` 這種實際的 payload 路徑——所以拿它開新 step
+> 得到的骨架是錯的，還要先拆掉。從真的在運作的 skill 複製，形狀永遠是對的，
+> 也不會多出一份會跟實作漂移的描述。
