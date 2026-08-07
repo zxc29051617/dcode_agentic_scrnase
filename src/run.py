@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
-from typing import Any
+import sys
+from pathlib import Path
+from typing import Any, Callable
 
+from langgraph.types import Command
+
+from . import persistence
 from .graph import build_graph
 from .judge import get_judge
 from .policy import GatePolicy
+from .provenance import config_digest
 from .state import new_run_state, summarize
 
 #: One superstep per node; the mainline plus judges is well over LangGraph's default of 25.
@@ -24,13 +31,80 @@ def run_workflow(
     judge_backend: str | None = None,
     runs_dir: str = "runs",
     recursion_limit: int = DEFAULT_RECURSION_LIMIT,
+    checkpointer: Any = None,
+    decide: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    resume_run_id: str | None = None,
 ) -> dict[str, Any]:
-    """Run one pass of the workflow and return the final state."""
-    graph = build_graph(policy=policy or GatePolicy(), judge=get_judge(judge_backend))
-    state = new_run_state(
-        project=project, config=config or {}, input_bundle=input_bundle, runs_dir=runs_dir
+    """Run one pass of the workflow and return the final state.
+
+    The three new arguments all default to what the workflow did before them,
+    so a caller that passes none of them gets the previous behaviour exactly.
+
+    `checkpointer` is what lets a gate pause; `decide` is called with the
+    pending question and returns the answer, driving the `Command(resume=...)`
+    loop. `resume_run_id` reuses a run directory and skips the steps it already
+    holds finished artifacts for.
+    """
+    resolved = dict(config or {})
+    graph = build_graph(
+        policy=policy or GatePolicy(), judge=get_judge(judge_backend), checkpointer=checkpointer
     )
-    return graph.invoke(state, config={"recursion_limit": recursion_limit})
+    state = new_run_state(
+        project=project, config=resolved, input_bundle=input_bundle,
+        runs_dir=runs_dir, run_id=resume_run_id,
+    )
+
+    if resume_run_id:
+        run_dir = Path(runs_dir) / resume_run_id
+        done = persistence.resumable_steps(run_dir, config_digest(resolved))
+        state["artifacts"] = dict(done)
+        state["resumed_steps"] = {step: True for step in done}
+
+    invoke_config = persistence.thread_config(
+        state["run_id"], recursion_limit=recursion_limit, checkpointer=checkpointer
+    )
+    final = graph.invoke(state, config=invoke_config)
+
+    # A paused graph returns with the question in `__interrupt__` rather than
+    # raising. Nothing consumed it before, so an interactive run that stopped
+    # to ask something reported itself as a clean completion.
+    while "__interrupt__" in final:
+        request = getattr(final["__interrupt__"][0], "value", {}) or {}
+        if decide is None:
+            return {**final, "status": "needs_review", "pending_review": request}
+        final = graph.invoke(Command(resume=decide(request)), config=invoke_config)
+
+    # Reaching here means the graph ran to an end node. Only this caller knows
+    # that; a node cannot tell whether it is the last one.
+    if not final.get("halted"):
+        final = {**final, "status": "failed" if final.get("errors") else "completed"}
+    return final
+
+
+def ask_on_terminal(request: dict[str, Any]) -> dict[str, Any]:
+    """Put a paused gate to whoever is at the keyboard.
+
+    The evidence is shown, not just the complaint: the point of stopping is
+    that a person looks at the numbers, and a gate that prints only "warn" has
+    asked them to decide with nothing to decide on.
+    """
+    print(f"\n── {request.get('gate')} · {request.get('step')} "
+          f"[{request.get('verdict')}] ──", file=sys.stderr)
+    for reason in request.get("reasons") or []:
+        print(f"   · {reason}", file=sys.stderr)
+    if request.get("suggested_action"):
+        print(f"   suggested: {request['suggested_action']}", file=sys.stderr)
+    if request.get("evidence"):
+        print("   evidence: "
+              + json.dumps(request["evidence"], ensure_ascii=False, default=str)[:600],
+              file=sys.stderr)
+
+    while True:
+        answer = input("   accept / revise / stop > ").strip().lower()
+        if answer in {"accept", "revise", "stop"}:
+            rationale = input("   why (optional) > ").strip()
+            return {"decision": answer, "rationale": rationale, "operator": getpass.getuser()}
+        print("   please answer accept, revise or stop", file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -119,6 +193,20 @@ def main(argv: list[str] | None = None) -> int:
         default="stop",
         help="what a non-interactive run assumes at a human gate",
     )
+    # Pausing and resuming. Both default off, so a command that names neither
+    # runs exactly as it did before they existed.
+    resume = parser.add_argument_group("pausing and resuming")
+    resume.add_argument(
+        "--interactive", action="store_true",
+        help="stop at each gate and ask on the terminal, instead of applying "
+             "--headless-decision",
+    )
+    resume.add_argument(
+        "--resume-from", metavar="RUN_ID",
+        help="reuse an existing runs/<RUN_ID> directory and skip the steps whose "
+             "artifacts are still there; refuses if the config has changed",
+    )
+
     parser.add_argument("--runs-dir", default="runs")
     args = parser.parse_args(argv)
 
@@ -153,9 +241,13 @@ def main(argv: list[str] | None = None) -> int:
         project=args.project,
         input_bundle={"paths": args.input},
         config=config,
+        checkpointer=persistence.make_checkpointer("memory" if args.interactive else "none"),
+        decide=ask_on_terminal if args.interactive else None,
+        resume_run_id=args.resume_from,
         policy=GatePolicy(
             autocontinue_on_warn=args.allow_warn,
             headless_decision=args.headless_decision,
+            interactive=args.interactive,
         ),
         judge_backend=args.judge,
         runs_dir=args.runs_dir,

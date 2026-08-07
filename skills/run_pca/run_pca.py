@@ -151,7 +151,9 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
         "n_genes_used": n_genes_used,
         "random_state": int(config.get("random_state", 0)),
         "used_highly_variable": mask_var is not None,
-        "variance_ratio": [round(v, 4) for v in variance_ratio[:N_VARIANCE_RATIOS_REPORTED]],
+        # `round()` on a numpy scalar returns a numpy scalar; state has to hold
+        # built-ins to be checkpointable.
+        "variance_ratio": [round(float(v), 4) for v in variance_ratio[:N_VARIANCE_RATIOS_REPORTED]],
         "cumulative_variance_explained": round(cumulative, 4),
     }
 

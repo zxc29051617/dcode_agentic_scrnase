@@ -15,7 +15,12 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, TypedDict
 
 Verdict = Literal["pass", "warn", "fail"]
-StepStatus = Literal["ok", "scaffold", "error"]
+StepStatus = Literal["ok", "scaffold", "error", "skipped"]
+
+#: Where the run as a whole stands. Derivable from verdicts and decisions, but
+#: only by rules a reader has to already know — worth a field of its own so the
+#: report and any caller can ask directly.
+RunStatus = Literal["running", "needs_review", "halted", "failed", "completed"]
 
 
 def merge_dicts(left: dict[str, Any] | None, right: dict[str, Any] | None) -> dict[str, Any]:
@@ -48,6 +53,20 @@ class WorkflowState(TypedDict, total=False):
     halted: bool
     halt_reason: str
 
+    #: Where the run stands as a whole. Defaults to `running`, so a caller that
+    #: never looks at it sees exactly the behaviour it saw before.
+    status: RunStatus
+
+    #: The question a paused gate is waiting on. `interrupt()` alone suspends
+    #: the graph but leaves nothing in state, so a run that paused was
+    #: indistinguishable from one that finished.
+    pending_review: dict[str, Any] | None
+
+    #: `{step: True}` for steps a previous run already completed, seeded when
+    #: resuming. A step consumes its own flag by setting it False, so a later
+    #: `revise` on that same step runs for real instead of skipping again.
+    resumed_steps: Annotated[dict[str, bool], merge_dicts]
+
 
 def new_run_state(
     *,
@@ -56,26 +75,34 @@ def new_run_state(
     input_bundle: dict[str, Any] | None = None,
     sample_metadata: dict[str, Any] | None = None,
     runs_dir: str | Path = "runs",
+    run_id: str | None = None,
 ) -> WorkflowState:
     """Build a fresh state, and record what the environment was at run start.
 
     The metadata is written here rather than gathered when a report is built:
     those are different moments, and a report regenerated later would otherwise
     describe an environment that never produced these results.
+
+    Passing `run_id` reuses an existing run directory, which is how a resumed
+    run finds the artifacts it is going to skip. Its metadata is left exactly
+    as it was: rewriting it would replace the git commit, package versions and
+    timestamp of the run that actually produced those artifacts with today's.
     """
     from .provenance import capture_run_metadata
 
-    run_id = f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:8]}"
+    resuming = run_id is not None
+    run_id = run_id or f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:8]}"
     run_dir = Path(runs_dir) / run_id
     audit_path = run_dir / "audit.jsonl"
     metadata_path = run_dir / "run_metadata.json"
 
     resolved_config = dict(config or {})
-    metadata = capture_run_metadata(run_id=run_id, config=resolved_config)
     run_dir.mkdir(parents=True, exist_ok=True)
-    metadata_path.write_text(
-        json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    if not (resuming and metadata_path.exists()):
+        metadata = capture_run_metadata(run_id=run_id, config=resolved_config)
+        metadata_path.write_text(
+            json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
 
     return WorkflowState(
         run_id=run_id,
@@ -94,6 +121,9 @@ def new_run_state(
         warnings=[],
         errors=[],
         halted=False,
+        status="running",
+        pending_review=None,
+        resumed_steps={},
     )
 
 
@@ -135,6 +165,11 @@ def summarize(state: WorkflowState) -> dict[str, Any]:
         "verdicts": {j["step"]: label(j) for j in state.get("judge_results") or []},
         "halted": bool(state.get("halted")),
         "halt_reason": state.get("halt_reason"),
+        # A run waiting at a gate is not a finished one, and used to summarize
+        # identically to a clean completion.
+        "status": state.get("status") or "running",
+        "pending_review": state.get("pending_review"),
+        "skipped": by_status.get("skipped", []),
         "audit_log_path": state.get("audit_log_path"),
         "run_metadata_path": state.get("run_metadata_path"),
     }

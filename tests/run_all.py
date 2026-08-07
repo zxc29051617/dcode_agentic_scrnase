@@ -33,6 +33,8 @@ from tests import (  # noqa: E402
     test_annotate_cells,
     test_provenance,
     test_build_report,
+    test_persistence,
+    test_resume,
     test_run_qc_metrics,
 )
 
@@ -61,6 +63,8 @@ MODULES = (
     test_annotate_cells,
     test_provenance,
     test_build_report,
+    test_persistence,
+    test_resume,
     test_graph_smoke,
 )
 

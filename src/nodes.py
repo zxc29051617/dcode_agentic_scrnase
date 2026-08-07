@@ -6,11 +6,13 @@ never write artifacts, and the gate never rewrites either.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 from langgraph.types import interrupt
 
+from . import persistence
 from .judge import JudgeClient, JudgeResult
 from .policy import GatePolicy
 from .provenance import AuditLog
@@ -43,15 +45,51 @@ def build_payload(state: WorkflowState, step: str) -> dict[str, Any]:
     }
 
 
+def _run_dir(state: WorkflowState) -> Path:
+    return Path(state.get("audit_log_path", "runs/unknown/audit.jsonl")).parent
+
+
+def _skip_record(state: WorkflowState, step: str) -> dict[str, Any] | None:
+    """The recorded output to reuse instead of running `step`, if there is one.
+
+    Only a step flagged by a resume qualifies, and only while its flag is still
+    set. The flag is consumed on use so that a `revise` decision, which routes
+    back to this same node, runs the step for real rather than handing back the
+    same artifacts the operator just asked to redo.
+    """
+    if not (state.get("resumed_steps") or {}).get(step):
+        return None
+    recorded = (state.get("artifacts") or {}).get(step)
+    if not isinstance(recorded, dict):
+        return None
+    return recorded if persistence.artifacts_present(recorded) else None
+
+
 def make_step_node(step: str) -> NodeFn:
     """Wrap one deterministic skill as a graph node."""
 
     def node(state: WorkflowState) -> dict[str, Any]:
         audit = _audit(state)
+
+        reused = _skip_record(state, step)
+        if reused is not None:
+            record = {"step": step, "status": "skipped", "warnings": [], "errors": []}
+            audit.append("step_skipped", step=step, run_id=state.get("run_id"),
+                         reason="already completed in this run directory")
+            return {
+                "current_step": step,
+                "step_results": [record],
+                # Consume the flag: the next visit to this node is a rerun.
+                "resumed_steps": {step: False},
+            }
+
         audit.append("step_start", step=step, run_id=state.get("run_id"))
 
         result = call_skill(step, build_payload(state, step))
-        output = result["output"]
+        # Anything a step computed with numpy comes back wrapping a numpy
+        # scalar, which state cannot be checkpointed with. Coerced once here
+        # rather than trusted to 23 skills and every future one.
+        output = persistence.plain_python(result["output"])
         record = {
             "step": step,
             "status": result["status"],
@@ -59,6 +97,9 @@ def make_step_node(step: str) -> NodeFn:
             "errors": result["errors"],
         }
         audit.append("step_end", **record, output_keys=sorted(output))
+        # Recorded beside the artifacts so a later run can tell this step is
+        # done and read what it produced; state itself is never persisted.
+        persistence.write_step_output(_run_dir(state), step, output)
 
         delta: dict[str, Any] = {
             "current_step": step,
@@ -129,6 +170,9 @@ def make_human_gate_node(policy: GatePolicy, *, node_name: str = "human_gate") -
             "score": verdict.get("score"),
             "reasons": verdict.get("reasons", []),
             "suggested_action": verdict.get("suggested_action"),
+            # The numbers the decision is actually about. Without them a gate
+            # asks a person to choose while showing them only the complaint.
+            "evidence": (step_output(state, step) or {}).get("evidence") or {},
         }
         audit.append("human_gate_open", **request)
 
@@ -150,13 +194,20 @@ def make_human_gate_node(policy: GatePolicy, *, node_name: str = "human_gate") -
             "step": step,
             "decision": choice,
             "rationale": decision.get("rationale", ""),
+            # Who decided, and when. The audit log timestamps its own events,
+            # but the decision travelling in state carried neither.
+            "operator": decision.get("operator") or ("interactive" if policy.interactive
+                                                     else "policy default"),
+            "decided_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
         audit.append("human_gate_close", **entry)
 
-        delta: dict[str, Any] = {"human_decisions": [entry]}
+        # The question has been answered, so it is no longer pending.
+        delta: dict[str, Any] = {"human_decisions": [entry], "pending_review": None}
         if choice == "stop":
             delta["halted"] = True
             delta["halt_reason"] = f"human stopped the run at {step or node_name}"
+            delta["status"] = "halted"
         return delta
 
     return node
