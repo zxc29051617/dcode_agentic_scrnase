@@ -19,16 +19,31 @@
 
 ## 目錄
 
-- `docs/`：架構與 workflow 設計
-- `data/`：測試資料集（內容 gitignore，見 `data/README.md`）
-- `reference/`：Cell Ranger reference（內容 gitignore，見 `reference/README.md`）
-- `tools/`：Cell Ranger 等第三方工具的 symlink（見 `tools/README.md`）
-- `scripts/`：`get_test_data.sh`、`link_reference.sh` 等維運腳本
+**程式碼**（進 git）
 - `src/`：LangGraph orchestrator 實作
 - `skills/`：每個 workflow step 一個工具（`SKILL.md` 契約 + Python 實作），26 個，與 `src/registry.py` 一一對應
+- `tests/`：452 個測試，`python tests/run_all.py` 全跑
+- `scripts/`：維運腳本（取測試資料、連 reference、匯出 graph、查磁碟用量）
+
+**資料與設定**（進 git）
+- `prompts/`：judge 的提示詞。`local_judge_base.md` 是共用的，`steps/<step>.md` 是個別步驟的加註
+- `marker_db/`：cell type 註解用的 marker 資料庫（scMayoMap，785 KB 純文字）
 - `schemas/`：judge / state / output 的 JSON schema
-- `prompts/`：各 step 的 local judge prompt
+- `docs/`：架構、報告契約、`graph.mmd`（編譯後的 graph 匯出）
 - `workflows/`：LangGraph workflow 草圖與版本化設計
+
+**外部大檔**（只有 symlink 和 README 進 git，內容 gitignore）
+- `data/`：測試資料集（見 `data/README.md`）
+- `reference/`：Cell Ranger 的基因組 reference，20–32 GB（見 `reference/README.md`）
+- `tools/`：Cell Ranger 等第三方執行檔（見 `tools/README.md`）
+
+**執行產物**（完全 gitignore）
+- `runs/<run_id>/`：每次執行的所有輸出。每一步各存一份 `adata.h5ad` 以支援斷點續跑，
+  所以**一次執行約 400 MB**。跑多了要清：`bash scripts/run_disk_usage.sh` 看用量，
+  值得留的複製到 `results/` 再把 run 刪掉
+
+> `reference/` 是基因組（幾十 GB、機器相關、不進 git）；`marker_db/` 是細胞型別的
+> marker 表（不到 1 MB、進 git）。兩者無關。
 
 ## 目前狀態
 

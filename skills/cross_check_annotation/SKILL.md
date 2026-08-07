@@ -126,7 +126,7 @@ element for numerical stability; variance is shift invariant, so centring on
 the mean is equivalent and deterministic.
 
 ## The database
-`refs/scmayomap/markers.csv` — 26,486 markers, 340 cell types, 28 tissues,
+`marker_db/scmayomap/markers.csv` — 26,486 markers, 340 cell types, 28 tissues,
 committed as plain text. `scripts/fetch_scmayomap_db.py` produced it from the
 upstream `.rda` and records the source hash in `PROVENANCE.json`.
 

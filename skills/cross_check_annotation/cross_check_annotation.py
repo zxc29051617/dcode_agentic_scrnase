@@ -83,7 +83,7 @@ OUTPUT_FIELDS = (
 )
 
 #: Committed by `scripts/fetch_scmayomap_db.py`. Long form: tissue, cell_type, gene.
-DATABASE_PATH = _PROJECT_ROOT / "refs" / "scmayomap" / "markers.csv"
+DATABASE_PATH = _PROJECT_ROOT / "marker_db" / "scmayomap" / "markers.csv"
 
 #: scMayoMap's own filters, from scMayoMap.R:101. Not tuned here: changing them
 #: would mean scoring something the published benchmark never measured.

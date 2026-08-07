@@ -1,6 +1,6 @@
 """Fetch the scMayoMap marker database and convert it to plain text, once.
 
-`cross_check_annotation` reads `refs/scmayomap/markers.csv`, which is committed.
+`cross_check_annotation` reads `marker_db/scmayomap/markers.csv`, which is committed.
 This script is how that file was produced, and how to reproduce it if the
 upstream database is ever updated. **The pipeline never runs this**, which is
 the point: reading an `.rda` needs `pyreadr`, and a cross-check that is only
@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-REFS = PROJECT_ROOT / "refs" / "scmayomap"
+REFS = PROJECT_ROOT / "marker_db" / "scmayomap"
 RDA_URL = "https://raw.githubusercontent.com/chloelulu/scMayoMap/main/data/scMayoMapDatabase.rda"
 LICENSE_URL = "https://raw.githubusercontent.com/chloelulu/scMayoMap/main/LICENSE"
 

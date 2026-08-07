@@ -1,7 +1,7 @@
 """Tests for `cross_check_annotation`.
 
 The marker database is committed, so these run against the real one rather than
-a stand-in: the shape of `refs/scmayomap/markers.csv` is part of the contract,
+a stand-in: the shape of `marker_db/scmayomap/markers.csv` is part of the contract,
 and a fixture that agreed with the code but not with the file would hide a
 break in exactly the place it matters.
 
