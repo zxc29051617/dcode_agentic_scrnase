@@ -397,6 +397,28 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
     if not grouped:
         return _result(errors=["no sample could be parsed from the FASTQ names"], warnings=warnings)
 
+    # Libraries `sample_qc_triage` excluded never reach a count. This is the
+    # only place the FASTQ route decides what to work on, so an exclusion that
+    # was not honoured here would have been recorded and then ignored.
+    excluded = set(
+        ((payload.get("artifacts") or {}).get("sample_qc_triage") or {}).get("excluded_samples")
+        or []
+    )
+    if excluded:
+        kept = {name: reads for name, reads in grouped.items() if name not in excluded}
+        dropped = sorted(set(grouped) - set(kept))
+        if dropped:
+            warnings.append(
+                f"{len(dropped)} librar(y/ies) excluded by sample_qc_triage and not "
+                f"counted: {', '.join(dropped)}"
+            )
+        if not kept:
+            return _result(
+                errors=["sample_qc_triage excluded every library; nothing left to count"],
+                warnings=warnings,
+            )
+        grouped = kept
+
     libraries = [_build_library(sample, reads) for sample, reads in sorted(grouped.items())]
 
     samplesheet = config.get("samplesheet")

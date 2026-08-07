@@ -111,6 +111,11 @@ def _resolve_matrices(payload: dict[str, Any]) -> dict[str, str]:
     `count_matrix_classify` reads — it is consulted before `ingest_validate`.
     """
     artifacts = payload.get("artifacts") or {}
+    # A triage that excluded libraries is consulted first; otherwise its
+    # decision would be recorded and then quietly ignored.
+    triaged = (artifacts.get("sample_qc_triage") or {}).get("matrix_paths")
+    if triaged:
+        return {str(k): str(v) for k, v in triaged.items()}
     ingest = artifacts.get("ingest_validate") or {}
     paths = ingest.get("matrix_paths")
     if paths:

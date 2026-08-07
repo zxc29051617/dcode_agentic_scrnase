@@ -186,6 +186,17 @@ def test_sample_qc_triage_runs_when_enabled():
     assert steps[:3] == ["ingest_validate", "sample_qc_triage", "matrix_preflight"]
     assert steps.count("sample_qc_triage") == 1, "triage must not loop"
 
+    record = next(r for r in final["step_results"] if r["step"] == "sample_qc_triage")
+    assert record["status"] == "ok", "the step is implemented, not a scaffold"
+
+
+def test_triage_with_nothing_to_triage_on_says_so():
+    """Enabled with no metrics table: believing it happened is the failure."""
+    final = _run({"input_type": "matrix", "matrix_kind": "filtered", "sample_qc_triage": True})
+    output = final["artifacts"]["sample_qc_triage"]
+    assert output["triage_state"] == "no_action"
+    assert any("no metrics table was supplied" in w for w in output["warnings"])
+
 
 def test_unnamed_matrix_bundle_stops_at_the_first_gate():
     """A directory with no raw/filtered signal is a question for a person."""

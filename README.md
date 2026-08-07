@@ -32,17 +32,22 @@
 
 ## 目前狀態
 
-Orchestrator 可以跑。Skill **25 個裡實作了 24 個**，FASTQ 上游整段與 QC 都已經是真的：
+Orchestrator 可以跑。**25 個 skill 全部實作完成**：
 
 | | |
 |---|---|
-| ✅ 已實作 | `ingest_validate`、`resolve_reference`、`matrix_preflight`、`fastq_preflight`、`fastq_qc`、`cellranger_count`、`count_matrix_classify`、`load_raw_counts`、`load_filtered_counts`、`cell_calling_review`、`merge_samples`、`post_load_validate`、`run_qc_metrics`、`apply_cell_qc_filter`、`detect_doublets`、`normalize_hvg_prepare`、`run_pca`、`run_integration`、`run_clustering`、`run_umap`、`find_markers`、`annotate_cells`、`build_report`、`human_review_decision` |
-| ⬜ scaffold | 剩下 1 個（`sample_qc_triage`，多樣本前置分流，選用），`run()` 直接 raise `NotImplementedError` |
+| ✅ 已實作 | `ingest_validate`、`resolve_reference`、`matrix_preflight`、`fastq_preflight`、`fastq_qc`、`cellranger_count`、`count_matrix_classify`、`load_raw_counts`、`load_filtered_counts`、`cell_calling_review`、`merge_samples`、`post_load_validate`、`run_qc_metrics`、`apply_cell_qc_filter`、`detect_doublets`、`normalize_hvg_prepare`、`run_pca`、`run_integration`、`run_clustering`、`run_umap`、`find_markers`、`annotate_cells`、`build_report`、`human_review_decision`、`sample_qc_triage` |
 
 FASTQ 路線：偵測輸入 → 選 reference 並驗證物種 → 結構檢查 → **FastQC/MultiQC 品質評估** → count
 
-Scaffold 不會讓流程崩潰，會被標成 `status="scaffold"`，summary 裡的 verdict 也寫成
-`"pass (scaffold)"`、score 0，不會被誤讀成真的通過。
+**樣本級分流**（選用，預設關閉）。在任何樣本被 count 之前決定哪些進入分析——
+Cell Ranger 一個 library 要 20–40 分鐘，讓壞掉的 library 進來比慢更糟。
+它只報告不自己刪除（跟 `apply_cell_qc_filter` 同一個形狀）：
+
+```bash
+--sample-qc-triage                      # 開啟
+# config: qc_metrics_csv / sample_thresholds / exclude_samples
+```
 
 ## 怎麼跑
 
