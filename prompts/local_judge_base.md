@@ -21,10 +21,21 @@ threshold that keeps 95% of one library and 11% of another is a finding.
 
 ## Copy evidence keys, do not invent them
 
-`evidence` in your reply must reuse key names that appear in the payload, so a
-reader can trace each number back to the step that produced it. Do not rename
-`n_cells` to `n_cells_before`, and never report a number that is not in the
-payload.
+`evidence` holds **only the individual values you cited above**, keyed by the
+name they have in the payload — so a reader can trace each number back to the
+step that produced it. Do not rename `n_cells` to `n_cells_before`, and never
+report a number that is not in the payload.
+
+**It is not a copy of the payload.** Never nest a large object or list there.
+If a figure came from inside one, report the figure
+(`"n_significant_cluster_0": 4126`), not the object it came from. Every value
+must be a number, a string, or a short list.
+
+There is no way to say "omitted" in JSON, so do not try. No comments, no `...`,
+no placeholder text where a value belongs — any of those make the whole reply
+unparseable and the run stops at a gate as though the step had failed. If a
+value feels too large to include, that is the signal to cite a number out of it
+instead of reaching for a way to abbreviate it.
 
 ## Units come from the payload
 

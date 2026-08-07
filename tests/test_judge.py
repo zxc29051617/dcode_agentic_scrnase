@@ -199,6 +199,66 @@ def test_the_prompt_demands_numbers_from_the_payload():
     assert "0-100" in prompt or "0–100" in prompt
 
 
+def test_the_prompt_does_not_ask_the_model_to_copy_the_payload():
+    """The wording that caused a real, reproducible parse failure.
+
+    Asking the model to "reuse key names that appear in the payload" reads as
+    an instruction to reproduce the payload's shape. Harmless on a small one;
+    on find_markers' 74 KB it meant copying a 47 KB object, which the model
+    declined to do — emitting `"top_markers": {/* omitted for brevity */}`.
+    JSON has no comments, so every reply was unparseable: 0 of 6 attempts
+    survived with this wording, 6 of 6 were free of it once reworded.
+
+    Pinned as text because the fix is text. Anyone shortening this section is
+    reintroducing the bug.
+    """
+    prompt = judge_module.PROMPT_PATH.read_text(encoding="utf-8").lower()
+    assert "not a copy of the payload" in prompt
+    assert "no comments" in prompt
+    assert "never nest a large object" in prompt
+
+
+def test_a_reply_containing_a_json_comment_is_refused():
+    """What the model actually produced, kept as a fixture.
+
+    The parse must fail rather than half-succeed: a verdict recovered from a
+    reply the model itself marked as incomplete would be a verdict about data
+    it did not look at.
+    """
+    with_comment = """{
+      "step": "find_markers", "verdict": "pass", "score": 95,
+      "reasons": ["ran to completion"],
+      "evidence": {
+        "top_markers": { /* full top_markers object omitted for brevity */ }
+      },
+      "needs_human_review": false, "advice": []
+    }"""
+    try:
+        _local(_FakeLLM(structured_raises=True, raw=with_comment)).judge("find_markers", _payload())
+    except Exception:
+        return
+    raise AssertionError("a reply with a JSON comment must not be accepted")
+
+
+def test_a_large_nested_payload_still_produces_a_verdict():
+    """The shape that broke it, with a model that answers the way it should.
+
+    `evidence` cites figures rather than nesting the object they came from, so
+    the reply parses however large the input was.
+    """
+    big = {"top_markers": {str(c): [{"gene": f"G{i}", "logfoldchange": 1.0,
+                                     "pval_adj": 0.0, "pct_in_cluster": 0.9,
+                                     "pct_in_rest": 0.1} for i in range(25)]
+                           for c in range(15)}}
+    good = json.dumps({**VALID, "step": "find_markers",
+                       "evidence": {"n_significant_cluster_0": 4126, "n_clusters_tested": 15}})
+    verdict = _local(_FakeLLM(structured_raises=True, raw=good)).judge(
+        "find_markers", _payload(output=big)
+    )
+    assert verdict.verdict == "warn"
+    assert verdict.evidence["n_significant_cluster_0"] == 4126
+
+
 # --- advice: a suggestion, never an instruction ----------------------------------------
 
 
