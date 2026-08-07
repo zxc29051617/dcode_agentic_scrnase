@@ -160,26 +160,32 @@ python -m src.run --input <raw_feature_bc_matrix.h5> --force-cells 1500
 秒級而不是重跑 20 分鐘。代價是**繞過 EmptyDrops**（那道用表現譜救回低 UMI barcode 的檢定），
 工具會把跟 Cell Ranger 判定的差異列出來讓你判斷。
 
-Judge 預設用 `StubJudge`（不需要模型，只看 status/warnings/errors）。
-要接本地模型（任何 OpenAI 相容端點：Ollama、vLLM、llama.cpp）：
+Judge 預設用 `StubJudge`（不需要模型，只看 status/warnings/errors），
+全部 463 個測試都跑在它上面，不碰網路。要接真的模型:
 
 ```bash
-export SCRNA_JUDGE_BASE_URL=http://<host>:11434/v1   # 注意結尾的 /v1
-export SCRNA_JUDGE_MODEL=gpt-oss:120b
+cp .env.example .env      # 填 endpoint、模型、key（.env 不進 git）
+python scripts/check_judge_endpoint.py    # 兩秒，先確認通不通
 python -m src.run --judge local ...
-
-# 先確認端點通不通、模型在不在
-python scripts/check_judge_endpoint.py
 ```
 
-實驗室的 DGX 位址放在 `.env.example`，不進 git 的部分放 `.env`。
-模型實測（同一個真實 `apply_cell_qc_filter` payload，都支援 strict `json_schema`）：
+**任何 OpenAI 相容端點都可以**——Ollama、vLLM、LM Studio，以及 OpenAI 本身。
+換端點只要改 `.env`，程式碼一行都不用動。
 
-| 模型 | 一步耗時 | 品質 |
-|---|---|---|
-| `gpt-oss:120b` | 100 秒 | 引用數字**並推出結論**（推薦）|
-| `gpt-oss:20b` | 74 秒 | 引用數字，不下結論 |
-| `medgemma:27b` | 514 秒 | 只是換句話說 warning，且把等待決定的 step 判成 `fail` |
+> **完整說明見 [`docs/judge_setup.md`](docs/judge_setup.md)**：三種端點的設定範例、
+> 出問題時怎麼分辨是網路/模型/schema、模型實測比較、**以及送出去的 payload
+> 裡有哪些資料**（換成雲端 API 前值得看一眼——裡面有 marker 基因名稱）。
+
+模型實測（12 個有已知正確答案的案例，含植入的缺陷）:
+
+| 模型 | 正確 | 一步耗時 | |
+|---|---|---|---|
+| `gpt-oss:120b` | 10/12 | 63 秒 | **目前預設** |
+| `gpt-oss:20b` | 12/12 | 91 秒 | 沒輸，但只贏在一個會翻的案例上 |
+| `medgemma:27b` | 8/12 | 68 秒 | 把 6 倍的 doublet 率判 pass，不要用 |
+| `llama3.1:8b` | 6/12 | 7 秒 | 快但錯一半，不要用 |
+
+小模型**沒有**比較快——大的常駐 GPU、小的每次要載入。換一台機器要重測。
 
 ⚠️ **模型給的建議數字要當成建議，不是設定值。** 舊版 prompt 下 `gpt-oss:20b` 曾建議
 `max_pct_mito=0.1`——但這個欄位的單位是 0–100 的百分比，照做會砍掉幾乎所有細胞。

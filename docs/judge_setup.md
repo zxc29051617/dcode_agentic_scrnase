@@ -1,0 +1,200 @@
+# Setting up the judge
+
+Every analysis step is followed by a judge that scores it and can stop the run
+at a human gate. The judge is a language model reached over HTTP, and it is the
+only part of this pipeline that needs anything outside your machine.
+
+This is how to point it at one, change which one, and check it works before a
+run depends on it.
+
+## The two backends
+
+```bash
+python -m src.run --input <data> --judge stub    # default: no model at all
+python -m src.run --input <data> --judge local   # a real model
+```
+
+**`stub` is the default, and it is not a placeholder.** It scores from the step
+itself: errors become `fail`, warnings become `warn`, otherwise `pass`. Gates
+still fire, the graph still branches, and the whole test suite runs on it — 463
+tests, no network. Use it whenever you want the pipeline's behaviour rather than
+the model's opinion.
+
+`local` is a misleading name kept for compatibility: it means *any
+OpenAI-compatible endpoint*, local or not. `--judge openai-compatible` is
+accepted as an alias.
+
+## Configuring an endpoint
+
+Four environment variables, normally set in `.env` (gitignored — your key never
+reaches a commit):
+
+```bash
+cp .env.example .env
+```
+
+| variable | what it is |
+|---|---|
+| `SCRNA_JUDGE_BASE_URL` | the endpoint, **including `/v1`** |
+| `SCRNA_JUDGE_MODEL` | the model name as that server spells it |
+| `SCRNA_JUDGE_API_KEY` | your key, or any string for servers that ignore it |
+| `SCRNA_JUDGE_BACKEND` | `stub` or `local`; `--judge` overrides it |
+
+### Ollama, on a server (the lab DGX)
+
+```bash
+SCRNA_JUDGE_BASE_URL=http://lsbnb-dgx2.iis.sinica.edu.tw:11434/v1
+SCRNA_JUDGE_MODEL=gpt-oss:120b
+SCRNA_JUDGE_API_KEY=not-needed
+```
+
+`/v1` matters. Ollama serves its own API at `/api/…` and an OpenAI-compatible
+one at `/v1`; the client here speaks only the second. Ollama ignores the key
+but the OpenAI client refuses to start without one, hence the placeholder.
+
+Use the IP (`http://192.168.81.7:11434/v1`) when the hostname will not resolve —
+from inside a container, for instance, where `localhost` is the container.
+
+### Ollama, on this machine
+
+```bash
+SCRNA_JUDGE_BASE_URL=http://localhost:11434/v1
+SCRNA_JUDGE_MODEL=llama3.1:8b
+SCRNA_JUDGE_API_KEY=not-needed
+```
+
+A model has to fit in your GPU. `gpt-oss:120b` is 65 GB and will not run on a
+workstation card; that is what a DGX is for.
+
+### OpenAI
+
+```bash
+SCRNA_JUDGE_BASE_URL=https://api.openai.com/v1
+SCRNA_JUDGE_MODEL=gpt-4o
+SCRNA_JUDGE_API_KEY=sk-...
+```
+
+No code changes. The client is `langchain_openai.ChatOpenAI` either way; Ollama
+is simply another server speaking the same protocol.
+
+**Read the next section before doing this with unpublished data.**
+
+### Anything else
+
+Azure OpenAI, vLLM, LM Studio, Together, Groq — if it serves
+`POST /v1/chat/completions` and accepts a bearer key, it works. Structured
+output is attempted first and a raw-JSON parse is kept as the fallback, so
+servers without tool calling still return a usable verdict.
+
+## What leaves your machine
+
+A judge call sends the step's output. Concretely:
+
+- cell and gene counts, QC distributions, mitochondrial percentages
+- cluster sizes, resolution, which embedding was used
+- **gene names** — `find_markers` sends each cluster's top-ranked genes
+- assigned cell type labels and their confidence
+- file paths, which carry your directory layout
+
+For a public PBMC dataset none of that matters. For unpublished patient data it
+is research data and a directory listing, and sending it to a third-party API
+is a decision for whoever owns the study, not a configuration detail.
+
+A local or lab-network endpoint sends the same content but keeps it inside the
+network. That is the practical difference between the DGX and OpenAI here.
+
+## Check it before a run depends on it
+
+```bash
+python scripts/check_judge_endpoint.py
+```
+
+Two seconds, and it separates three failures that look alike from inside a
+pipeline but are fixed in completely different places:
+
+| it says | what to do |
+|---|---|
+| cannot reach … | network, or the wrong host from inside a container |
+| `<model>` is not on this server | `ollama pull <model>`, or pick from the list it prints |
+| structured output failed | that model cannot hold the schema; use another |
+
+It also judges one payload that carries a warning and tells you if the model
+called it `pass` — a model that waves warnings through will not stop anything.
+
+Without this you find out several steps into a run, from a langchain traceback.
+
+## Choosing a model
+
+Measured on this project's own payloads, against cases with a known right
+answer — three with a planted defect that must not pass, three where the right
+answer is known from the data. Twelve observations per model:
+
+| model | correct | median call | verdict |
+|---|---|---|---|
+| `gpt-oss:20b` | 12/12 | 90.7s | no worse than the 120b, on thin evidence |
+| `gpt-oss:120b` | 10/12 | 62.8s | **current default** |
+| `medgemma:27b` | 8/12 | 67.6s | passed a 6× doublet rate; do not use |
+| `llama3.1:8b` | 6/12 | 6.9s | fast and wrong; do not use |
+
+Two things worth carrying to a different endpoint:
+
+**Smaller was not faster here.** The 13.8 GB model took longer than the 65 GB
+one, because the large one stays resident on the GPU and the small one is paged
+in per call. On a server that keeps both warm, or on a hosted API, this will
+not hold — remeasure rather than assume.
+
+**A domain-tuned model was not better.** `medgemma:27b` is medically
+fine-tuned and read these payloads worse than a general model of similar size,
+including passing a doublet rate six times its expectation.
+
+The full measurement, and the reason no per-step model override ships, is in
+`docs/judge_prompt_plan.md`.
+
+## Per-step models
+
+Optional, and absent by default. `prompts/step_models.json`:
+
+```json
+{ "steps": { "find_markers": "gpt-oss:120b", "run_pca": "gpt-oss:20b" } }
+```
+
+Steps not named use `SCRNA_JUDGE_MODEL`. A malformed file is ignored rather than
+fatal, and a test fails if it names a step that does not exist. No file ships,
+because the measurement above found no reason for one on this endpoint.
+
+## Per-step instructions
+
+`prompts/local_judge_base.md` goes to every step. `prompts/steps/<step>.md`, if
+it exists, is appended for that step alone. Four steps have one today.
+
+These are not decoration. Asked only to score `cross_check_annotation`, the
+judge quoted the flag counts back and never compared the two cell type names in
+front of it — 0 of 3 runs found the disagreement. With the step's own
+instructions, 3 of 3. Adding the same facts to the payload without the
+instruction changed nothing.
+
+`prompts/steps/README.md` has the required shape and how to add one.
+
+## When something goes wrong
+
+**Intermittent HTTP 500 from Ollama.** Seen on large payloads under load. The
+client retries automatically — the run log shows `Retrying request …` followed
+by `200 OK`, and the verdict is real. Six occurred in one full run and none
+corrupted a result. Only worry if a step ends with a verdict of `fail` whose
+reasons mention the request rather than the data.
+
+**The same payload gets a different verdict.** Expected, up to a point. Runs
+inside one session agree with each other; across sessions they can differ, which
+is what batched inference does. One case here passed twice, warned twice in
+another session, then passed three more times — at temperature 0 on a
+byte-identical payload. Cases near a model's pass/warn boundary are where a gate
+opens or does not, so treat a single verdict as evidence rather than fact.
+
+**Every step is judged `fail` with a JSON error.** The model is emitting
+something that will not parse — often comments or an ellipsis inside the JSON.
+It is a prompt problem, not a size problem; `prompts/local_judge_base.md` says
+so explicitly for that reason.
+
+**A run takes far longer than the analysis.** It will: 25 judge calls at 60–90s
+each dwarf the Scanpy steps on a small object. Use `--judge stub` while
+iterating on the analysis and `--judge local` when you want the verdicts.
