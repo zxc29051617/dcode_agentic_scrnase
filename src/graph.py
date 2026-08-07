@@ -209,7 +209,12 @@ def build_graph(
     # ---- gates and report ---------------------------------------------------
     # `human_review_decision` is the mainline gate (H2); `human_gate` is the
     # warn/fail escalation (H1). Both turn a person's call into accept/revise/stop.
-    graph.add_node(FINAL_GATE, make_human_gate_node(policy, node_name=FINAL_GATE))
+    # The mainline gate asks about the whole run, so it builds its question
+    # from `human_review_decision` rather than from the last step's verdict.
+    graph.add_node(
+        FINAL_GATE,
+        make_human_gate_node(policy, node_name=FINAL_GATE, review_skill=FINAL_GATE),
+    )
     graph.add_conditional_edges(
         FINAL_GATE,
         _final_gate_router,

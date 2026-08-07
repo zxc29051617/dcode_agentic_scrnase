@@ -32,12 +32,12 @@
 
 ## 目前狀態
 
-Orchestrator 可以跑。Skill **25 個裡實作了 23 個**，FASTQ 上游整段與 QC 都已經是真的：
+Orchestrator 可以跑。Skill **25 個裡實作了 24 個**，FASTQ 上游整段與 QC 都已經是真的：
 
 | | |
 |---|---|
-| ✅ 已實作 | `ingest_validate`、`resolve_reference`、`matrix_preflight`、`fastq_preflight`、`fastq_qc`、`cellranger_count`、`count_matrix_classify`、`load_raw_counts`、`load_filtered_counts`、`cell_calling_review`、`merge_samples`、`post_load_validate`、`run_qc_metrics`、`apply_cell_qc_filter`、`detect_doublets`、`normalize_hvg_prepare`、`run_pca`、`run_integration`、`run_clustering`、`run_umap`、`find_markers`、`annotate_cells`、`build_report` |
-| ⬜ scaffold | 其餘 2 個（`sample_qc_triage`、`human_review_decision`），`run()` 直接 raise `NotImplementedError` |
+| ✅ 已實作 | `ingest_validate`、`resolve_reference`、`matrix_preflight`、`fastq_preflight`、`fastq_qc`、`cellranger_count`、`count_matrix_classify`、`load_raw_counts`、`load_filtered_counts`、`cell_calling_review`、`merge_samples`、`post_load_validate`、`run_qc_metrics`、`apply_cell_qc_filter`、`detect_doublets`、`normalize_hvg_prepare`、`run_pca`、`run_integration`、`run_clustering`、`run_umap`、`find_markers`、`annotate_cells`、`build_report`、`human_review_decision` |
+| ⬜ scaffold | 剩下 1 個（`sample_qc_triage`，多樣本前置分流，選用），`run()` 直接 raise `NotImplementedError` |
 
 FASTQ 路線：偵測輸入 → 選 reference 並驗證物種 → 結構檢查 → **FastQC/MultiQC 品質評估** → count
 
@@ -209,7 +209,9 @@ judge verdict、人工決策、套件版本與模型 hash）。條件不成立�
 | `policy.py` | 什麼樣的 verdict 才能繼續 |
 | `graph.py` | `workflows/fastq_count_main_graph.md` 的接線 |
 | `state.py` | node 之間傳遞的狀態 |
-| `provenance.py` | append-only audit log |
+| `provenance.py` | append-only audit log + run 開始時的環境快照 |
+| `persistence.py` | 暫停（checkpointer）與續跑（從 run_dir 的 artifact 判斷） |
+| `plots.py` | 報告的 12 個圖組 |
 
 ## 下一步
 

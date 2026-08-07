@@ -152,11 +152,18 @@ def make_judge_node(step: str, judge_tool: str, client: JudgeClient) -> NodeFn:
     return node
 
 
-def make_human_gate_node(policy: GatePolicy, *, node_name: str = "human_gate") -> NodeFn:
+def make_human_gate_node(
+    policy: GatePolicy, *, node_name: str = "human_gate", review_skill: str | None = None
+) -> NodeFn:
     """Stop for a person and record their decision as `accept | revise | stop`.
 
     Interactive runs block on LangGraph's `interrupt`; headless runs halt so a
     warn/fail is never silently waved through.
+
+    `review_skill` names a skill that assembles the question. The escalation
+    gate does not need one — it is asking about a single step, and the last
+    verdict is the whole story. The mainline gate does: it is asking about the
+    run, and the last verdict describes only the step that happened to be last.
     """
 
     def node(state: WorkflowState) -> dict[str, Any]:
@@ -174,6 +181,15 @@ def make_human_gate_node(policy: GatePolicy, *, node_name: str = "human_gate") -
             # asks a person to choose while showing them only the complaint.
             "evidence": (step_output(state, step) or {}).get("evidence") or {},
         }
+        if review_skill:
+            outcome = call_skill(review_skill, build_payload(state, review_skill))
+            if outcome["status"] == "ok":
+                # The run-level picture replaces the last step's evidence, which
+                # at this gate is a detail about whichever step ran last.
+                request.pop("evidence", None)
+                request["review"] = outcome["output"]
+            else:
+                request["review_error"] = outcome["errors"] or [outcome["status"]]
         audit.append("human_gate_open", **request)
 
         if policy.interactive:
