@@ -25,14 +25,14 @@
 - `tools/`：Cell Ranger 等第三方工具的 symlink（見 `tools/README.md`）
 - `scripts/`：`get_test_data.sh`、`link_reference.sh` 等維運腳本
 - `src/`：LangGraph orchestrator 實作
-- `skills/`：每個 step 一個工具（`SKILL.md` 契約 + Python 實作）
+- `skills/`：每個 workflow step 一個工具（`SKILL.md` 契約 + Python 實作），25 個，與 `src/registry.py` 一一對應
 - `schemas/`：judge / state / output 的 JSON schema
 - `prompts/`：各 step 的 local judge prompt
 - `workflows/`：LangGraph workflow 草圖與版本化設計
 
 ## 目前狀態
 
-Orchestrator 可以跑。**25 個 skill 全部實作完成**：
+Orchestrator 可以跑。**25 個 workflow step 全部實作完成**——`skills/` 底下就是這 25 個，一個資料夾一個 step，沒有空殼：
 
 | | |
 |---|---|
