@@ -63,7 +63,7 @@ compute. Do not call it proof.
 | # | Group | Reads | Available when |
 |---|---|---|---|
 | P1 | Decision table: every threshold, its value, and its source (`operator` / `config` / derived / default) | step summaries | always |
-| P2 | Judge verdicts per step, with score and reasons | `state["judge_results"]` | always |
+| P2 | Judge verdicts per step, with score and reasons; and any values the judge suggested, recorded whether or not they were followed | `state["judge_results"]` | always |
 | P3 | Human decisions: gate, step, accept/revise/stop, rationale | `state["human_decisions"]` | always |
 | P4 | Warnings and notes, grouped by step | step summaries | always |
 | P5 | Reproducibility: run id, command, git commit + dirty, seed, package versions, reference and model hashes | `run_metadata.json` + `annotate_cells.model_sha256` | always |

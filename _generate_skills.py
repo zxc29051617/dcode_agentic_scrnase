@@ -2,6 +2,14 @@
 
 Existing files are never overwritten: once a skill has a real implementation,
 re-running this script must not wipe it. Pass --force to regenerate anyway.
+
+All 25 registry steps are implemented, so in practice this script has nothing
+left to create — it is kept for adding a new step. It does not generate
+`judge_*` folders: see the note beside `judge_specs` below.
+
+The specs here are frozen at the shape each skill was scaffolded with, not what
+it grew into. `src/registry.py` is the list of steps; `skills/<name>/SKILL.md`
+is what a step actually does.
 """
 
 import sys
@@ -288,11 +296,12 @@ for spec in analysis_specs:
     write(folder / 'SKILL.md', render_skill_md(spec))
     write(folder / f"{spec['name']}.py", render_py_stub(spec['name'], spec['inputs'], spec['outputs']))
 
-for judge_name, step_name in judge_specs:
-    folder = BASE / judge_name
-    folder.mkdir(parents=True, exist_ok=True)
-    write(folder / 'SKILL.md', render_judge_md(judge_name, step_name))
-    write(folder / f"{judge_name}.py", render_py_stub(judge_name, ['step', 'analysis_result', 'artifacts', 'policy'], ['step', 'verdict', 'score', 'reasons', 'evidence', 'suggested_action', 'needs_human_review']))
+# Judges are deliberately not generated. An early design gave each step its own
+# `judge_*` tool; the implementation went with one shared contract in
+# `src/judge.py` instead, and the 19 generated folders sat there raising
+# NotImplementedError until they were deleted. Regenerating them here would put
+# them straight back. `judge_specs` is kept only because the registry's `judge`
+# field names those graph nodes.
 
 readme = dedent('''\
 # Skills

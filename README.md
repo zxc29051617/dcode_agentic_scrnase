@@ -241,12 +241,15 @@ find runs/<run_id> -name adata.h5ad -delete   # 留報告，丟中間檔（就�
 | `persistence.py` | 暫停（checkpointer）與續跑（從 run_dir 的 artifact 判斷）；磁碟成本的取捨寫在檔頭 |
 | `plots.py` | 報告的 12 個圖組 |
 
-## 下一步
+## 加一個新的 step
 
-把 skill 一個一個實作掉，順序見 `docs/tool_registry.md` 的 MVP implementation order。
-每實作一個，`summarize()` 就會把它從 `scaffolds` 移到 `implemented`。
+25 個 registry step 都已實作，所以沒有空殼要填了。要新增一步：
 
-實作一個 skill 只需要改 `skills/<name>/<name>.py` 的 `run(payload) -> dict`，
-不用動 `graph.py` — registry 已經知道要呼叫誰。詳見 `docs/next_step_recommendation.md`。
+1. 寫 `skills/<name>/<name>.py` 的 `run(payload) -> dict`（契約見任一個現有 skill）
+2. 在 `src/registry.py` 加一個 `StepSpec`
+
+**不用動 `graph.py`** — 接線是從 registry 生成的。`docs/graph.mmd` 是編譯後
+graph 的匯出（50 node / 105 edge），改完可以重新產生來確認接線。
 
 ⚠️ `_generate_skills.py` 只會補沒有的檔案，不會覆寫已存在的（要覆寫得加 `--force`）。
+它**不會**產生 `judge_*` 資料夾——判官是 `src/judge.py` 的一份共用契約，不是每步一個工具。

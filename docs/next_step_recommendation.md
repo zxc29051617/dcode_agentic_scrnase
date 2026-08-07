@@ -6,6 +6,17 @@
 2. ~~scaffold LangGraph state / node / edge~~ — `src/` 已可執行，11 項接線測試通過
 3. ClawBio 維持為 reference material，沒有複製進來
 
+## 現在還開著的
+
+沒有已知的執行正確性問題。以下是討論過但刻意沒做的，各自的理由記在對應的 commit：
+
+| | 為什麼還沒做 |
+|---|---|
+| judge 深度 5 → 10 | 對判官的實際工作（讀 marker 排序是否合理）測不出差別 |
+| cluster 間 marker overlap | overlap 高 ≠ 過度分群——真實亞型（Naive B vs Memory B）也高。要先定義拿它判斷什麼 |
+| 鑑別基因強度 | 比 overlap 更對應「該不該分開」，但對靠陰性特徵定義的族群（CD4 T）會低估 |
+| 生物學詮釋型輸出 | 模型有能力（實測過），但那類輸出無法用 payload 查核，跟現行「每條理由都要引用數字」的規範衝突 |
+
 ## 現在的實際狀態
 
 Orchestrator 層是**真的**，分析層是**假的**：
@@ -14,7 +25,7 @@ Orchestrator 層是**真的**，分析層是**假的**：
 - 每個 step 後面都有 judge node，verdict 符合 `schemas/judge_result.schema.json`
 - human gate 預設不放行 warn/fail，headless 執行預設 `stop`
 - provenance 每步寫 JSONL audit log
-- **25 個 registry step 裡實作了 22 個**，其餘 3 個還是 `NotImplementedError`
+- **25 個 registry step 全部實作完成**，`skills/` 底下就是這 25 個，沒有空殼
 - FASTQ 上游整段 + raw/filtered 分流 + 載入 + cell calling + 匯流標準化都是真的
 - 兩條路各有入口檢查：`resolve_reference`（FASTQ）與 `matrix_preflight`（矩陣），
   各自用該路線有的證據驗物種，並輸出同一組 QC 常數
