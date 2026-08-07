@@ -173,6 +173,20 @@ judge 不能寫入 `artifacts`（見 `src/nodes.py:109`），這條限制不是�
 判斷品質**取決於 prompt 遠大於取決於模型**。`prompts/local_judge_base.md` 要求每條
 理由都要引用 payload 裡的數字；沒有這條要求時，三個模型都只會把 warning 換句話說。
 
+**judge 同時給建議**（`advice`），不是另一個 node。verdict 給機器路由用、
+建議給人看，兩者出自同一次呼叫——同一份證據問兩次只會讓 `--judge local`
+的時間翻倍。真實資料上它會說：
+
+```
+max_pct_mito = 15   [medium]  15% 只移除 72 顆（3.2%），修掉高粒線體尾巴
+min_genes    = 1000 [medium]  移除 145 顆（6.5%），落在觀察範圍 14–7919 內
+run_umap                      0 條建議 —— 沒有東西要選就不要編
+```
+
+⚠️ **建議永遠不會被套用。** judge node 的回傳值只有 `judge_results`
+（`src/nodes.py`），沒有任何 key 能讓建議值走到 `artifacts` 或 config。
+它出現在 human gate 和報告的 P2,由人決定。
+
 **UMAP/t-SNE 都可以選**。`run_umap` 預設只算 UMAP（讀 clustering 用的 neighbor graph），
 t-SNE 直接讀 embedding、不需要先跑過 clustering：
 

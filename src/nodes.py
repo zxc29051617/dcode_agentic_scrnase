@@ -177,6 +177,10 @@ def make_human_gate_node(
             "score": verdict.get("score"),
             "reasons": verdict.get("reasons", []),
             "suggested_action": verdict.get("suggested_action"),
+            # What the judge would set, if it named anything. It rides on the
+            # verdict rather than arriving separately, so it reaches the person
+            # at the moment they are being asked to decide.
+            "advice": verdict.get("advice") or [],
             # The numbers the decision is actually about. Without them a gate
             # asks a person to choose while showing them only the complaint.
             "evidence": (step_output(state, step) or {}).get("evidence") or {},

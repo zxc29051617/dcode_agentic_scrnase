@@ -94,6 +94,10 @@ def ask_on_terminal(request: dict[str, Any]) -> dict[str, Any]:
         print(f"   · {reason}", file=sys.stderr)
     if request.get("suggested_action"):
         print(f"   suggested: {request['suggested_action']}", file=sys.stderr)
+    for entry in request.get("advice") or []:
+        print(f"   suggests {entry.get('parameter')} = {entry.get('suggested_value')!r} "
+              f"[{entry.get('confidence')}] — {entry.get('rationale', '')}"[:400],
+              file=sys.stderr)
     if request.get("evidence"):
         print("   evidence: "
               + json.dumps(request["evidence"], ensure_ascii=False, default=str)[:600],

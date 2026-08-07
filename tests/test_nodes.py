@@ -142,6 +142,35 @@ def test_a_judge_can_write_nothing_but_its_verdict():
     assert set(delta) == {"judge_results"}
 
 
+def test_advice_reaches_the_gate_but_not_the_artifacts():
+    """The suggestion is for a person. Nothing may carry it into the results."""
+    advising = JudgeResult(
+        step="apply_cell_qc_filter", verdict="warn", score=50,
+        reasons=["median is 5.4"], evidence={}, needs_human_review=True,
+        advice=[{"parameter": "max_pct_mito", "suggested_value": 15,
+                 "rationale": "a 5% cut removes 54.6%", "confidence": "medium"}],
+    )
+
+    class Advising:
+        def judge(self, step, payload):
+            return advising
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        state = _state(root, step_results=[
+            {"step": "apply_cell_qc_filter", "status": "ok", "warnings": [], "errors": []}
+        ])
+        delta = nodes.make_judge_node("apply_cell_qc_filter", "judge_x", Advising())(state)
+        assert set(delta) == {"judge_results"}, "advice must not open a second write path"
+        assert delta["judge_results"][0]["advice"][0]["suggested_value"] == 15
+
+        # And it is in front of the person at the moment they are asked.
+        state["judge_results"] = delta["judge_results"]
+        nodes.make_human_gate_node(GatePolicy(headless_decision="stop"))(state)
+        opened = next(r for r in _events(state) if r["event"] == "human_gate_open")
+    assert opened["advice"][0]["parameter"] == "max_pct_mito"
+
+
 def test_a_judge_that_raises_becomes_a_failing_verdict_not_a_crash():
     class Exploding:
         def judge(self, step, payload):

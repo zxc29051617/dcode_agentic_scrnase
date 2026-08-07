@@ -199,6 +199,61 @@ def test_the_prompt_demands_numbers_from_the_payload():
     assert "0-100" in prompt or "0–100" in prompt
 
 
+# --- advice: a suggestion, never an instruction ----------------------------------------
+
+
+def test_a_verdict_carries_no_advice_by_default():
+    """Most steps have nothing to choose; inventing a number there is noise."""
+    assert JudgeResult(**VALID).advice == []
+    assert StubJudge().judge("run_pca", _payload()).advice == []
+
+
+def test_advice_rides_on_the_verdict_rather_than_arriving_separately():
+    advised = {**VALID, "advice": [
+        {"parameter": "max_pct_mito", "suggested_value": 15,
+         "rationale": "median is 5.4; a 5% cut removes 54.6%", "confidence": "medium"}
+    ]}
+    verdict = _local(_FakeLLM(structured=JudgeResult(**advised))).judge("run_pca", _payload())
+    assert verdict.advice[0].parameter == "max_pct_mito"
+    assert verdict.advice[0].suggested_value == 15
+    assert verdict.advice[0].confidence == "medium"
+
+
+def test_a_made_up_confidence_is_rejected():
+    """`very high` is the model editorialising; the scale is fixed."""
+    try:
+        JudgeResult(**{**VALID, "advice": [
+            {"parameter": "x", "suggested_value": 1, "confidence": "very high"}
+        ]})
+    except Exception:
+        return
+    raise AssertionError("confidence is low/medium/high only")
+
+
+def test_advice_defaults_to_low_confidence():
+    """Unqualified suggestions should read as tentative, not endorsed."""
+    verdict = JudgeResult(**{**VALID, "advice": [{"parameter": "n_comps"}]})
+    assert verdict.advice[0].confidence == "low"
+
+
+def test_advice_cannot_smuggle_extra_fields():
+    try:
+        JudgeResult(**{**VALID, "advice": [
+            {"parameter": "x", "suggested_value": 1, "apply": True}
+        ]})
+    except Exception:
+        return
+    raise AssertionError("an advice entry may not carry an `apply` flag")
+
+
+def test_the_prompt_tells_the_model_advice_is_not_applied():
+    prompt = judge_module.PROMPT_PATH.read_text(encoding="utf-8")
+    lowered = prompt.lower()
+    assert "not applying anything" in lowered
+    assert "0–100" in prompt or "0-100" in prompt, "the units trap must be spelled out"
+    assert "empty list" in lowered, "most steps have nothing to advise on"
+
+
 # --- choosing a backend --------------------------------------------------------------
 
 

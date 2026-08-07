@@ -502,8 +502,25 @@ def _section_verdicts(audit: list[dict[str, Any]]) -> Section:
     body = [f"{len(judged)} steps judged; {len(flagged)} raised something."]
     if flagged:
         body.append("Flagged: " + ", ".join(f"`{s}`" for s in flagged))
-    return Section("P2", "Judge verdicts", "audit", True, body=body,
-                   tables=[Table("Per step", ["step", "verdict", "score", "reasons"], rows)])
+
+    tables = [Table("Per step", ["step", "verdict", "score", "reasons"], rows)]
+    # Advice is recorded whether or not anyone took it. A run where the
+    # operator set 15 and the model had suggested 20 is a more useful record
+    # than one that only kept the number that won.
+    advice_rows = [
+        [r.get("step"), a.get("parameter"), _fmt(a.get("suggested_value")),
+         a.get("confidence"), str(a.get("rationale") or "")[:300]]
+        for r in judged for a in (r.get("advice") or [])
+    ]
+    if advice_rows:
+        body.append(
+            "The suggestions below were offered to the operator and are recorded "
+            "whether or not they were followed. Nothing here was applied."
+        )
+        tables.append(Table("Suggested values",
+                            ["step", "parameter", "suggested", "confidence", "rationale"],
+                            advice_rows))
+    return Section("P2", "Judge verdicts", "audit", True, body=body, tables=tables)
 
 
 def _section_human(audit: list[dict[str, Any]]) -> Section:

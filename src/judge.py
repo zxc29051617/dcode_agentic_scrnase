@@ -11,13 +11,39 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from .state import Verdict
 
 PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "local_judge_base.md"
+
+
+class Advice(BaseModel):
+    """A value the model thinks the operator should use, and why.
+
+    Deliberately not part of the verdict. A verdict is consumed by
+    `policy.route()` and must stay inside three words; advice is read by a
+    person and is worth nothing without the number and the reasoning behind
+    it. They travel together because they come from one reading of one payload
+    — asking twice would double the latency of a `--judge local` run for no
+    extra information.
+
+    What keeps it advice rather than a decision is not this class. It is that
+    `make_judge_node` returns only `judge_results`, so there is no key here
+    through which a suggested value could reach `artifacts` or config.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    parameter: str
+    suggested_value: Any = None
+    rationale: str = ""
+    #: How much the model thinks the evidence supports the number. A confident
+    #: wrong suggestion is worse than a hedged one, so this is asked for
+    #: explicitly rather than inferred from tone.
+    confidence: Literal["low", "medium", "high"] = "low"
 
 
 class JudgeResult(BaseModel):
@@ -32,6 +58,9 @@ class JudgeResult(BaseModel):
     evidence: dict[str, Any] = Field(default_factory=dict)
     suggested_action: str | None = None
     needs_human_review: bool = False
+    #: Empty for steps with nothing to choose. Most steps have no threshold to
+    #: recommend, and an advisor that invents one for `run_umap` is noise.
+    advice: list[Advice] = Field(default_factory=list)
 
 
 class JudgeClient(Protocol):

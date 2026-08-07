@@ -16,7 +16,22 @@
       "additionalProperties": true
     },
     "suggested_action": { "type": "string" },
-    "needs_human_review": { "type": "boolean" }
+    "needs_human_review": { "type": "boolean" },
+    "advice": {
+      "description": "Values the model suggests the operator use. Read by a person, never applied: the judge node returns only judge_results, so nothing here can reach artifacts or config. Empty for steps with nothing to choose.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "parameter": { "type": "string" },
+          "suggested_value": {},
+          "rationale": { "type": "string" },
+          "confidence": { "type": "string", "enum": ["low", "medium", "high"] }
+        },
+        "required": ["parameter"]
+      }
+    }
   },
   "required": ["step", "verdict", "score", "reasons", "evidence", "needs_human_review"]
 }
