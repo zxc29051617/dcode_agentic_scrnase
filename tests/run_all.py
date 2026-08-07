@@ -37,6 +37,7 @@ from tests import (  # noqa: E402
     test_resume,
     test_human_review_decision,
     test_sample_qc_triage,
+    test_nodes,
     test_run_qc_metrics,
 )
 
@@ -69,6 +70,7 @@ MODULES = (
     test_resume,
     test_human_review_decision,
     test_sample_qc_triage,
+    test_nodes,
     test_graph_smoke,
 )
 
