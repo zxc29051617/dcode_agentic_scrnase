@@ -31,6 +31,7 @@ from tests import (  # noqa: E402
     test_run_umap,
     test_find_markers,
     test_annotate_cells,
+    test_cross_check_annotation,
     test_provenance,
     test_build_report,
     test_persistence,
@@ -42,10 +43,10 @@ from tests import (  # noqa: E402
     test_run_qc_metrics,
 )
 
+#: Roughly pipeline order. Each module appears once — a repeat costs the time
+#: twice and inflates the totals printed at the end.
 MODULES = (
     test_ingest_validate,
-    test_matrix_preflight,
-    test_merge_samples,
     test_resolve_reference,
     test_matrix_preflight,
     test_fastq_preflight,
@@ -65,6 +66,7 @@ MODULES = (
     test_run_umap,
     test_find_markers,
     test_annotate_cells,
+    test_cross_check_annotation,
     test_provenance,
     test_build_report,
     test_persistence,

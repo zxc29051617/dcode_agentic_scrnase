@@ -25,18 +25,18 @@
 - `tools/`：Cell Ranger 等第三方工具的 symlink（見 `tools/README.md`）
 - `scripts/`：`get_test_data.sh`、`link_reference.sh` 等維運腳本
 - `src/`：LangGraph orchestrator 實作
-- `skills/`：每個 workflow step 一個工具（`SKILL.md` 契約 + Python 實作），25 個，與 `src/registry.py` 一一對應
+- `skills/`：每個 workflow step 一個工具（`SKILL.md` 契約 + Python 實作），26 個，與 `src/registry.py` 一一對應
 - `schemas/`：judge / state / output 的 JSON schema
 - `prompts/`：各 step 的 local judge prompt
 - `workflows/`：LangGraph workflow 草圖與版本化設計
 
 ## 目前狀態
 
-Orchestrator 可以跑。**25 個 workflow step 全部實作完成**——`skills/` 底下就是這 25 個，一個資料夾一個 step，沒有空殼：
+Orchestrator 可以跑。**26 個 workflow step 全部實作完成**——`skills/` 底下就是這 26 個，一個資料夾一個 step，沒有空殼：
 
 | | |
 |---|---|
-| ✅ 已實作 | `ingest_validate`、`resolve_reference`、`matrix_preflight`、`fastq_preflight`、`fastq_qc`、`cellranger_count`、`count_matrix_classify`、`load_raw_counts`、`load_filtered_counts`、`cell_calling_review`、`merge_samples`、`post_load_validate`、`run_qc_metrics`、`apply_cell_qc_filter`、`detect_doublets`、`normalize_hvg_prepare`、`run_pca`、`run_integration`、`run_clustering`、`run_umap`、`find_markers`、`annotate_cells`、`build_report`、`human_review_decision`、`sample_qc_triage` |
+| ✅ 已實作 | `ingest_validate`、`resolve_reference`、`matrix_preflight`、`fastq_preflight`、`fastq_qc`、`cellranger_count`、`count_matrix_classify`、`load_raw_counts`、`load_filtered_counts`、`cell_calling_review`、`merge_samples`、`post_load_validate`、`run_qc_metrics`、`apply_cell_qc_filter`、`detect_doublets`、`normalize_hvg_prepare`、`run_pca`、`run_integration`、`run_clustering`、`run_umap`、`find_markers`、`annotate_cells`、`cross_check_annotation`、`build_report`、`human_review_decision`、`sample_qc_triage` |
 
 FASTQ 路線：偵測輸入 → 選 reference 並驗證物種 → 結構檢查 → **FastQC/MultiQC 品質評估** → count
 
@@ -243,7 +243,7 @@ find runs/<run_id> -name adata.h5ad -delete   # 留報告，丟中間檔（就�
 
 ## 加一個新的 step
 
-25 個 registry step 都已實作，沒有空殼要填。要新增一步，**以現有的 skill 為模板**：
+26 個 registry step 都已實作，沒有空殼要填。要新增一步，**以現有的 skill 為模板**：
 
 1. **挑一個結構最接近的現有 skill。** 讀矩陣算東西的挑 `run_pca`；要停下來等人
    決定閾值的挑 `apply_cell_qc_filter`；只讀不算的挑 `build_report`
@@ -255,8 +255,16 @@ find runs/<run_id> -name adata.h5ad -delete   # 留報告，丟中間檔（就�
 5. **在 `src/registry.py` 加一個 `StepSpec`**，並補上 `tests/test_my_new_step.py`
    （測試風格見任一個現有的測試檔）
 
-**不用動 `graph.py`** — 接線是從 registry 生成的。`docs/graph.mmd` 是編譯後
-graph 的匯出（50 node / 105 edge），改完可以重新產生來確認接線。
+**不用動 `graph.py`** — 接線是從 registry 生成的。加一個 `StepSpec` 會長出
+step node 跟 judge node 各一個,以及 `step → judge`、judge 的 `continue` /
+`human_gate` 兩條條件邊、還有人工 gate 回到這一步的回程。
+
+`docs/graph.mmd` 是編譯後 graph 的匯出(54 node / 110 edge),改完用
+
+```bash
+python scripts/export_graph.py            # 重新產生
+python scripts/export_graph.py --check    # 只檢查有沒有過期
+```
 
 > 以前有一支 `_generate_skills.py` 產生空殼，已經刪掉。它產出的形狀停在專案早期
 > ——例如 `INPUT_FIELDS` 寫的是 `"AnnData"` 這種散文，而現在是

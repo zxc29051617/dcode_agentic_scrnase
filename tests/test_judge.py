@@ -143,6 +143,7 @@ def _local(llm) -> LocalLLMJudge:
     """A LocalLLMJudge with its client swapped, so nothing is dialled."""
     instance = LocalLLMJudge.__new__(LocalLLMJudge)
     instance.system_prompt = judge_module.PROMPT_PATH.read_text(encoding="utf-8")
+    instance._step_prompts = {}
     instance.llm = llm
     return instance
 
@@ -312,6 +313,73 @@ def test_the_prompt_tells_the_model_advice_is_not_applied():
     assert "not applying anything" in lowered
     assert "0–100" in prompt or "0-100" in prompt, "the units trap must be spelled out"
     assert "empty list" in lowered, "most steps have nothing to advise on"
+
+
+# --- per-step prompt addenda ---------------------------------------------------------
+#
+# Measured against the real endpoint before this existed: asked only to score
+# `cross_check_annotation`, the judge quoted the flag counts back and never
+# compared the two cell type names it was handed — 0 of 3 runs found the
+# disagreement. With the addendum, 3 of 3. Putting the pairs in the payload
+# without the instruction was also 0 of 3, so the instruction is what works.
+
+
+def test_a_step_with_an_addendum_gets_it_appended():
+    instance = _local(_FakeLLM(structured=JudgeResult(**VALID)))
+    base = instance.system_prompt
+    combined = instance.system_prompt_for("cross_check_annotation")
+    assert combined.startswith(base), "the base prompt must survive intact"
+    assert len(combined) > len(base)
+    assert "database_candidates" in combined
+
+
+def test_a_step_without_one_is_left_exactly_alone():
+    """An addendum for one step must not leak into the judging of another."""
+    instance = _local(_FakeLLM(structured=JudgeResult(**VALID)))
+    assert instance.system_prompt_for("run_pca") == instance.system_prompt
+
+
+def test_the_addendum_reaches_the_model_not_just_the_getter():
+    captured: list = []
+
+    class Capturing(_FakeLLM):
+        def invoke(self, messages):
+            captured.append(messages)
+            return super().invoke(messages)
+
+        def with_structured_output(self, _schema):
+            outer = self
+
+            class Structured:
+                def invoke(self, messages):
+                    captured.append(messages)
+                    return outer._structured
+            return Structured()
+
+    _local(Capturing(structured=JudgeResult(**VALID))).judge(
+        "cross_check_annotation", _payload())
+    system = dict(captured[0])["system"] if isinstance(captured[0], dict) else captured[0][0][1]
+    assert "database_candidates" in system
+
+
+def test_every_addendum_names_a_real_step():
+    """A file named for a step that does not exist would silently never load."""
+    from src.registry import REGISTRY
+
+    directory = judge_module.STEP_PROMPT_DIR
+    if not directory.exists():
+        return
+    for path in directory.glob("*.md"):
+        assert path.stem in REGISTRY, \
+            f"prompts/steps/{path.name} matches no registry step"
+
+
+def test_the_cross_check_addendum_says_unflagged_is_not_the_same_as_sound():
+    """The one thing it exists to say: the numeric flags cannot see names."""
+    path = judge_module.STEP_PROMPT_DIR / "cross_check_annotation.md"
+    text = path.read_text(encoding="utf-8").lower()
+    assert "flags" in text and "not thereby sound" in text
+    assert "celltypist_label" in text, "the judge needs the field name to cite it"
 
 
 # --- choosing a backend --------------------------------------------------------------

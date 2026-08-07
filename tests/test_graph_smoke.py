@@ -48,6 +48,7 @@ IMPLEMENTED = [
     "run_umap",
     "find_markers",
     "annotate_cells",
+    "cross_check_annotation",
     "build_report",
 ]
 """Skills with a real `run()` on the filtered-matrix route; everything else is a scaffold."""

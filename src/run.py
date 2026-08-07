@@ -181,6 +181,12 @@ def main(argv: list[str] | None = None) -> int:
                      help="which 2D embedding(s) to compute (default umap)")
     ana.add_argument("--celltypist-model", metavar="NAME",
                      help="e.g. Immune_All_Low.pkl; omit to list the candidates and stop")
+    # Scored against every tissue rather than one, 14 of 15 PBMC clusters change
+    # their top hit, so this is left unset rather than defaulted, exactly as the
+    # CellTypist model is.
+    ana.add_argument("--scmayomap-tissue", metavar="TISSUE",
+                     help="tissue for the marker-database cross-check, e.g. blood; "
+                          "omit to list the candidates and stop")
     # One seed for every stochastic step, recorded in run_metadata.json so a
     # report can state it rather than leaving it implicit.
     ana.add_argument("--random-state", type=int, metavar="N",
@@ -235,6 +241,7 @@ def main(argv: list[str] | None = None) -> int:
             "resolution": args.resolution,
             "method": args.method,
             "celltypist_model": args.celltypist_model,
+            "scmayomap_tissue": args.scmayomap_tissue,
             "random_state": args.random_state,
             "sample_qc_triage": args.sample_qc_triage,
         }.items()

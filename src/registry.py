@@ -70,6 +70,12 @@ REGISTRY: dict[str, StepSpec] = {
         StepSpec("run_umap", "analysis", "judge_umap"),
         StepSpec("find_markers", "analysis", "judge_markers"),
         StepSpec("annotate_cells", "analysis", "judge_annotation"),
+        # A second opinion on the same clusters from an unrelated method: a
+        # marker database scored against `find_markers`, never touching the
+        # matrix CellTypist learned from. It changes no label — it reports where
+        # the two methods part company, and where either is running on thin
+        # evidence, for the gate that follows.
+        StepSpec("cross_check_annotation", "analysis", "judge_cross_check"),
         StepSpec("human_review_decision", "gate", None),
         StepSpec("build_report", "utility", "judge_report"),
     )
@@ -87,6 +93,7 @@ MAINLINE: tuple[str, ...] = (
     "run_umap",
     "find_markers",
     "annotate_cells",
+    "cross_check_annotation",
 )
 
 _module_cache: dict[str, ModuleType | None] = {}

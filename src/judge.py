@@ -19,6 +19,17 @@ from .state import Verdict
 
 PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "local_judge_base.md"
 
+#: Optional per-step addenda, appended to the base prompt for that step only.
+#: Most steps need none: the base prompt asks whether the step ran soundly, and
+#: for a numeric result that is the whole question. It is not enough when the
+#: reading a step needs is one arithmetic cannot do — `cross_check_annotation`
+#: hands over two cell type names per cluster and no way to compare them. Asked
+#: only to score the step, the judge quoted the flag counts back and never
+#: looked at the names (0/3 runs); told to compare each pair, it found the
+#: disagreement every time (3/3). Adding the pairs to the payload without the
+#: instruction changed nothing, so it is the instruction doing the work.
+STEP_PROMPT_DIR = PROMPT_PATH.parent / "steps"
+
 
 class Advice(BaseModel):
     """A value the model thinks the operator should use, and why.
@@ -149,6 +160,7 @@ class LocalLLMJudge:
         from langchain_openai import ChatOpenAI
 
         self.system_prompt = PROMPT_PATH.read_text(encoding="utf-8")
+        self._step_prompts: dict[str, str] = {}
         self.llm = ChatOpenAI(
             model=model or os.environ.get("SCRNA_JUDGE_MODEL", "qwen2.5:7b-instruct"),
             base_url=base_url or os.environ.get("SCRNA_JUDGE_BASE_URL", "http://localhost:11434/v1"),
@@ -156,9 +168,21 @@ class LocalLLMJudge:
             temperature=temperature,
         )
 
+    def system_prompt_for(self, step: str) -> str:
+        """The base prompt, plus `prompts/steps/<step>.md` when that file exists."""
+        if step not in self._step_prompts:
+            path = STEP_PROMPT_DIR / f"{step}.md"
+            try:
+                extra = path.read_text(encoding="utf-8") if path.exists() else ""
+            except OSError:
+                extra = ""
+            self._step_prompts[step] = extra
+        extra = self._step_prompts[step]
+        return f"{self.system_prompt}\n\n{extra}" if extra else self.system_prompt
+
     def judge(self, step: str, payload: dict[str, Any]) -> JudgeResult:
         messages = [
-            ("system", self.system_prompt),
+            ("system", self.system_prompt_for(step)),
             ("human", f"Step: {step}\n\nEvidence:\n{json.dumps(payload, indent=2, default=repr)}"),
         ]
         try:
