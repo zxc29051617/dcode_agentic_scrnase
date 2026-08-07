@@ -118,6 +118,34 @@ def test_a_changed_config_disqualifies_the_whole_directory():
         assert persistence.resumable_steps(run_dir, "DIFFERENT") == {}
 
 
+def test_an_unverifiable_config_refuses_to_resume():
+    """No metadata means the config cannot be compared, not that it matched.
+
+    The guard used to skip itself when `run_metadata.json` was missing or
+    unreadable, so a directory without one resumed onto any config at all —
+    the exact mixing of two analyses it exists to prevent.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        run_dir = _run_dir(Path(tmp), config_hash="abc123")
+        _finished_step(run_dir, "run_pca")
+        metadata = run_dir / "run_metadata.json"
+
+        metadata.unlink()
+        assert persistence.resumable_steps(run_dir, "abc123") == {}, "missing metadata"
+
+        metadata.write_text("{ not json", encoding="utf-8")
+        assert persistence.resumable_steps(run_dir, "abc123") == {}, "corrupt metadata"
+
+
+def test_resuming_without_asking_about_config_still_works():
+    """`config_hash=None` is the caller saying it does not want the check."""
+    with tempfile.TemporaryDirectory() as tmp:
+        run_dir = _run_dir(Path(tmp))
+        _finished_step(run_dir, "run_pca")
+        (run_dir / "run_metadata.json").unlink()
+        assert "run_pca" in persistence.resumable_steps(run_dir, None)
+
+
 def test_a_missing_run_directory_is_empty_not_an_error():
     assert persistence.resumable_steps("/nope/not/here", "abc123") == {}
 

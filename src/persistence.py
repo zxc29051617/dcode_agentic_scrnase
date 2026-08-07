@@ -172,8 +172,11 @@ def resumable_steps(run_dir: str | Path, config_hash: str | None = None) -> dict
     if not root.is_dir():
         return {}
     if config_hash is not None:
-        recorded = recorded_config_hash(root)
-        if recorded is not None and recorded != config_hash:
+        # Fails closed. An unreadable or missing `run_metadata.json` means the
+        # config cannot be compared, not that it matches — skipping the check
+        # there would resume onto any config at all and mix the results of two
+        # different analyses, which is the one thing this guard exists for.
+        if recorded_config_hash(root) != config_hash:
             return {}
 
     found: dict[str, Any] = {}
