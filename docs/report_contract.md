@@ -39,6 +39,29 @@ explicitly rather than omitting the section silently or failing.
 | M4 | Marker dotplot, top N per cluster | final `uns["rank_genes_groups"]` + `X` | `find_markers` ran |
 | M5 | Cell-type composition per sample (stacked bar) | `obs["sample"]` × `obs["cell_type"]` | annotated **and** >1 sample |
 | M6 | Annotation confidence and consensus per cluster | `annotate_cells.per_cluster` | annotated |
+| M7 | Annotation cross-check: both annotators' labels per cluster, the database's scores, and the judge's reconciliation | `cross_check_annotation.per_cluster` + `score_table_path` + the `judge` entry in `audit.jsonl` | a tissue was chosen and the cross-check ran |
+
+**M7 exists because the finding was reaching the report and nobody could see
+it.** `cross_check_annotation` catches CellTypist and a marker database naming
+different cell types for the same cluster — on the test object, monocytes
+called `Neutrophil` on a preparation that cannot contain neutrophils. Until this
+group existed that reached the reader as one line in the judge-verdict table
+(P2) and two warnings (P4), with the fifteen-cluster comparison available only
+as a CSV path. A result the pipeline exists to produce was rendered as an audit
+row.
+
+Two constraints on M7 in particular:
+
+- **It may not decide which annotator is right, and it may not compute
+  agreement by comparing strings.** `CD16+ NK cells` and `CD56-dim natural
+  killer cell` are one population; `Classical monocytes` and `Neutrophil` are
+  not. The step reports both labels, the judge reconciles them, and the section
+  quotes the judge's reasons so the call can be checked against the table
+  printed directly above it.
+- **The count of agreeing clusters comes from the judge's reasons, not from the
+  data.** The section says so where it states the number. If that read misses a
+  cluster the reasons are on the page underneath, which is why they are quoted
+  in full rather than summarised.
 
 ### Tier 2 — technical appendix
 
@@ -124,7 +147,8 @@ appear:
 | integration | ran (Harmony, 2 batches) | A6 available |
 | thresholds | `min_genes=200, max_pct_mito=15` | A3 available |
 | annotation | `Immune_All_Low.pkl` | M5, M6 available |
+| cross-check tissue | `blood` | M7 available |
 | embeddings | `X_umap`, `X_tsne`, `X_umap_unintegrated` | M3 renders both bases |
 
-So on this object: 6 of 6 main groups, 5 of 6 appendix groups (A1 stated
+So on this object: 7 of 7 main groups, 5 of 6 appendix groups (A1 stated
 unavailable), 5 of 5 audit groups.

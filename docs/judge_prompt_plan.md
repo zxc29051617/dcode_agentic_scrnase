@@ -88,18 +88,51 @@ The mechanism exists (`prompts/step_models.json`, read by
 `LocalLLMJudge.model_for`) and ships with no overrides, because the measurement
 did not support any.
 
-Four models, six cases with a decidable right answer — three payloads with a
-planted defect that must not pass, three clean ones — twice each, interleaved
-in one session so the arms share whatever the endpoint was doing:
+Measured twice. The first round used six cases and turned on a single one, so
+it was redone with fourteen — eight carrying a defect that must not pass, six
+clean ones that must. Six clean cases rather than two, because a model that
+warns about everything catches every defect and is still useless.
 
-| model | correct | median | failed |
-|---|---|---|---|
-| `gpt-oss:20b` | **12/12** | 90.7s | — |
-| `gpt-oss:120b` | 10/12 | 62.8s | `detect_doublets` clean |
-| `medgemma:27b` | 8/12 | 67.6s | a 6× doublet rate passed; a clean clustering warned |
-| `llama3.1:8b` | 6/12 | **6.9s** | three cases, and one unparseable reply |
+The budget went to cases rather than repeats deliberately: repeats inside one
+session are correlated (see the stability finding below), so a second run of
+the same case buys less than a case nobody has tried.
 
-Three results, none of them the expected one:
+| model | 14 cases | missed defects | false alarms | median | slowest |
+|---|---|---|---|---|---|
+| **`gpt-oss:120b`** | **14/14** | 0 | 0 | 89s | 168s |
+| `gpt-oss:20b` | **14/14** | 0 | 0 | 103s | 161s |
+| `gemma4:31b` | 13/14 | 0 | 1 | 889s | 1994s |
+| `llama3.1:70b` | 11/14 | 0 | 3 | 59s | 109s |
+| `gemma4:26b` | 11/14 | 0 | 3 | 256s | **56566s** |
+| `ministral-3:8b` | 11/14 | 0 | 3 | **22s** | 28s |
+| `gemma4:e4b` | 10/14 | 1 | 3 | 83s | 105s |
+
+**Every failure but one was a false alarm.** No model let a planted defect
+through; `gemma4:e4b`'s single miss was an unparseable reply, not a wrong
+judgement. What separates the models is entirely whether they can leave a clean
+payload alone, and three of the seven could not. That is the worse failure of
+the two: a gate that fires on everything teaches a person to click past it.
+
+The same three clean cases tripped all four weak models:
+
+    detect_doublets   rates match the loading prediction
+    run_clustering    the corrected basis was used
+    run_clustering    X_pca with no integration to correct
+
+The last is the sharpest. `X_pca` is *correct* when nothing was corrected, and
+the payload says `integration_ran: false` outright. Four models saw `X_pca` and
+warned anyway — they recognise the token and not the context.
+
+**Size does not decide this.** `gpt-oss` scores 14/14 at both 20b and 120b;
+every gemma4 raises false alarms at 26b, 31b and e4b alike. `llama3.1:70b` at
+42 GB placed fourth. It is a property of the family, not the parameter count.
+
+Two earlier conclusions did not survive the larger case set. `gpt-oss:120b`
+scored 14/14 here against 10/12 before — its one earlier failure was the
+unstable case described below — so **"the 20b beats the 120b" was an artefact**
+of six cases and two correlated runs. The default stays where it was.
+
+From the first round, still standing:
 
 **The small model was not faster.** `gpt-oss:20b` at 13.8 GB took longer than
 `gpt-oss:120b` at 65.4 GB — the large one stays resident on the GPU and the

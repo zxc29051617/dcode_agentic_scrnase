@@ -50,6 +50,125 @@ def _run(root: Path, artifacts: dict, **config):
     return report.run({"artifacts": artifacts, "run_dir": str(root), "config": config})
 
 
+def _cross_check_artifact(root: Path, *, tissue="blood") -> dict:
+    """A `cross_check_annotation` output shaped like the real one, plus its CSV."""
+    import csv
+
+    table = root / "scmayomap_scores.csv"
+    with table.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["cluster", "cell_type", "score", "rank"])
+        for cluster, rows in {
+            "0": [("Neutrophil", 0.25), ("CD14 Monocyte", 0.23), ("Platelet", 0.02)],
+            "1": [("Naive B cell", 0.66), ("Memory B cell", 0.11)],
+        }.items():
+            for rank, (cell_type, score) in enumerate(rows, start=1):
+                writer.writerow([cluster, cell_type, f"{score:.6f}", rank])
+
+    return {
+        "cross_check_state": "compared",
+        "tissue": tissue,
+        "score_table_path": str(table),
+        "per_cluster": {
+            "0": {"n_cells": 431, "celltypist_label": "Classical monocytes",
+                  "celltypist_confidence": 1.0, "n_matched_genes": 138,
+                  "relative_margin": 0.085, "flags": ["ambiguous"],
+                  "database_candidates": [{"cell_type": "Neutrophil", "score": 0.25},
+                                          {"cell_type": "CD14 Monocyte", "score": 0.23}]},
+            "1": {"n_cells": 249, "celltypist_label": "Naive B cells",
+                  "celltypist_confidence": 1.0, "n_matched_genes": 83,
+                  "relative_margin": 0.78, "flags": [],
+                  "database_candidates": [{"cell_type": "Naive B cell", "score": 0.66}]},
+        },
+        "flagged": {"0": ["ambiguous"]},
+        "cross_check_summary": {"n_clusters": 2, "n_flagged": 1,
+                                "flag_counts": {"low_marker_evidence": 0,
+                                                "ambiguous": 1, "confidence_conflict": 0}},
+        "warnings": [], "errors": [],
+    }
+
+
+# --- M7, the cross-check section ----------------------------------------------
+
+
+def test_m7_puts_both_annotators_labels_in_one_row():
+    """The finding was reaching the report only as an audit row before this."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        result = _run(root, {"cross_check_annotation": _cross_check_artifact(root)})
+        text = Path(result["markdown_path"]).read_text(encoding="utf-8")
+
+    assert "M7 · Annotation cross-check" in text
+    for expected in ("Classical monocytes", "Neutrophil", "Naive B cells", "Naive B cell"):
+        assert expected in text, f"{expected!r} missing from M7"
+
+
+def test_m7_does_not_claim_agreement_the_judge_did_not_state():
+    """With no judge verdict there is no count to give, and none may be invented."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        result = _run(root, {"cross_check_annotation": _cross_check_artifact(root)})
+        text = Path(result["markdown_path"]).read_text(encoding="utf-8")
+
+    assert "name no cluster" in text, \
+        "with no judge naming clusters, M7 must say so rather than report agreement"
+    assert "2 of 2 clusters" not in text
+
+
+def test_m7_reports_the_clusters_a_real_verdict_names():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "audit.jsonl").write_text(json.dumps({
+            "event": "judge", "step": "cross_check_annotation",
+            "verdict": "warn", "score": 60,
+            "reasons": ["Cluster 0: CellTypist 'Classical monocytes' vs database "
+                        "'Neutrophil' - different cell types"],
+        }) + "\n", encoding="utf-8")
+        result = _run(root, {"cross_check_annotation": _cross_check_artifact(root)})
+        text = Path(result["markdown_path"]).read_text(encoding="utf-8")
+
+    assert "named 1 of 2 clusters" in text, "the judge's finding did not reach M7"
+    assert "`warn`" in text and "60" in text
+
+
+def test_m7_says_why_a_person_is_needed():
+    """The section exists to be explained to someone, not only to be correct."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        result = _run(root, {"cross_check_annotation": _cross_check_artifact(root)})
+        text = Path(result["markdown_path"]).read_text(encoding="utf-8")
+
+    assert "cannot say which is right" in text
+    assert "Ficoll" in text, "the worked reason for needing a person is missing"
+
+
+def test_m7_states_its_reason_when_no_tissue_was_chosen():
+    with tempfile.TemporaryDirectory() as tmp:
+        result = _run(Path(tmp), {"cross_check_annotation": {
+            "cross_check_state": "not_compared", "per_cluster": {},
+            "evidence": {"available_tissues": ["blood", "lung"]},
+            "warnings": ["no scmayomap_tissue in config"], "errors": [],
+        }})
+        text = Path(result["markdown_path"]).read_text(encoding="utf-8")
+
+    assert "M7 · Annotation cross-check" in text
+    assert "2 tissues were offered" in text
+
+
+def test_the_cross_check_figure_reads_the_csv_rather_than_recomputing():
+    """`build_report` renders; the scores were computed by the step that owns them."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        artifact = _cross_check_artifact(root)
+        path = plots.annotation_cross_check(
+            artifact["score_table_path"], artifact["per_cluster"], root / "m7.png")
+        assert path and Path(path).exists()
+
+        missing = plots.annotation_cross_check(
+            root / "absent.csv", artifact["per_cluster"], root / "none.png")
+        assert missing is None, "a missing score table must not raise"
+
+
 # --- honest about what is missing ---------------------------------------------
 
 

@@ -517,3 +517,101 @@ def annotation_confidence(per_cluster: dict[str, Any], path: Path) -> str | None
         axis.spines[["top", "right"]].set_visible(False)
     figure.tight_layout()
     return _save(figure, path)
+
+
+# --- M7: annotation cross-check ---------------------------------------------------
+
+
+#: Cell types drawn on the cross-check dot plot. The database scores all 55 in
+#: the blood panel, and a 15 x 55 grid is unreadable; these are the ones any
+#: cluster actually ranked highly.
+CROSS_CHECK_TYPES = 14
+
+
+@_safe
+def annotation_cross_check(score_table_path: str | Path, per_cluster: dict[str, Any],
+                           path: Path) -> str | None:
+    """Marker-database scores per cluster, with CellTypist's own call marked.
+
+    Reads the CSV `cross_check_annotation` already wrote. Nothing is scored
+    here — the report renders, it does not analyse — and the file exists
+    precisely so a 55-column table never has to travel in the state.
+
+    The shape follows scMayoMap's own figure: clusters across, cell types down,
+    dot size and colour the normalised score. What is added is the red ring on
+    whatever CellTypist chose, because the question this figure exists to answer
+    is not "what did the database say" but "did the two methods land in the same
+    place".
+    """
+    import csv
+
+    plt = _pyplot()
+    source = Path(score_table_path)
+    if not source.exists() or not per_cluster:
+        return None
+
+    scores: dict[tuple[str, str], float] = {}
+    with source.open(newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            try:
+                scores[(row["cluster"], row["cell_type"])] = float(row["score"])
+            except (KeyError, TypeError, ValueError):
+                continue
+    if not scores:
+        return None
+
+    clusters = sorted(per_cluster, key=lambda c: (len(c), c))
+    # Rank cell types by the best score any cluster gave them, so the rows are
+    # the ones with something to show rather than the alphabetical first few.
+    best: dict[str, float] = {}
+    for (_cluster, cell_type), value in scores.items():
+        best[cell_type] = max(best.get(cell_type, 0.0), value)
+    types = [t for t, _ in sorted(best.items(), key=lambda kv: -kv[1])[:CROSS_CHECK_TYPES]]
+    types.reverse()
+
+    figure, axis = plt.subplots(figsize=(2.2 + 0.66 * len(clusters), 3.0 + 0.33 * len(types)))
+    xs, ys, sizes, colours = [], [], [], []
+    for x, cluster in enumerate(clusters):
+        for y, cell_type in enumerate(types):
+            value = scores.get((cluster, cell_type), 0.0)
+            if value <= 0:
+                continue
+            xs.append(x)
+            ys.append(y)
+            sizes.append(20 + 620 * value)
+            colours.append(value)
+
+    dots = axis.scatter(xs, ys, s=sizes, c=colours, cmap="viridis",
+                        vmin=0, vmax=max(colours) if colours else 1,
+                        alpha=0.85, edgecolors="none")
+
+    # Ring the database's own top hit. An earlier version ringed CellTypist's
+    # label instead, and drew nothing at all: the two vocabularies share almost
+    # no strings, so the ring never fired. CellTypist's call is printed under
+    # the axis instead, where no name matching is needed to read it.
+    for x, cluster in enumerate(clusters):
+        best = max(((t, scores.get((cluster, t), 0.0)) for t in types),
+                   key=lambda kv: kv[1], default=(None, 0.0))
+        if best[0] is not None and best[1] > 0:
+            axis.scatter([x], [types.index(best[0])], s=780, facecolors="none",
+                         edgecolors="#D62728", linewidths=1.5, zorder=3)
+
+    ticks = []
+    for cluster in clusters:
+        label = (per_cluster.get(cluster) or {}).get("celltypist_label") or "—"
+        ticks.append(f"{cluster}\n{label[:22]}")
+    axis.set_xticks(range(len(clusters)), ticks, fontsize=7, rotation=45, ha="right")
+    axis.set_yticks(range(len(types)), types, fontsize=8)
+    axis.set_xlabel("cluster, and the cell type CellTypist assigned it", fontsize=9)
+    axis.set_xlim(-0.6, len(clusters) - 0.4)
+    axis.set_ylim(-0.6, len(types) - 0.4)
+    axis.grid(True, which="major", color="#EEEEEE", linewidth=0.6, zorder=0)
+    axis.set_axisbelow(True)
+    axis.spines[["top", "right"]].set_visible(False)
+    axis.set_title("marker-database score per cluster; red ring is the database's own "
+                   "top hit\nread each column against the label beneath it — where "
+                   "they name different cells, look",
+                   fontsize=10)
+    figure.colorbar(dots, ax=axis, shrink=0.6, label="normalised score")
+    figure.tight_layout()
+    return _save(figure, path)

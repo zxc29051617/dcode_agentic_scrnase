@@ -290,6 +290,129 @@ def _section_confidence(art: dict[str, Any], figures: Path) -> Section:
     )
 
 
+def _clusters_the_judge_named(verdict: dict[str, Any], clusters: list[str]) -> list[str]:
+    """Which clusters the judge's reasons refer to, by matching real cluster ids.
+
+    The judge writes prose, so this is a read of its text rather than a field it
+    filled in. Longer ids are matched first so `cluster 1` cannot claim a
+    mention of `cluster 12`, and the full reasons are printed underneath either
+    way — if this misses one, the evidence is still on the page.
+    """
+    text = " ".join(str(r) for r in (verdict.get("reasons") or []))
+    named, remaining = [], text
+    for cluster in sorted(clusters, key=len, reverse=True):
+        for form in (f"cluster {cluster}", f"Cluster {cluster}"):
+            if form in remaining:
+                named.append(cluster)
+                remaining = remaining.replace(form, "")
+                break
+    return sorted(named, key=lambda c: (len(c), c))
+
+
+def _section_cross_check(art: dict[str, Any], audit: list[dict[str, Any]],
+                         figures: Path) -> Section:
+    """M7 — the two annotators side by side, and what the judge made of them."""
+    cross = art.get("cross_check_annotation") or {}
+    state = cross.get("cross_check_state")
+    per_cluster = cross.get("per_cluster") or {}
+
+    if state == "not_compared":
+        tissues = (cross.get("evidence") or {}).get("available_tissues") or []
+        return Section("M7", "Annotation cross-check", "main", False,
+                       "no `scmayomap_tissue` was chosen, so the clusters were "
+                       f"scored against nothing. {len(tissues)} tissues were offered; "
+                       "the run stopped at the gate rather than guess.")
+    if not per_cluster:
+        return Section("M7", "Annotation cross-check", "main", False,
+                       (cross.get("errors") or ["the cross-check did not run"])[0])
+
+    clusters = sorted(per_cluster, key=lambda c: (len(c), c))
+    verdict = next((r for r in reversed(audit)
+                    if r.get("event") == "judge"
+                    and r.get("step") == "cross_check_annotation"), {})
+    named = _clusters_the_judge_named(verdict, clusters)
+
+    rows = []
+    for name in clusters:
+        entry = per_cluster[name]
+        candidates = entry.get("database_candidates") or []
+        top = candidates[0] if candidates else {}
+        rows.append([
+            name,
+            _fmt(entry.get("n_cells")),
+            entry.get("celltypist_label") or "—",
+            _fmt(entry.get("celltypist_confidence")),
+            top.get("cell_type") or "—",
+            _fmt(top.get("score")),
+            _fmt(entry.get("n_matched_genes")),
+            ", ".join(entry.get("flags") or []) or "—",
+            "yes" if name in named else "",
+        ])
+
+    figure = plots.annotation_cross_check(
+        cross.get("score_table_path") or "", per_cluster, figures / "m7_cross_check.png")
+
+    summary = cross.get("cross_check_summary") or {}
+    counts = summary.get("flag_counts") or {}
+    body = [
+        "Two annotators over the same clusters, by unrelated routes: CellTypist is "
+        "a classifier trained on labelled reference cells, and the marker database "
+        "was matched against this run's own differential expression. Neither saw "
+        "the other's input, so where they agree something has been established, "
+        "and where they differ is where to look.",
+
+        (f"**How many agree.** The judge named {len(named)} of {len(clusters)} "
+         f"clusters as carrying two different cell types — {', '.join(named)} — "
+         f"and left the other {len(clusters) - len(named)} alone."
+         if named else
+         "**How many agree.** The judge's reasons name no cluster, so no count of "
+         "agreeing clusters can be given here. That is what a verdict looks like "
+         "when the judging was done by the rule-based stub, or by a model that "
+         "reported on the flags without comparing the labels — read the table "
+         "below yourself in that case.")
+        + " The two vocabularies do not line up (`CD16+ NK cells` and `CD56-dim "
+        "natural killer cell` are one population under two names), so agreement is "
+        "not a string comparison and was not computed as one. The step reports both "
+        "labels; the judge reconciles them, and its reasons are quoted below so the "
+        "call can be checked against the table.",
+
+        f"**What the numbers flagged, separately.** {summary.get('n_flagged', 0)} "
+        f"clusters carry a numeric flag: {counts.get('low_marker_evidence', 0)} on "
+        f"thin evidence, {counts.get('ambiguous', 0)} where the database did not "
+        f"resolve to one type, {counts.get('confidence_conflict', 0)} where "
+        "CellTypist was sure and the database was not. These test counts and "
+        "margins — they never read a cell type's name, so a cluster can carry no "
+        "flag and still be the clearest disagreement in the run.",
+    ]
+
+    if verdict:
+        body.append(
+            f"**Why the judge called this `{verdict.get('verdict')}` "
+            f"(score {_fmt(verdict.get('score'))}).**")
+        body.extend(f"- {r}" for r in (verdict.get("reasons") or []))
+
+    body.append(
+        "**Why a person still has to decide.** The pipeline can say the two methods "
+        "disagree; it cannot say which is right, and the answer depends on the "
+        "sample rather than on the data. On a PBMC preparation a `Neutrophil` call "
+        "is a property of the reference — a Ficoll gradient leaves granulocytes in "
+        "the pellet — and the database has no way to know how the cells were "
+        "prepared. That is knowledge the operator has and neither annotator does, "
+        "which is why this stops at a gate instead of resolving itself."
+    )
+
+    return Section(
+        "M7", "Annotation cross-check", "main", True,
+        body=body,
+        figures=[figure] if figure else [],
+        tables=[Table(
+            f"CellTypist against the marker database ({cross.get('tissue')})",
+            ["cluster", "cells", "CellTypist", "confidence",
+             "database top-1", "score", "matched genes", "flags", "judge named"],
+            rows)],
+    )
+
+
 def _section_barcode_rank(art: dict[str, Any], figures: Path) -> Section:
     review = art.get("cell_calling_review") or {}
     per_sample = review.get("per_sample") or {}
@@ -607,6 +730,7 @@ def collect(payload: dict[str, Any]) -> tuple[ReportModel, Path]:
         _section_markers(final, art, figures),
         _section_composition(final, figures),
         _section_confidence(art, figures),
+        _section_cross_check(art, audit, figures),
         _section_barcode_rank(art, figures),
         _section_qc_per_sample(art, figures),
         _section_filter_reasons(art, figures),
