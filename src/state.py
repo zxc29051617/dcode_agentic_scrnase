@@ -35,7 +35,12 @@ class WorkflowState(TypedDict, total=False):
 
     run_id: str
     project: str
-    config: dict[str, Any]
+
+    #: Reduced rather than replaced, because a gate can now add to it: an
+    #: operator answering `revise` with `min_genes=200` writes only that key.
+    #: A node returning a whole config would have to reconstruct the rest, and
+    #: reconstructing it is how a key gets quietly dropped.
+    config: Annotated[dict[str, Any], merge_dicts]
     sample_metadata: dict[str, Any]
     input_bundle: dict[str, Any]
     audit_log_path: str

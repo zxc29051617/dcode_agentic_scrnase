@@ -35,6 +35,12 @@ HUMAN_GATE_ANSWER = "human_gate_answer"
 FINAL_GATE = "human_review_decision"
 FINAL_GATE_ANSWER = "human_review_decision_answer"
 
+#: Where `revise` at the mainline gate re-enters the pipeline. Named once and
+#: used twice — by `_final_gate_router` to route, and by the gate's question to
+#: decide which parameters it may be given. Two literals here would be two
+#: places to disagree about what answering `revise` means.
+FINAL_GATE_REVISE_TARGET = "annotate_cells"
+
 
 # --------------------------------------------------------------------------
 # Branch decisions
@@ -221,14 +227,22 @@ def build_graph(
     # from `human_review_decision` rather than from the last step's verdict.
     graph.add_node(
         FINAL_GATE,
-        make_gate_question_node(node_name=FINAL_GATE, review_skill=FINAL_GATE),
+        make_gate_question_node(
+            node_name=FINAL_GATE,
+            review_skill=FINAL_GATE,
+            revise_target=FINAL_GATE_REVISE_TARGET,
+        ),
     )
     graph.add_node(FINAL_GATE_ANSWER, make_human_gate_node(policy, node_name=FINAL_GATE))
     graph.add_edge(FINAL_GATE, FINAL_GATE_ANSWER)
     graph.add_conditional_edges(
         FINAL_GATE_ANSWER,
         _final_gate_router,
-        {"build_report": "build_report", "annotate_cells": "annotate_cells", "end": END},
+        {
+            "build_report": "build_report",
+            FINAL_GATE_REVISE_TARGET: FINAL_GATE_REVISE_TARGET,
+            "end": END,
+        },
     )
 
     add_step("build_report")
@@ -258,7 +272,10 @@ def build_graph(
 def _final_gate_router(state: WorkflowState) -> str:
     decisions = state.get("human_decisions") or []
     choice = decisions[-1]["decision"] if decisions else "stop"
-    return {"accept": "build_report", "revise": "annotate_cells"}.get(choice, "end")
+    return {
+        "accept": "build_report",
+        "revise": FINAL_GATE_REVISE_TARGET,
+    }.get(choice, "end")
 
 
 def _make_escalation_router(

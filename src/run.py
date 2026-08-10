@@ -84,6 +84,30 @@ def run_workflow(
     return final
 
 
+def ask_for_overrides(request: dict[str, Any]) -> dict[str, Any]:
+    """Collect the parameters a `revise` is going to change, one prompt each.
+
+    Only the names the gate offered are asked for, and a blank answer keeps the
+    current value — so `revise` with no change is still available, and still
+    means "run it again", for the case where that is genuinely what is wanted.
+
+    Nothing is validated here. `coerce_overrides` in the gate node is the one
+    place that decides what a value means, so that the terminal and any other
+    front end cannot drift into accepting different things.
+    """
+    offered = request.get("revisable") or []
+    if not offered:
+        return {}
+    target = request.get("revise_target") or request.get("step")
+    print(f"   revising {target} — blank keeps the current value", file=sys.stderr)
+    typed: dict[str, Any] = {}
+    for name in offered:
+        value = input(f"   {name} = ").strip()
+        if value:
+            typed[name] = value
+    return typed
+
+
 def ask_on_terminal(request: dict[str, Any]) -> dict[str, Any]:
     """Put a paused gate to whoever is at the keyboard.
 
@@ -106,11 +130,20 @@ def ask_on_terminal(request: dict[str, Any]) -> dict[str, Any]:
               + json.dumps(request["evidence"], ensure_ascii=False, default=str)[:600],
               file=sys.stderr)
 
+    if request.get("revisable"):
+        print(f"   revise can set: {', '.join(request['revisable'])}", file=sys.stderr)
+
     while True:
         answer = input("   accept / revise / stop > ").strip().lower()
         if answer in {"accept", "revise", "stop"}:
+            overrides = ask_for_overrides(request) if answer == "revise" else {}
             rationale = input("   why (optional) > ").strip()
-            return {"decision": answer, "rationale": rationale, "operator": getpass.getuser()}
+            return {
+                "decision": answer,
+                "rationale": rationale,
+                "operator": getpass.getuser(),
+                "overrides": overrides,
+            }
         print("   please answer accept, revise or stop", file=sys.stderr)
 
 

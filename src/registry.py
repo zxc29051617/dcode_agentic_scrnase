@@ -14,7 +14,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Literal
+from typing import Any, Literal, Sequence
 
 SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
 
@@ -30,6 +30,36 @@ class StepSpec:
     judge: str | None = None
     branches: bool = False
     """True when `graph.py` owns the outgoing edges instead of a linear successor."""
+
+    revisable: tuple[str, ...] = ()
+    """Config keys a person may set at this step's gate, and nothing else.
+
+    An allowlist rather than "any key", because a gate answer is the one place
+    a value reaches `config` after the run started. Left empty, `revise` on a
+    step means only "run it again", which for a deterministic step run against
+    an unchanged config is the same result and the same gate — the loop this
+    field exists to break.
+
+    Only the steps where a person actually has a choice to make have one. Every
+    name here is already a documented CLI flag, so a value set at a gate and a
+    value set on the command line take the same path through the same code.
+    """
+
+
+#: How to read a revisable value that arrived as text, which is what a terminal
+#: — and any HTTP form after it — is going to hand over. A key with no entry
+#: here cannot be revised at all, so this doubles as the master list: adding a
+#: name to some `StepSpec.revisable` without adding it here is caught by
+#: `tests/test_revision.py` rather than at a gate on a real run.
+REVISABLE_PARAMETERS: dict[str, Any] = {
+    "min_genes": float,
+    "min_counts": float,
+    "max_pct_mito": float,
+    "force_cells": int,
+    "min_umi": int,
+    "celltypist_model": str,
+    "scmayomap_tissue": str,
+}
 
 
 #: MVP steps, in the order given by `docs/tool_registry.md`.
@@ -51,7 +81,10 @@ REGISTRY: dict[str, StepSpec] = {
         StepSpec("count_matrix_classify", "router", "judge_matrix_classify", branches=True),
         StepSpec("load_raw_counts", "analysis", "judge_raw_counts", branches=True),
         StepSpec("load_filtered_counts", "analysis", "judge_filtered_counts"),
-        StepSpec("cell_calling_review", "analysis", "judge_cell_calling", branches=True),
+        # How many cells to keep is the operator's call, so it is also the
+        # operator's call to make again after seeing the barcode-rank curve.
+        StepSpec("cell_calling_review", "analysis", "judge_cell_calling", branches=True,
+                 revisable=("force_cells", "min_umi")),
         # Per-sample work ends here. Everything before this point runs once per
         # library; everything after works on one labelled object, which is what
         # `run_integration` later corrects the batch effect of.
@@ -61,7 +94,13 @@ REGISTRY: dict[str, StepSpec] = {
         # consumer grow per-route special cases.
         StepSpec("post_load_validate", "analysis", "judge_post_load"),
         StepSpec("run_qc_metrics", "analysis", "judge_qc"),
-        StepSpec("apply_cell_qc_filter", "analysis", "judge_cell_qc_filter", branches=True),
+        # The step that stops for thresholds is the step whose gate has to be
+        # able to take them. `max_pct_erythroid` is a fourth threshold this step
+        # accepts from the CLI and is deliberately not here yet: the four
+        # revisable steps were chosen as a first set, and widening the allowlist
+        # is a one-line change once there is a reason to.
+        StepSpec("apply_cell_qc_filter", "analysis", "judge_cell_qc_filter", branches=True,
+                 revisable=("min_genes", "min_counts", "max_pct_mito")),
         StepSpec("detect_doublets", "analysis", "judge_doublets"),
         StepSpec("normalize_hvg_prepare", "analysis", "judge_preprocess"),
         StepSpec("run_pca", "analysis", "judge_pca"),
@@ -69,13 +108,18 @@ REGISTRY: dict[str, StepSpec] = {
         StepSpec("run_clustering", "analysis", "judge_clustering"),
         StepSpec("run_umap", "analysis", "judge_umap"),
         StepSpec("find_markers", "analysis", "judge_markers"),
-        StepSpec("annotate_cells", "analysis", "judge_annotation"),
+        # Both of these stop rather than guess, and both list their candidates
+        # as evidence. The gate is where a person reads that list, so it is
+        # where the answer belongs.
+        StepSpec("annotate_cells", "analysis", "judge_annotation",
+                 revisable=("celltypist_model",)),
         # A second opinion on the same clusters from an unrelated method: a
         # marker database scored against `find_markers`, never touching the
         # matrix CellTypist learned from. It changes no label — it reports where
         # the two methods part company, and where either is running on thin
         # evidence, for the gate that follows.
-        StepSpec("cross_check_annotation", "analysis", "judge_cross_check"),
+        StepSpec("cross_check_annotation", "analysis", "judge_cross_check",
+                 revisable=("scmayomap_tissue",)),
         StepSpec("human_review_decision", "gate", None),
         StepSpec("build_report", "utility", "judge_report"),
     )
@@ -95,6 +139,74 @@ MAINLINE: tuple[str, ...] = (
     "annotate_cells",
     "cross_check_annotation",
 )
+
+def coerce_overrides(
+    raw: dict[str, Any] | None, allowed: Sequence[str]
+) -> tuple[dict[str, Any], list[str]]:
+    """Split an operator's proposed values into what is allowed and what is not.
+
+    Returns `(accepted, rejected)`, where `rejected` holds one sentence per
+    refusal, meant to be shown to the person who typed it. Nothing is silently
+    dropped: a value that does not arrive in `config` and does not come back as
+    a complaint is a person believing they changed something they did not.
+
+    Two kinds of refusal, and they are different mistakes. A key this gate does
+    not offer is a scope error — `celltypist_model` is a real parameter, it is
+    simply not the QC gate's to set, and letting it through would mean any gate
+    could reach into any step's config. A value that will not convert is a typo.
+
+    `allowed` is passed in rather than looked up from `step`, because the gate
+    that owns the question is the one that knows what answering it will re-run:
+    the escalation gate re-runs one step, the mainline gate re-enters the
+    mainline at `annotate_cells` and re-runs everything after it.
+    """
+    accepted: dict[str, Any] = {}
+    rejected: list[str] = []
+
+    for key, value in (raw or {}).items():
+        if key not in allowed:
+            offered = ", ".join(allowed) if allowed else "nothing"
+            rejected.append(f"{key} is not offered at this gate (it offers: {offered})")
+            continue
+        # Belt and braces: `REVISABLE_PARAMETERS` is the master list, and a name
+        # in `revisable` that is missing from it is a wiring mistake, not an
+        # operator mistake. Refuse rather than guess at a type.
+        convert = REVISABLE_PARAMETERS.get(key)
+        if convert is None:
+            rejected.append(f"{key} has no declared type and cannot be read safely")
+            continue
+        try:
+            accepted[key] = convert(value)
+        except (TypeError, ValueError):
+            rejected.append(f"{key}={value!r} is not a valid {convert.__name__}")
+
+    return accepted, rejected
+
+
+def steps_invalidated_by(step: str) -> tuple[str, ...]:
+    """`step` and everything the registry runs after it.
+
+    Changing a parameter changes what every later step should have produced, so
+    a resumed run must not hand back the results it already has for them.
+    `REGISTRY` is declared in pipeline order and is a valid topological order for
+    both routes, so position in it is the dependency answer. Naming a step that
+    this particular route never visits costs nothing — it has no result to reuse
+    either way — and that is the safe direction to be wrong in.
+    """
+    names = list(REGISTRY)
+    if step not in names:
+        return tuple(names)
+    return tuple(names[names.index(step):])
+
+
+def revisable_from(step: str) -> tuple[str, ...]:
+    """Every parameter a person may set, given that `step` onward will re-run."""
+    seen: dict[str, None] = {}
+    for name in steps_invalidated_by(step):
+        for key in REGISTRY[name].revisable:
+            seen[key] = None
+    return tuple(seen)
+
 
 _module_cache: dict[str, ModuleType | None] = {}
 

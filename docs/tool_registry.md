@@ -21,6 +21,42 @@
   定義一份 `JudgeResult` 契約與一個 backend（`StubJudge` 或 `LocalLLMJudge`），
   每個 step 傳不同 payload 進去。registry 的 `judge` 欄位是 **graph 裡的 node
   名稱與 audit log 標籤**，不是模組路徑。
+- **Revisable is an allowlist**：`StepSpec.revisable` 列出這個 step 的 gate
+  允許人在 `revise` 時設定的 config key，其他一律拒絕並附理由。gate 是 run 開始
+  之後唯一能寫進 `config` 的地方，所以它必須是白名單而不是「任何 key」。
+
+## Revisable parameters
+
+`revise` 如果不能改任何東西，就只是用同一份 config 重跑同一個 deterministic
+step——同樣的結果、同樣的 verdict、同樣的問題。所以 gate 的答案可以帶
+`overrides`，只接受下表的 key：
+
+| step | 可改的參數 |
+|---|---|
+| `cell_calling_review` | `force_cells`、`min_umi` |
+| `apply_cell_qc_filter` | `min_genes`、`min_counts`、`max_pct_mito` |
+| `annotate_cells` | `celltypist_model` |
+| `cross_check_annotation` | `scmayomap_tissue` |
+
+這四個正好是**「沒有人決定就不自己猜」**的四個 step——它們本來就會停下來把候選
+列成 evidence，所以 gate 就是那個答案該進來的地方。每個名稱都已經是一個
+documented CLI flag，值從命令列來或從 gate 來走同一條路。
+
+`human_review_decision`（主線 gate）不同：它的 `revise` 是回到
+`annotate_cells`，所以它開放的是**從那裡之後會重跑的所有參數**的聯集
+（`celltypist_model` + `scmayomap_tissue`），而不是它剛剛評的那一個 step 的。
+
+改了參數之後會發生三件事，缺一不可：
+
+1. 值寫進 `config`（`merge_dicts` reducer，只加不覆蓋整份）
+2. 從 revise target 之後的每個 step 的 resume flag 都被清掉，**續跑時不能沿用**
+3. `run_metadata.json` 追加一筆 `revisions`，並且**改寫 `source.config_sha256`**
+   ——否則之後用原本的命令列 `--resume-from`，hash 會對得上，然後沿用那些已經
+   被取代掉的 artifact
+
+`GatePolicy.max_revisions_per_step`（預設 10）是防跑掉用的：`recursion_limit`
+擋不住 revise 迴圈，因為它是 per-`invoke` 計數，而每次 `Command(resume=...)`
+都會重新開始。超過就記成 `stop` 並寫明原因，不會變成默默 `accept`。
 
 ## Registry overview
 

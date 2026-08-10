@@ -138,6 +138,59 @@ def capture_run_metadata(
     }
 
 
+def record_revision(
+    metadata_path: str | Path,
+    *,
+    step: str,
+    overrides: dict[str, Any],
+    config: dict[str, Any],
+) -> bool:
+    """Record that an operator changed the config mid-run, and re-hash it.
+
+    Two separate jobs, and the second is the one that matters for correctness.
+
+    The `revisions` list is the readable record: which gate, which step, what
+    was set. It is appended to, never rewritten, so a run revised twice says so.
+
+    `source.config_sha256` is rewritten, and has to be. `resumable_steps`
+    trusts a run directory only when the config hash recorded there matches the
+    config being resumed with — so leaving it at the hash of the config the run
+    *started* with would mean a later `--resume-from`, given the original
+    command line, matched and handed back artifacts computed from the revised
+    values. That is two analyses in one report, which is the exact failure the
+    hash check exists to prevent.
+
+    Everything else the file records — the git commit, the package versions, the
+    start time — is left alone. A revision changes what was asked for, not what
+    was installed or when the run began.
+    """
+    path = Path(metadata_path)
+    try:
+        metadata = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        # Losing the record must never lose the decision that just happened;
+        # the audit log has it either way. A resume then fails closed, because
+        # an unreadable hash never matches.
+        return False
+
+    revisions = metadata.get("revisions")
+    if not isinstance(revisions, list):
+        revisions = []
+    revisions.append({
+        "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "step": step,
+        "overrides": {key: _jsonable(value) for key, value in overrides.items()},
+    })
+    metadata["revisions"] = revisions
+    metadata.setdefault("source", {})["config_sha256"] = config_digest(config)
+
+    try:
+        path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
+    except (OSError, TypeError, ValueError):
+        return False
+    return True
+
+
 def _jsonable(value: Any) -> Any:
     """Best-effort coercion so an unserializable artifact never kills a run."""
     try:
