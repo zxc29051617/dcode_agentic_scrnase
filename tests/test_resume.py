@@ -18,9 +18,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src import persistence  # noqa: E402
+from src.graph import build_graph  # noqa: E402
+from src.judge import StubJudge  # noqa: E402
 from src.policy import GatePolicy  # noqa: E402
-from src.run import run_workflow  # noqa: E402
-from src.state import summarize  # noqa: E402
+from src.run import DEFAULT_RECURSION_LIMIT, run_workflow  # noqa: E402
+from src.state import new_run_state, summarize  # noqa: E402
 from tests import fixtures  # noqa: E402
 
 #: The same operator choices the graph suite uses, for the same reason: these
@@ -28,10 +30,26 @@ from tests import fixtures  # noqa: E402
 CHOICES = {"min_genes": 1, "max_pct_mito": 100}
 
 
+#: Built once per run directory. Regenerating it would re-gzip the matrix, and
+#: gzip writes its own modification time into the header — so the bytes change
+#: even though the contents do not, and `plan_resume` correctly reads that as a
+#: new input and refuses to reuse anything. A resume in real life points at the
+#: data that is already there; so does this.
+_BUNDLES: dict[str, tuple[dict, dict]] = {}
+
+
 def _bundle(root: Path):
-    bundle = fixtures.bundle_for({"input_type": "matrix", "matrix_kind": "filtered"}, root / "b")
-    reference = fixtures.make_reference(root, "ref", genomes=["GRCh38"])
-    return {"paths": [str(bundle)]}, {"species": "human", "transcriptome": str(reference), **CHOICES}
+    key = str(root)
+    if key not in _BUNDLES:
+        bundle = fixtures.bundle_for(
+            {"input_type": "matrix", "matrix_kind": "filtered"}, root / "b"
+        )
+        reference = fixtures.make_reference(root, "ref", genomes=["GRCh38"])
+        _BUNDLES[key] = (
+            {"paths": [str(bundle)]},
+            {"species": "human", "transcriptome": str(reference), **CHOICES},
+        )
+    return _BUNDLES[key]
 
 
 def _run(root: Path, **kwargs):
@@ -85,6 +103,41 @@ def test_a_paused_run_does_not_report_itself_as_finished():
     assert report["status"] == "needs_review"
     assert report["pending_review"], "the question has to survive into the summary"
     assert report["pending_review"]["step"]
+
+
+def test_a_paused_graph_says_so_in_its_own_state_without_run_workflow():
+    """The pause has to be a fact in state, not something one caller reconstructs.
+
+    `run_workflow` used to attach `status` and `pending_review` to the dict it
+    returned, so anything else driving the graph — this suite's own smoke tests,
+    an API, a UI — saw `status="running"`, `halted=False`, `pending_review=None`
+    and could not tell a suspended run from a live one. Nothing here goes
+    through `run_workflow`; the assertions are on what the graph itself left.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        bundle, config = _bundle(root)
+        graph = build_graph(
+            policy=GatePolicy(interactive=True),
+            judge=StubJudge(),
+            checkpointer=persistence.make_checkpointer("memory"),
+        )
+        state = new_run_state(
+            project="test", config=config, input_bundle=bundle, runs_dir=root / "runs",
+        )
+        final = graph.invoke(state, config={
+            "recursion_limit": DEFAULT_RECURSION_LIMIT,
+            "configurable": {"thread_id": state["run_id"]},
+        })
+
+    assert "__interrupt__" in final, "precondition: the run actually paused"
+    assert final["status"] == "needs_review"
+    assert final["halted"] is False
+    assert final["pending_review"], "the question has to be in state, not only in __interrupt__"
+    assert final["pending_review"]["step"]
+    assert final["pending_review"]["gate"]
+    # The two views of the same pause must not be able to disagree.
+    assert final["pending_review"] == getattr(final["__interrupt__"][0], "value", None)
 
 
 def test_the_pending_question_carries_the_evidence_to_decide_on():
@@ -188,8 +241,18 @@ def test_a_deleted_artifact_means_that_step_runs_again():
     assert target not in summarize(second)["skipped"]
 
 
-def test_a_changed_threshold_reruns_everything():
-    """Resuming onto a different config would mix results from two analyses."""
+def test_a_changed_threshold_reruns_the_step_that_reads_it_and_everything_after():
+    """Resuming onto a different config must not mix results from two analyses.
+
+    This used to assert that *nothing* was reused, which was the old rule: one
+    hash for the whole directory, and any difference threw all of it away. That
+    was safe and needlessly expensive — `run_qc_metrics` does not read
+    `min_genes`, and recomputing it could not produce a different answer.
+
+    The property that actually matters is unchanged and is what is asserted now:
+    nothing computed *from* the old threshold survives. `test_resume_validation`
+    covers the same cut end to end for the other two triggers.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         first = _run(root, policy=GatePolicy(headless_decision="accept"))
@@ -202,7 +265,11 @@ def test_a_changed_threshold_reruns_everything():
             policy=GatePolicy(headless_decision="accept"),
             resume_run_id=first["run_id"],
         )
-    assert summarize(second)["skipped"] == []
+    skipped = summarize(second)["skipped"]
+    assert "run_qc_metrics" in skipped, "it cannot depend on a threshold it never reads"
+    for downstream in ("apply_cell_qc_filter", "detect_doublets", "run_pca",
+                       "run_clustering", "annotate_cells"):
+        assert downstream not in skipped, f"{downstream} came from the old threshold"
 
 
 def test_a_revised_step_reruns_instead_of_being_skipped_again():

@@ -33,6 +33,20 @@ class GatePolicy:
     """What a non-interactive run assumes at a gate. Defaults to `stop` so nothing
     is ever waved through by accident; set to `accept` only to walk the wiring."""
 
+    max_revisions_per_step: int = 10
+    """How many times one step may be revised before the gate stops instead.
+
+    Not a scientific threshold — a guard rail. `recursion_limit` does not bound
+    the revise loop, because it counts supersteps per `invoke` and every
+    `Command(resume=...)` starts a fresh one; answering `revise` forever
+    therefore re-runs real analysis forever. A person at a terminal stops on
+    their own, but a programmatic decider returning `revise` on every warn does
+    not, and it is the same code path.
+
+    Ten is high enough that nobody working through thresholds by hand will meet
+    it and low enough to end a runaway inside one step's runtime. Exceeding it
+    is recorded as a `stop` with the reason, never as a silent `accept`."""
+
     def route(self, judge: JudgeResult) -> GateRoute:
         if judge.verdict == "fail":
             return "human_gate"

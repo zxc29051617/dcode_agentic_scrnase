@@ -15,8 +15,14 @@ from langgraph.types import interrupt
 from . import persistence
 from .judge import JudgeClient, JudgeResult
 from .policy import GatePolicy
-from .provenance import AuditLog
-from .registry import REGISTRY, call_skill
+from .provenance import AuditLog, record_revision
+from .registry import (
+    REGISTRY,
+    call_skill,
+    coerce_overrides,
+    revisable_from,
+    steps_invalidated_by,
+)
 from .state import WorkflowState, last_judge, step_output
 
 NodeFn = Callable[[WorkflowState], dict[str, Any]]
@@ -196,27 +202,62 @@ def make_judge_node(step: str, judge_tool: str, client: JudgeClient) -> NodeFn:
     return node
 
 
-def make_human_gate_node(
-    policy: GatePolicy, *, node_name: str = "human_gate", review_skill: str | None = None
+def make_gate_question_node(
+    *,
+    node_name: str = "human_gate",
+    review_skill: str | None = None,
+    revise_target: str | None = None,
 ) -> NodeFn:
-    """Stop for a person and record their decision as `accept | revise | stop`.
+    """Assemble the question a gate is about to ask, and leave it in state.
 
-    Interactive runs block on LangGraph's `interrupt`; headless runs halt so a
-    warn/fail is never silently waved through.
+    Asking and answering are separate nodes because `interrupt()` raises out of
+    the node it is called in. That node never reaches a `return`, so a delta it
+    computed before interrupting does not exist — a graph node's only write
+    channel is its return value. `pending_review` was declared for exactly this
+    and could therefore only ever be set back to None, and a run suspended at a
+    gate reported `status="running"` with nothing pending. Splitting the gate in
+    two puts the question through a superstep that completes, so it is written
+    and checkpointed *before* the graph suspends.
+
+    What that buys: a paused run says what it is waiting for in its own state,
+    rather than only through the `__interrupt__` key that one caller happened to
+    unpack. Anything reading the state — the summary, a future API, a test that
+    invokes the graph directly — sees the same fact.
 
     `review_skill` names a skill that assembles the question. The escalation
     gate does not need one — it is asking about a single step, and the last
     verdict is the whole story. The mainline gate does: it is asking about the
     run, and the last verdict describes only the step that happened to be last.
+
+    `revise_target` names where answering `revise` actually lands, when that is
+    not the step being judged. The mainline gate is the case: it has just judged
+    `cross_check_annotation` but re-enters the mainline at `annotate_cells`, so
+    the question it asks and the work it would redo are about different steps.
+    The gate that owns the routing is the one that has to say so — the node
+    answering it cannot work it out from a verdict.
     """
 
     def node(state: WorkflowState) -> dict[str, Any]:
         audit = _audit(state)
         verdict = last_judge(state) or {}
         step = verdict.get("step") or state.get("current_step") or ""
+        # What `revise` would redo, and therefore what it may be given. An
+        # escalation gate re-runs one step and offers exactly that step's
+        # parameters; the mainline gate re-runs a tail of the pipeline and
+        # offers every parameter in it, because it is asking about all of it.
+        target = revise_target or step
+        revisable = (
+            revisable_from(target) if revise_target
+            else (REGISTRY[step].revisable if step in REGISTRY else ())
+        )
         request = {
             "gate": node_name,
             "step": step,
+            # Named separately from `step` because they differ at the mainline
+            # gate, and a person answering needs to know which one they are
+            # changing.
+            "revise_target": target,
+            "revisable": list(revisable),
             "verdict": verdict.get("verdict"),
             "score": verdict.get("score"),
             "reasons": verdict.get("reasons", []),
@@ -239,6 +280,37 @@ def make_human_gate_node(
             else:
                 request["review_error"] = outcome["errors"] or [outcome["status"]]
         audit.append("human_gate_open", **request)
+        return {"pending_review": request, "status": "needs_review"}
+
+    return node
+
+
+def make_human_gate_node(policy: GatePolicy, *, node_name: str = "human_gate") -> NodeFn:
+    """Put the pending question to a person and record `accept | revise | stop`.
+
+    Interactive runs block on LangGraph's `interrupt`; headless runs apply the
+    policy default so a warn/fail is never silently waved through.
+
+    The question comes from `pending_review`, written by the node before this
+    one, rather than being rebuilt here. Rebuilding it would mean the person
+    could be shown one thing and the state record another, and it is the state
+    record a report is later written from.
+
+    ## What `revise` does
+
+    `revise` may carry `overrides`: values for the parameters the question
+    offered. They are checked against that offer, written into `config`, and
+    every step from the revise target onward has its resume flag cleared so it
+    is recomputed rather than reused. Without them `revise` re-runs a
+    deterministic step against an unchanged config, which produces the same
+    result and the same question — the loop this exists to break.
+    """
+
+    def node(state: WorkflowState) -> dict[str, Any]:
+        audit = _audit(state)
+        request = state.get("pending_review") or {}
+        step = request.get("step") or state.get("current_step") or ""
+        target = request.get("revise_target") or step
 
         if policy.interactive:
             raw = interrupt(request)
@@ -253,11 +325,39 @@ def make_human_gate_node(
         if choice not in {"accept", "revise", "stop"}:
             choice = "stop"
 
+        overrides: dict[str, Any] = {}
+        rejected: list[str] = []
+        if choice == "revise":
+            overrides, rejected = coerce_overrides(
+                decision.get("overrides"), request.get("revisable") or ()
+            )
+            # A revise that has already been answered this many times is not a
+            # person converging on a threshold, it is a loop. Stopping is the
+            # safe direction and it is recorded as a decision, not as an error.
+            seen = sum(
+                1 for past in state.get("human_decisions") or []
+                if past.get("decision") == "revise" and past.get("revise_target") == target
+            )
+            if seen >= policy.max_revisions_per_step:
+                rejected.append(
+                    f"{target} has already been revised {seen} times "
+                    f"(max_revisions_per_step={policy.max_revisions_per_step}); stopping"
+                )
+                choice = "stop"
+                overrides = {}
+
         entry = {
-            "gate": node_name,
+            "gate": request.get("gate") or node_name,
             "step": step,
+            "revise_target": target,
             "decision": choice,
             "rationale": decision.get("rationale", ""),
+            # What actually changed, and what was asked for and refused. Both
+            # travel with the decision: a person who mistyped a parameter needs
+            # to see that it did not take effect, and a reader of the run needs
+            # to see which numbers stopped being the ones on the command line.
+            "overrides": overrides,
+            "rejected_overrides": rejected,
             # Who decided, and when. The audit log timestamps its own events,
             # but the decision travelling in state carried neither.
             "operator": decision.get("operator") or ("interactive" if policy.interactive
@@ -266,8 +366,34 @@ def make_human_gate_node(
         }
         audit.append("human_gate_close", **entry)
 
-        # The question has been answered, so it is no longer pending.
-        delta: dict[str, Any] = {"human_decisions": [entry], "pending_review": None}
+        # The question has been answered, so it is no longer pending, and the
+        # run is no longer waiting on anybody.
+        delta: dict[str, Any] = {
+            "human_decisions": [entry],
+            "pending_review": None,
+            "status": "running",
+        }
+        if overrides:
+            # `config` reduces, so this adds keys rather than replacing the run's
+            # settings, and every step downstream reads the new value the next
+            # time it builds a payload.
+            delta["config"] = overrides
+            # Clearing the flags is what makes a *resumed* run recompute instead
+            # of handing back what it already has. In a run that never resumed
+            # they are all unset already and this changes nothing, which is why
+            # the bug only ever appeared after `--resume-from`.
+            delta["resumed_steps"] = {
+                name: False for name in steps_invalidated_by(target)
+            }
+            # And the run's recorded config hash has to move with it, or a later
+            # resume given the *original* command line would match and reuse
+            # artifacts these values replaced.
+            record_revision(
+                state.get("run_metadata_path") or "",
+                step=target,
+                overrides=overrides,
+                config={**(state.get("config") or {}), **overrides},
+            )
         if choice == "stop":
             delta["halted"] = True
             delta["halt_reason"] = f"human stopped the run at {step or node_name}"

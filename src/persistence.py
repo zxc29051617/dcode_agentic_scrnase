@@ -5,27 +5,52 @@ a pipeline in the position of believing two contradictory things at once.
 
 **Pausing** (`make_checkpointer`, `thread_config`) uses LangGraph's own
 mechanism: `interrupt()` suspends inside a superstep and `Command(resume=...)`
-answers it. That needs a checkpointer, and the in-memory one is enough —
-pausing is about waiting for a person who is already there.
+answers it. An interactive run keeps that checkpoint in
+`runs/<run_id>/checkpoint.sqlite`, so a gate waiting for a person outlives the
+process that opened it and `run.continue_workflow` can answer it from another
+one. The in-memory saver is still there for a caller that only needs a gate to
+open inside one process.
 
-**Resuming** (`resumable_steps`) does not use the checkpointer at all. It reads
-what is on disk. A step is done when its artifacts exist and the config that
-produced them still matches, which makes the artifact directory the single
-source of truth about progress.
+**Resuming** (`plan_resume`) does not use the checkpointer at all. It reads what
+is on disk, which makes the artifact directory the single source of truth about
+progress.
 
-A persistent checkpointer would answer both, and was deliberately not used. It
-would introduce a second record of what has run, and the two can disagree:
-delete a `.h5ad`, or rerun one step through its standalone CLI — which this
-project supports for all 44 of them — and the checkpoint still insists the step
-is complete. The failure is silent and produces a report describing a run that
-did not happen. It is also coupled to graph topology, and two steps are still
-unimplemented.
+What it reads is a *cut*, not a yes/no for the whole directory. The first
+version compared one hash for the run: if the config had moved at all, nothing
+was reusable. Safe, and almost always wasteful — changing `celltypist_model`
+discarded the PCA, the Harmony correction, the clustering and the markers, none
+of which read it. `plan_resume` instead finds the earliest step that the
+difference could have changed, recomputes from there, and reuses what came
+before it after verifying each step individually. `StepSpec.config_keys` is
+what makes "could have changed" answerable per step.
 
-The cost of that choice is precise and worth stating: a gate that is *waiting*
-cannot be resumed in a new process, because a pending question is not an
-artifact. Resuming re-runs from the last completed step and asks again. If that
-ever becomes expensive, `make_checkpointer` is the one function that has to
-change.
+It fails closed everywhere it cannot tell: metadata that is missing, corrupt, or
+too old to record a config; an input path that has gone; a step whose outcome is
+not in the audit log; a status that is not `ok`; recorded errors; a recorded
+file that is no longer there. Any of those and the step is recomputed, along
+with everything after it — because whatever came next was computed from it.
+
+The checkpoint is durable now, and the two mechanisms are still not merged. The
+reason they must not be is unchanged: a checkpoint is a record of what the graph
+did, and it can disagree with what is on disk. Delete a `.h5ad`, or rerun one
+step through its standalone CLI — which this project supports for all 26 of them
+— and the checkpoint still insists the step is complete. Letting it answer
+"which results are still valid" would make that failure silent and produce a
+report describing a run that did not happen.
+
+So each answers only what it can see:
+
+    plan_resume        what work is still valid   -> --resume-from
+    the checkpoint     where the graph stopped    -> --continue-from
+
+`--resume-from` starts the graph from the beginning and skips steps whose
+recorded results verify. `--continue-from` does not build a state at all: it
+opens the run's own checkpoint, finds the question the run is suspended on, and
+answers it. A run picked up that way does not re-run anything, so the artifacts
+and the audit log are not written twice.
+
+Where they would disagree, nobody has to pick a winner, because neither is asked
+the other's question.
 
 ## The other cost is disk
 Every step writing its own AnnData is what makes resuming possible, and it is
@@ -42,8 +67,13 @@ provenance while giving up the ability to resume it.
 from __future__ import annotations
 
 import json
+import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from .provenance import AuditLog, comparable_config, input_digest
+from .registry import REGISTRY, earliest_step_reading
 
 #: Written beside each step's artifacts. The step's own return value, which is
 #: what the next step reads out of state — so a resumed run can rebuild state
@@ -60,12 +90,38 @@ DEFAULT_RECURSION_LIMIT = 150
 # --- pausing ------------------------------------------------------------------
 
 
-def make_checkpointer(kind: str = "memory") -> Any:
-    """A checkpointer for `interrupt()`, or None to keep the current behaviour.
+class ResumeError(RuntimeError):
+    """A run cannot be picked up, and saying so beats starting a new one.
 
-    `memory` is deliberate rather than provisional: see the module docstring.
-    `none` is what every existing caller gets, so a run that does not ask to
-    pause behaves exactly as it did before this module existed.
+    Every path that raises this had the alternative of quietly running from
+    `START`, which produces a second analysis wearing the first one's run id.
+    """
+
+
+#: The LangGraph checkpoint database, one per run, beside that run's artifacts.
+#: In the run directory rather than a shared store so that deleting a run
+#: deletes its checkpoint with it, and two runs can never share a thread table.
+CHECKPOINT_NAME = "checkpoint.sqlite"
+
+
+def checkpoint_path(run_dir: str | Path) -> Path:
+    return Path(run_dir) / CHECKPOINT_NAME
+
+
+def make_checkpointer(kind: str = "memory", *, run_dir: str | Path | None = None) -> Any:
+    """A checkpointer for `interrupt()`, or None for a run that cannot pause.
+
+    `none` is what a non-interactive run gets, and behaves exactly as it did
+    before this module existed.
+
+    `memory` pauses within one process. It is what the tests that only need a
+    gate to open use, and what a single interactive session needed before there
+    was anywhere to put a checkpoint.
+
+    `sqlite` is the durable one, and needs `run_dir` because that is where the
+    database goes. A gate that suspends here survives the process: the pending
+    question, the state behind it, and the position in the graph are all in the
+    file, and `continue_workflow` picks them up from a new interpreter.
     """
     if kind in (None, "none"):
         return None
@@ -73,7 +129,86 @@ def make_checkpointer(kind: str = "memory") -> Any:
         from langgraph.checkpoint.memory import InMemorySaver
 
         return InMemorySaver()
-    raise ValueError(f"unknown checkpointer: {kind!r} (expected 'memory' or 'none')")
+    if kind == "sqlite":
+        if run_dir is None:
+            raise ValueError("the sqlite checkpointer needs a run_dir to put its database in")
+        from langgraph.checkpoint.sqlite import SqliteSaver
+
+        path = checkpoint_path(run_dir)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # `check_same_thread=False` because LangGraph may touch the connection
+        # from a worker thread; the saver serialises its own writes.
+        saver = SqliteSaver(sqlite3.connect(str(path), check_same_thread=False))
+        saver.setup()
+        return saver
+    raise ValueError(f"unknown checkpointer: {kind!r} (expected 'sqlite', 'memory' or 'none')")
+
+
+def close_checkpointer(checkpointer: Any) -> None:
+    """Release a checkpointer's database handle, if it holds one."""
+    connection = getattr(checkpointer, "conn", None)
+    if connection is not None:
+        try:
+            connection.close()
+        except Exception:  # noqa: BLE001 - closing must not mask the run's outcome
+            pass
+
+
+def open_saved_checkpointer(run_dir: str | Path) -> Any:
+    """The checkpointer for an existing run, or a `ResumeError` explaining why not.
+
+    Refuses to create the database. A missing file here means the run was never
+    started with a durable checkpoint — or was started somewhere else — and
+    making an empty one would turn "there is nothing to continue" into a graph
+    that runs from the beginning.
+    """
+    root = Path(run_dir)
+    if not root.is_dir():
+        raise ResumeError(f"no run directory at {root}")
+    path = checkpoint_path(root)
+    if not path.exists():
+        raise ResumeError(
+            f"no checkpoint at {path}. Only a run started with a durable checkpoint "
+            f"can be continued; --resume-from re-runs from artifacts instead."
+        )
+    from langgraph.checkpoint.sqlite import SqliteSaver
+
+    try:
+        saver = SqliteSaver(sqlite3.connect(str(path), check_same_thread=False))
+        saver.setup()
+    except sqlite3.DatabaseError as exc:
+        raise ResumeError(f"{path} is not a readable checkpoint database: {exc}") from exc
+    return saver
+
+
+def pending_question(snapshot: Any, *, thread_id: str, run_dir: str | Path) -> dict[str, Any]:
+    """The question a checkpointed run is suspended on, or a `ResumeError`.
+
+    Three distinct failures, told apart because the fix differs. No state at all
+    means the thread id does not match any run in this database. State but
+    nothing pending means the run is not waiting for anybody — it finished, or
+    it halted. A pending node with no interrupt value would be a LangGraph
+    version mismatch rather than anything an operator did.
+    """
+    if not getattr(snapshot, "values", None):
+        raise ResumeError(
+            f"no checkpoint for thread {thread_id!r} in {checkpoint_path(run_dir)}. "
+            f"The thread id is the run id; check runs/ for the one you mean."
+        )
+    interrupts = list(getattr(snapshot, "interrupts", ()) or ())
+    if not interrupts:
+        status = (snapshot.values or {}).get("status") or "unknown"
+        raise ResumeError(
+            f"thread {thread_id!r} is not waiting at a gate (status {status!r}, "
+            f"next {tuple(getattr(snapshot, 'next', ()) or ())}). There is nothing to answer."
+        )
+    value = getattr(interrupts[0], "value", None)
+    if not isinstance(value, dict):
+        raise ResumeError(
+            f"thread {thread_id!r} is suspended but its pending question is "
+            f"{type(value).__name__}, not a gate request"
+        )
+    return value
 
 
 def thread_config(run_id: str, *, recursion_limit: int = DEFAULT_RECURSION_LIMIT,
@@ -161,41 +296,189 @@ def artifacts_present(output: dict[str, Any]) -> bool:
     return True
 
 
-def recorded_config_hash(run_dir: str | Path) -> str | None:
-    """The config hash of the run that produced this directory."""
+def read_run_metadata(run_dir: str | Path) -> dict[str, Any] | None:
+    """The run's recorded metadata, or None when it cannot be read."""
     try:
-        metadata = json.loads((Path(run_dir) / "run_metadata.json").read_text(encoding="utf-8"))
+        return json.loads((Path(run_dir) / "run_metadata.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    return (metadata.get("source") or {}).get("config_sha256")
 
 
-def resumable_steps(run_dir: str | Path, config_hash: str | None = None) -> dict[str, Any]:
-    """`{step: recorded output}` for every step that can be trusted as done.
+def recorded_config_hash(run_dir: str | Path) -> str | None:
+    """The config hash of the run that produced this directory."""
+    metadata = read_run_metadata(run_dir)
+    return (metadata.get("source") or {}).get("config_sha256") if metadata else None
 
-    A step qualifies only if it recorded an output *and* the files that output
-    names are still there. A changed config disqualifies the whole directory
-    rather than individual steps: thresholds set at one step change what every
-    later step should produce, so a partial match is not a safe thing to build
-    on.
+
+def final_step_status(run_dir: str | Path) -> dict[str, str]:
+    """`{step: status}` from the audit log, latest event per step wins.
+
+    Status is read from the audit log rather than from a file beside the
+    artifacts, because the audit log is already the record of what happened and
+    a second copy is a second thing that can disagree with it. It also gets the
+    ordering right for free: a step run twice — a `revise` — is judged on its
+    last outcome, not its first.
+    """
+    statuses: dict[str, str] = {}
+    for record in AuditLog(Path(run_dir) / "audit.jsonl").read():
+        event = record.get("event")
+        if event == "step_end":
+            statuses[str(record.get("step"))] = str(record.get("status"))
+        elif event == "step_skipped":
+            # A skip means an earlier run's result was reused, so whatever that
+            # run recorded still stands. Do not overwrite it.
+            statuses.setdefault(str(record.get("step")), "skipped")
+    return statuses
+
+
+@dataclass(frozen=True)
+class ResumePlan:
+    """What a resumed run may reuse, what it must recompute, and why.
+
+    `reasons` exists because this is a decision a person has to be able to
+    audit. A resume that silently reuses eighteen steps and a resume that
+    silently reuses none look identical from the outside, and the difference
+    between them is whether the report describes one analysis or two.
+    """
+
+    reusable: dict[str, Any]
+    rerun_from: str | None
+    reasons: list[str]
+
+    @property
+    def blocked(self) -> bool:
+        """True when nothing at all can be reused."""
+        return not self.reusable
+
+
+def _step_is_trustworthy(
+    run_dir: Path, step: str, status: str | None
+) -> tuple[dict[str, Any] | None, str | None]:
+    """The recorded output of `step`, or None and the reason it cannot be used.
+
+    Four ways a recorded step fails to be a result, and each is silent if it is
+    not checked for. `scaffold` and `error` wrote an empty output and no
+    artifacts. A step that recorded errors alongside its output ran, but ran
+    against something that was not there. And a recorded path that no longer
+    exists is the case where the record outlived the thing it describes.
+    """
+    output = read_step_output(run_dir, step)
+    if output is None:
+        return None, None  # never ran on this route; not a failure, nothing to say
+    if status is None:
+        return None, f"{step}: no step_end in the audit log, so its outcome is unknown"
+    if status not in {"ok", "skipped"}:
+        return None, f"{step}: recorded status {status!r}, not a completed result"
+    if output.get("errors"):
+        return None, f"{step}: completed with errors ({output['errors'][0]})"
+    if not artifacts_present(output):
+        return None, f"{step}: a file it recorded is no longer on disk"
+    return output, None
+
+
+def plan_resume(
+    run_dir: str | Path,
+    *,
+    config: dict[str, Any] | None = None,
+    input_bundle: dict[str, Any] | None = None,
+) -> ResumePlan:
+    """Decide, step by step, what a resumed run is allowed to keep.
+
+    The old rule was one comparison for the whole directory: if the config hash
+    moved at all, nothing was reusable. That is safe and almost always wasteful
+    — changing `celltypist_model` threw away the PCA, the clustering and the
+    markers, none of which read it.
+
+    The rule now is a cut. Find the earliest step that the difference could have
+    changed; everything from there on is recomputed, everything before it is
+    reused if it can be verified. Three things can move the cut earlier:
+
+      - the input data changed, which invalidates the first step
+      - a config key changed, which invalidates the earliest step that reads it
+        (`registry.earliest_step_reading`, unrecognised keys count as the first)
+      - a step that did run cannot be verified, which invalidates itself and
+        therefore everything after it
+
+    It fails closed at every step where it cannot tell. Metadata that is
+    missing, unreadable, or written before this check existed carries no
+    recorded config to diff, so nothing is reused — an old run directory is
+    recomputed rather than half-trusted.
+
+    A step with no recorded output at all is *not* a failure and does not move
+    the cut: on the filtered route `load_raw_counts` never runs, and its absence
+    says nothing about `merge_samples`.
     """
     root = Path(run_dir)
     if not root.is_dir():
-        return {}
-    if config_hash is not None:
-        # Fails closed. An unreadable or missing `run_metadata.json` means the
-        # config cannot be compared, not that it matches — skipping the check
-        # there would resume onto any config at all and mix the results of two
-        # different analyses, which is the one thing this guard exists for.
-        if recorded_config_hash(root) != config_hash:
-            return {}
+        return ResumePlan({}, None, [f"{root} is not a run directory"])
 
-    found: dict[str, Any] = {}
-    for child in sorted(root.iterdir()):
-        if not child.is_dir():
+    metadata = read_run_metadata(root)
+    source = (metadata or {}).get("source") or {}
+    recorded_config = source.get("config")
+    if metadata is None or not isinstance(recorded_config, dict):
+        return ResumePlan({}, None, [
+            "run_metadata.json is missing, unreadable, or records no config; "
+            "nothing can be verified, so nothing is reused"
+        ])
+
+    reasons: list[str] = []
+    order = list(REGISTRY)
+    cut: str | None = None
+
+    # --- did the data itself move? -------------------------------------------
+    recorded_input = source.get("input_digest")
+    current_input = input_digest(input_bundle)
+    if recorded_input is None or current_input is None:
+        cut = order[0]
+        reasons.append(
+            "the input data cannot be compared (nothing recorded, or a path is gone); "
+            "re-running from the first step"
+        )
+    elif recorded_input != current_input:
+        cut = order[0]
+        reasons.append("the input data changed; re-running from the first step")
+
+    # --- did the settings move? ----------------------------------------------
+    current_config = comparable_config(config)
+    baseline = comparable_config(recorded_config)
+    changed = sorted(
+        key for key in set(baseline) | set(current_config)
+        if baseline.get(key) != current_config.get(key)
+    )
+    if changed:
+        earliest, owner = earliest_step_reading(changed)
+        for key in changed:
+            reasons.append(
+                f"{key}: {baseline.get(key)!r} -> {current_config.get(key)!r}, "
+                f"first read by {owner[key]}"
+            )
+        if earliest is not None and (cut is None or order.index(earliest) < order.index(cut)):
+            cut = earliest
+
+    if cut is not None:
+        reasons.append(f"re-running from {cut} onward")
+
+    # --- verify everything before the cut ------------------------------------
+    statuses = final_step_status(root)
+    reusable: dict[str, Any] = {}
+    for index, step in enumerate(order):
+        if cut is not None and index >= order.index(cut):
             continue
-        output = read_step_output(root, child.name)
-        if output is None or not artifacts_present(output):
+        output, problem = _step_is_trustworthy(root, step, statuses.get(step))
+        if output is not None:
+            reusable[step] = output
             continue
-        found[child.name] = output
-    return found
+        if problem is not None:
+            # A step that ran and cannot be verified invalidates itself and
+            # everything after it: whatever comes next was computed from what
+            # this one produced.
+            cut = step
+            reasons.append(problem)
+            reasons.append(f"re-running from {step} onward")
+            for later in order[index:]:
+                reusable.pop(later, None)
+            break
+
+    if not reasons:
+        reasons.append("nothing changed; every verified step is reused")
+    return ResumePlan(reusable, cut, reasons)

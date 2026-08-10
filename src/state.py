@@ -35,7 +35,12 @@ class WorkflowState(TypedDict, total=False):
 
     run_id: str
     project: str
-    config: dict[str, Any]
+
+    #: Reduced rather than replaced, because a gate can now add to it: an
+    #: operator answering `revise` with `min_genes=200` writes only that key.
+    #: A node returning a whole config would have to reconstruct the rest, and
+    #: reconstructing it is how a key gets quietly dropped.
+    config: Annotated[dict[str, Any], merge_dicts]
     sample_metadata: dict[str, Any]
     input_bundle: dict[str, Any]
     audit_log_path: str
@@ -57,9 +62,12 @@ class WorkflowState(TypedDict, total=False):
     #: never looks at it sees exactly the behaviour it saw before.
     status: RunStatus
 
-    #: The question a paused gate is waiting on. `interrupt()` alone suspends
-    #: the graph but leaves nothing in state, so a run that paused was
-    #: indistinguishable from one that finished.
+    #: The question a paused gate is waiting on, written by the gate before it
+    #: suspends and cleared when it is answered. `interrupt()` alone leaves
+    #: nothing here — it raises out of its node, so that node never returns a
+    #: delta — which is why asking and answering are two nodes. Without it a
+    #: paused run was indistinguishable from one that finished to anything that
+    #: did not unpack `__interrupt__` itself.
     pending_review: dict[str, Any] | None
 
     #: `{step: True}` for steps a previous run already completed, seeded when
@@ -97,9 +105,12 @@ def new_run_state(
     metadata_path = run_dir / "run_metadata.json"
 
     resolved_config = dict(config or {})
+    resolved_bundle = dict(input_bundle or {})
     run_dir.mkdir(parents=True, exist_ok=True)
     if not (resuming and metadata_path.exists()):
-        metadata = capture_run_metadata(run_id=run_id, config=resolved_config)
+        metadata = capture_run_metadata(
+            run_id=run_id, config=resolved_config, input_bundle=resolved_bundle
+        )
         metadata_path.write_text(
             json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8"
         )
@@ -109,7 +120,7 @@ def new_run_state(
         project=project,
         config=resolved_config,
         sample_metadata=dict(sample_metadata or {}),
-        input_bundle=dict(input_bundle or {}),
+        input_bundle=resolved_bundle,
         audit_log_path=str(audit_path),
         run_metadata_path=str(metadata_path),
         current_step="",

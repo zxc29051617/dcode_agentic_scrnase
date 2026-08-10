@@ -21,6 +21,107 @@
   定義一份 `JudgeResult` 契約與一個 backend（`StubJudge` 或 `LocalLLMJudge`），
   每個 step 傳不同 payload 進去。registry 的 `judge` 欄位是 **graph 裡的 node
   名稱與 audit log 標籤**，不是模組路徑。
+- **Revisable is an allowlist**：`StepSpec.revisable` 列出這個 step 的 gate
+  允許人在 `revise` 時設定的 config key，其他一律拒絕並附理由。gate 是 run 開始
+  之後唯一能寫進 `config` 的地方，所以它必須是白名單而不是「任何 key」。
+- **`config_keys` is a superset, on purpose**：`StepSpec.config_keys` 列出每個
+  step「值變了就可能產出不同結果」的 config key，`--resume-from` 用它算出
+  **最早不能再信任的 step**。多列一個只是白跑一次；**少列一個會沿用已經失效的
+  結果**，所以它刻意寫成 superset，而且由 `tests/test_resume_validation.py`
+  直接掃 skill 原始碼強制檢查，不靠人記得同步。
+
+## Revisable parameters
+
+`revise` 如果不能改任何東西，就只是用同一份 config 重跑同一個 deterministic
+step——同樣的結果、同樣的 verdict、同樣的問題。所以 gate 的答案可以帶
+`overrides`，只接受下表的 key：
+
+| step | 可改的參數 |
+|---|---|
+| `cell_calling_review` | `force_cells`、`min_umi` |
+| `apply_cell_qc_filter` | `min_genes`、`min_counts`、`max_pct_mito` |
+| `annotate_cells` | `celltypist_model` |
+| `cross_check_annotation` | `scmayomap_tissue` |
+
+這四個正好是**「沒有人決定就不自己猜」**的四個 step——它們本來就會停下來把候選
+列成 evidence，所以 gate 就是那個答案該進來的地方。每個名稱都已經是一個
+documented CLI flag，值從命令列來或從 gate 來走同一條路。
+
+`human_review_decision`（主線 gate）不同：它的 `revise` 是回到
+`annotate_cells`，所以它開放的是**從那裡之後會重跑的所有參數**的聯集
+（`celltypist_model` + `scmayomap_tissue`），而不是它剛剛評的那一個 step 的。
+
+改了參數之後會發生三件事，缺一不可：
+
+1. 值寫進 `config`（`merge_dicts` reducer，只加不覆蓋整份）
+2. 從 revise target 之後的每個 step 的 resume flag 都被清掉，**續跑時不能沿用**
+3. `run_metadata.json` 追加一筆 `revisions`，並且**改寫 `source.config_sha256`**
+   ——否則之後用原本的命令列 `--resume-from`，hash 會對得上，然後沿用那些已經
+   被取代掉的 artifact
+
+`GatePolicy.max_revisions_per_step`（預設 10）是防跑掉用的：`recursion_limit`
+擋不住 revise 迴圈，因為它是 per-`invoke` 計數，而每次 `Command(resume=...)`
+都會重新開始。超過就記成 `stop` 並寫明原因，不會變成默默 `accept`。
+
+## Resume：逐 step 驗證，不是整份 hash
+
+`--resume-from` 由 `persistence.plan_resume` 決定，輸出一個 **cut**：
+最早不能再信任的 step。從它開始（含）全部重跑，它之前的逐一驗證後才 reuse。
+
+會把 cut 往前推的有三件事：
+
+| 觸發 | cut 落在 |
+|---|---|
+| 輸入資料變了（`provenance.input_digest`，逐檔 SHA-256） | 第一個 step |
+| 某個 config key 變了 | `registry.earliest_step_reading` 算出的最早讀取者 |
+| 某個跑過的 step 驗不過 | 那個 step 自己 |
+
+每個 step 要能 reuse，六個條件全部要過，缺一就 fail closed 並連同下游一起重跑：
+
+1. `run_metadata.json` 讀得到，而且有記 `source.config`（舊 run 沒有 → 全部重跑）
+2. 輸入 digest 兩邊都算得出來且相同
+3. `<step>/output.json` 讀得到
+4. audit log 裡有這個 step 的 `step_end`，狀態是 `ok`（`scaffold` / `error` 不算）
+5. `output.json` 裡沒有 `errors`
+6. `ARTIFACT_PATH_KEYS` 記的每個檔案都還在
+
+**沒有紀錄的 step 不算失敗**，也不會推動 cut —— filtered 路線上 `load_raw_counts`
+本來就不會跑，它的缺席不代表 `merge_samples` 有問題。
+
+決策會寫成一筆 `resume_plan` audit 事件（reused / rerun_from / reasons），
+因為「reuse 了 18 個 step」跟「一個都沒 reuse」從外面看一模一樣，
+但只有一個描述的是同一次分析。
+
+## 兩種 resume，責任分開
+
+| | 問的問題 | 用什麼回答 |
+|---|---|---|
+| `--resume-from RUN_ID` | 哪些**結果**還有效 | 磁碟上的 artifact + metadata + audit log |
+| `--continue-from RUN_ID` | 這次執行**停在哪裡** | LangGraph checkpoint（SQLite） |
+
+兩者不合併，理由沒有變：checkpoint 記的是 graph 做過什麼，它可能跟磁碟不一致
+——刪掉一個 `.h5ad`、或用 standalone CLI 單獨重跑某個 step，checkpoint 仍然
+認為那個 step 完成了。讓它回答「哪些結果還有效」就會讓這個失敗變成無聲的。
+
+所以各自只回答自己看得到的事，不需要有人在衝突時當裁判。
+
+```bash
+# 停在 gate，process 可以直接關掉
+python -m src.run --input <matrix> --species human --interactive
+
+# 之後任何時候，另一個 process 接手回答
+python -m src.run --continue-from <RUN_ID> --interactive
+```
+
+checkpoint 檔在 **`runs/<run_id>/checkpoint.sqlite`**，跟該次 run 的 artifact
+放在一起——刪掉一次 run 就一併刪掉它的 checkpoint，兩次 run 也不可能共用
+thread table。只有 `--interactive` 會寫；不會停下來等人的執行不需要付這個成本。
+
+`--continue-from` 找不到東西時一律 `ResumeError` 並 exit code 2，**絕不從
+START 重跑**：run 目錄不存在、checkpoint 檔不存在、thread_id 在資料庫裡找不到、
+資料庫壞掉、或那次 run 根本沒有停在 gate（例如已經被回答過了）。每一種的替代
+方案都是「用新的 state 呼叫 invoke 看看會怎樣」，而那會在第一次 run 的 id 底下
+產生第二份分析。
 
 ## Registry overview
 

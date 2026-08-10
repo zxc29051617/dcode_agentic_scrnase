@@ -227,9 +227,10 @@ def test_advice_reaches_the_gate_but_not_the_artifacts():
 
         # And it is in front of the person at the moment they are asked.
         state["judge_results"] = delta["judge_results"]
-        nodes.make_human_gate_node(GatePolicy(headless_decision="stop"))(state)
+        asked = nodes.make_gate_question_node()(state)
         opened = next(r for r in _events(state) if r["event"] == "human_gate_open")
     assert opened["advice"][0]["parameter"] == "max_pct_mito"
+    assert asked["pending_review"]["advice"][0]["suggested_value"] == 15
 
 
 def test_a_judge_that_raises_becomes_a_failing_verdict_not_a_crash():
@@ -286,12 +287,42 @@ def _judged(root: Path, verdict: str = "warn"):
     ).model_dump()])
 
 
+def _ask(state, **kwargs) -> dict:
+    """Run the question half of a gate and apply its delta, as the graph does.
+
+    The two halves are separate nodes, so a test that only calls the answering
+    one is testing it with no question in front of it — which is a real state
+    but not the one the graph produces.
+    """
+    delta = nodes.make_gate_question_node(**kwargs)(state)
+    state.update(delta)
+    return delta
+
+
+def test_the_question_is_written_into_state_before_anyone_is_asked():
+    """`interrupt()` never returns a delta, so the asking has to be its own node.
+
+    This is the whole reason the gate is two nodes: a run suspended at a gate
+    used to carry `status="running"` and `pending_review=None`, and the only
+    trace of the pause was a key on the invoke return that one caller unpacked.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        state = _judged(Path(tmp))
+        delta = nodes.make_gate_question_node()(state)
+    assert delta["status"] == "needs_review"
+    assert delta["pending_review"]["step"] == "run_pca"
+    assert delta["pending_review"]["verdict"] == "warn"
+    assert set(delta) == {"pending_review", "status"}, "asking may not write anything else"
+
+
 def test_a_headless_gate_applies_the_policy_and_records_who_decided():
     with tempfile.TemporaryDirectory() as tmp:
         state = _judged(Path(tmp))
+        _ask(state)
         delta = nodes.make_human_gate_node(GatePolicy(headless_decision="stop"))(state)
     entry = delta["human_decisions"][0]
     assert entry["decision"] == "stop"
+    assert entry["step"] == "run_pca", "the answer names the step the question named"
     assert entry["operator"] == "policy default"
     assert entry["decided_at"]
     assert delta["halted"] is True and delta["status"] == "halted"
@@ -300,9 +331,11 @@ def test_a_headless_gate_applies_the_policy_and_records_who_decided():
 def test_accepting_does_not_halt():
     with tempfile.TemporaryDirectory() as tmp:
         state = _judged(Path(tmp))
+        _ask(state)
         delta = nodes.make_human_gate_node(GatePolicy(headless_decision="accept"))(state)
     assert "halted" not in delta
     assert delta["pending_review"] is None
+    assert delta["status"] == "running", "an answered gate is not still waiting"
 
 
 def test_an_unrecognised_decision_becomes_stop_rather_than_continuing():
@@ -312,6 +345,7 @@ def test_an_unrecognised_decision_becomes_stop_rather_than_continuing():
 
     with tempfile.TemporaryDirectory() as tmp:
         state = _judged(Path(tmp))
+        _ask(state)
         delta = nodes.make_human_gate_node(Weird(headless_decision="banana"))(state)
     assert delta["human_decisions"][0]["decision"] == "stop"
 
@@ -320,9 +354,11 @@ def test_the_gate_shows_the_evidence_behind_the_verdict():
     with tempfile.TemporaryDirectory() as tmp:
         state = _judged(Path(tmp))
         state["artifacts"] = {"run_pca": {"evidence": {"variance": 0.6}}}
-        nodes.make_human_gate_node(GatePolicy(headless_decision="stop"))(state)
+        delta = _ask(state)
         opened = next(r for r in _events(state) if r["event"] == "human_gate_open")
     assert opened["evidence"] == {"variance": 0.6}
+    assert delta["pending_review"]["evidence"] == {"variance": 0.6}, \
+        "what the log records and what state carries have to be the same question"
 
 
 def test_a_review_skill_replaces_the_last_step_evidence_at_the_mainline_gate():
@@ -332,11 +368,7 @@ def test_a_review_skill_replaces_the_last_step_evidence_at_the_mainline_gate():
             "run_pca": {"evidence": {"variance": 0.6}},
             "run_clustering": {"clustering_summary": {"n_clusters": 12}},
         }
-        nodes.make_human_gate_node(
-            GatePolicy(headless_decision="stop"),
-            node_name="human_review_decision",
-            review_skill="human_review_decision",
-        )(state)
+        _ask(state, node_name="human_review_decision", review_skill="human_review_decision")
         opened = next(r for r in _events(state) if r["event"] == "human_gate_open")
     assert "review" in opened and opened["review"]["findings"]["clusters"] == 12
     assert "evidence" not in opened
@@ -345,6 +377,7 @@ def test_a_review_skill_replaces_the_last_step_evidence_at_the_mainline_gate():
 def test_both_ends_of_a_gate_reach_the_audit_log():
     with tempfile.TemporaryDirectory() as tmp:
         state = _judged(Path(tmp))
+        _ask(state)
         nodes.make_human_gate_node(GatePolicy(headless_decision="stop"))(state)
         events = [r["event"] for r in _events(state)]
     assert "human_gate_open" in events and "human_gate_close" in events

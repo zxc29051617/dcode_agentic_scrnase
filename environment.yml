@@ -27,6 +27,10 @@ dependencies:
   - pip:
       - langchain
       - langgraph
+      # Durable human gates: `--interactive` writes the LangGraph checkpoint to
+      # runs/<run_id>/checkpoint.sqlite, so a run waiting for a person survives
+      # the process and `--continue-from` can answer it later.
+      - langgraph-checkpoint-sqlite
       - langchain-openai
       - openai
       - celltypist

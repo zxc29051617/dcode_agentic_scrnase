@@ -54,9 +54,11 @@ graph TD;
 	cross_check_annotation(cross_check_annotation)
 	judge_cross_check(judge_cross_check)
 	human_review_decision(human_review_decision)
+	human_review_decision_answer(human_review_decision_answer)
 	build_report(build_report)
 	judge_report(judge_report)
 	human_gate(human_gate)
+	human_gate_answer(human_gate_answer)
 	__end__([<p>__end__</p>]):::last
 	__start__ --> ingest_validate;
 	annotate_cells --> judge_annotation;
@@ -70,36 +72,38 @@ graph TD;
 	fastq_preflight --> judge_fastq_preflight;
 	fastq_qc --> judge_fastq_qc;
 	find_markers --> judge_markers;
-	human_gate -. &nbsp;end&nbsp; .-> __end__;
-	human_gate -.-> annotate_cells;
-	human_gate -.-> apply_cell_qc_filter;
-	human_gate -.-> build_report;
-	human_gate -.-> cell_calling_review;
-	human_gate -.-> cellranger_count;
-	human_gate -.-> count_matrix_classify;
-	human_gate -.-> cross_check_annotation;
-	human_gate -.-> detect_doublets;
-	human_gate -.-> fastq_preflight;
-	human_gate -.-> fastq_qc;
-	human_gate -.-> find_markers;
-	human_gate -.-> human_review_decision;
-	human_gate -.-> ingest_validate;
-	human_gate -.-> load_filtered_counts;
-	human_gate -.-> load_raw_counts;
-	human_gate -.-> matrix_preflight;
-	human_gate -.-> merge_samples;
-	human_gate -.-> normalize_hvg_prepare;
-	human_gate -.-> post_load_validate;
-	human_gate -.-> resolve_reference;
-	human_gate -.-> run_clustering;
-	human_gate -.-> run_integration;
-	human_gate -.-> run_pca;
-	human_gate -.-> run_qc_metrics;
-	human_gate -.-> run_umap;
-	human_gate -.-> sample_qc_triage;
-	human_review_decision -. &nbsp;end&nbsp; .-> __end__;
-	human_review_decision -.-> annotate_cells;
-	human_review_decision -.-> build_report;
+	human_gate --> human_gate_answer;
+	human_gate_answer -. &nbsp;end&nbsp; .-> __end__;
+	human_gate_answer -.-> annotate_cells;
+	human_gate_answer -.-> apply_cell_qc_filter;
+	human_gate_answer -.-> build_report;
+	human_gate_answer -.-> cell_calling_review;
+	human_gate_answer -.-> cellranger_count;
+	human_gate_answer -.-> count_matrix_classify;
+	human_gate_answer -.-> cross_check_annotation;
+	human_gate_answer -.-> detect_doublets;
+	human_gate_answer -.-> fastq_preflight;
+	human_gate_answer -.-> fastq_qc;
+	human_gate_answer -.-> find_markers;
+	human_gate_answer -.-> human_review_decision;
+	human_gate_answer -.-> ingest_validate;
+	human_gate_answer -.-> load_filtered_counts;
+	human_gate_answer -.-> load_raw_counts;
+	human_gate_answer -.-> matrix_preflight;
+	human_gate_answer -.-> merge_samples;
+	human_gate_answer -.-> normalize_hvg_prepare;
+	human_gate_answer -.-> post_load_validate;
+	human_gate_answer -.-> resolve_reference;
+	human_gate_answer -.-> run_clustering;
+	human_gate_answer -.-> run_integration;
+	human_gate_answer -.-> run_pca;
+	human_gate_answer -.-> run_qc_metrics;
+	human_gate_answer -.-> run_umap;
+	human_gate_answer -.-> sample_qc_triage;
+	human_review_decision --> human_review_decision_answer;
+	human_review_decision_answer -. &nbsp;end&nbsp; .-> __end__;
+	human_review_decision_answer -.-> annotate_cells;
+	human_review_decision_answer -.-> build_report;
 	ingest_validate --> judge_ingest;
 	judge_annotation -. &nbsp;continue&nbsp; .-> cross_check_annotation;
 	judge_annotation -.-> human_gate;
