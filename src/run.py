@@ -13,9 +13,10 @@ from langgraph.types import Command
 
 from . import persistence
 from .graph import build_graph
-from .judge import get_judge
+from .judge import describe_judge, get_judge
 from .policy import GatePolicy
-from .provenance import AuditLog
+from .provenance import AuditLog, record_judge_session
+from .registry import REGISTRY
 from .state import new_run_state, summarize
 
 #: One superstep per node; the mainline plus judges is well over LangGraph's default of 25.
@@ -77,8 +78,17 @@ def run_workflow(
             checkpointer_kind, run_dir=Path(runs_dir) / state["run_id"]
         )
         checkpointer = owned
+    # Built once and both used and described, rather than described from the
+    # environment: `--judge` beats `SCRNA_JUDGE_BACKEND` and a per-step entry
+    # beats `SCRNA_JUDGE_MODEL`, so only the object knows what won.
+    judge_client = get_judge(judge_backend)
+    _record_judge_session(
+        state["run_metadata_path"],
+        judge_client,
+        mode="artifact_resume" if resume_run_id else "new",
+    )
     graph = build_graph(
-        policy=policy or GatePolicy(), judge=get_judge(judge_backend), checkpointer=checkpointer
+        policy=policy or GatePolicy(), judge=judge_client, checkpointer=checkpointer
     )
 
     if resume_run_id:
@@ -108,6 +118,27 @@ def run_workflow(
     finally:
         persistence.close_checkpointer(owned)
     return final
+
+
+#: The steps a judge is asked about. `human_review_decision` is a gate, not a
+#: scored step, and is the one registry entry with no judge.
+JUDGED_STEPS: tuple[str, ...] = tuple(
+    name for name, spec in REGISTRY.items() if spec.judge
+)
+
+
+def _record_judge_session(metadata_path: str | None, client: Any, *, mode: str) -> None:
+    """Append what is about to do the judging to the run's provenance.
+
+    Recorded when the client is built rather than after the run, because a run
+    that crashes or is stopped at a gate still had a judge, and the question
+    "what scored this" has to be answerable for a run that did not finish.
+    """
+    if not metadata_path:
+        return
+    record_judge_session(
+        metadata_path, mode=mode, session=describe_judge(client, JUDGED_STEPS)
+    )
 
 
 def _answer_until_done(
@@ -177,9 +208,19 @@ def continue_workflow(
     run_dir = Path(runs_dir) / run_id
     checkpointer = persistence.open_saved_checkpointer(run_dir)
     try:
+        # A continued run builds its own judge, and every step after the gate is
+        # scored by it — so this process can contribute verdicts under a
+        # different model than the one that produced the earlier ones, and the
+        # provenance has to say so. Recorded even when the answer turns out to
+        # be `stop` and nothing is scored: the entry states which judge was
+        # live, and the audit log's `judge` events say what it actually scored.
+        judge_client = get_judge(judge_backend)
+        _record_judge_session(
+            str(run_dir / "run_metadata.json"), judge_client, mode="checkpoint_continue"
+        )
         graph = build_graph(
             policy=policy or GatePolicy(interactive=True),
-            judge=get_judge(judge_backend),
+            judge=judge_client,
             checkpointer=checkpointer,
         )
         invoke_config = persistence.thread_config(

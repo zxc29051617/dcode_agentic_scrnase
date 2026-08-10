@@ -213,7 +213,16 @@ def test_resuming_reuses_the_run_directory_rather_than_making_a_new_one():
 
 
 def test_the_original_provenance_is_not_overwritten_by_a_resume():
-    """Rewriting it would replace the commit and versions that produced the data."""
+    """Rewriting it would replace the commit and versions that produced the data.
+
+    This asserted the whole file was byte-identical, which stopped being the
+    right test once a resume began appending a judge session: a run resumed
+    under a different model is judged by two, and that has to be visible. So the
+    property is now stated precisely — everything describing the *first* run is
+    untouched, and only the append-only list grows.
+    """
+    appendable = {"judge_sessions", "revisions"}
+
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         first = _run(root, policy=GatePolicy(headless_decision="accept"))
@@ -221,7 +230,17 @@ def test_the_original_provenance_is_not_overwritten_by_a_resume():
         original = json.loads(metadata_path.read_text(encoding="utf-8"))
         _run(root, policy=GatePolicy(headless_decision="accept"), resume_run_id=first["run_id"])
         after = json.loads(metadata_path.read_text(encoding="utf-8"))
-    assert after == original
+
+    for key, value in original.items():
+        if key in appendable:
+            continue
+        assert after[key] == value, f"{key} describes the first run and must not move"
+    assert set(after) - set(original) <= appendable
+
+    sessions = after["judge_sessions"]
+    assert len(sessions) == 2, "the resume records what judged it, without hiding the first"
+    assert sessions[0] == original["judge_sessions"][0]
+    assert [s["mode"] for s in sessions] == ["new", "artifact_resume"]
 
 
 def test_a_deleted_artifact_means_that_step_runs_again():

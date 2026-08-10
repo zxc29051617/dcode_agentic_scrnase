@@ -175,6 +175,73 @@ instruction changed nothing.
 
 `prompts/steps/README.md` has the required shape and how to add one.
 
+## What gets recorded about the judge
+
+A verdict is only as interpretable as the thing that produced it, and on the
+measurement above `gpt-oss:120b` scored 12/12 where `llama3.1:8b` scored 6/12 on
+the same cases. Two runs of the same data judged by different models are two
+different results, so every run records which judge scored it.
+
+`run_metadata.json` grows a `judge_sessions` list:
+
+```json
+"judge_sessions": [
+  {
+    "recorded_at": "2026-08-10T08:57:48+00:00",
+    "mode": "new",
+    "hash_algorithm": "sha256",
+    "backend": "local",
+    "default_model": "gpt-oss:120b",
+    "step_models": { "run_qc_metrics": "small:1b", "run_pca": "gpt-oss:120b" },
+    "base_prompt_sha256": "ee2bc398…",
+    "step_prompts": {
+      "run_qc_metrics": {
+        "prompt_sha256": "cb16a10b…",
+        "addendum": "run_qc_metrics.md",
+        "addendum_sha256": "df912158…"
+      },
+      "run_pca": { "prompt_sha256": "ee2bc398…", "addendum": null,
+                   "addendum_sha256": null }
+    },
+    "temperature": 0.0,
+    "structured_output": "with_structured_output(JudgeResult), raw-JSON fallback",
+    "endpoint": "http://lsbnb-dgx2.iis.sinica.edu.tw:11434/v1"
+  }
+]
+```
+
+Four things about it are deliberate:
+
+**The values are the ones that won.** `--judge` beats `SCRNA_JUDGE_BACKEND`, a
+constructor argument beats `SCRNA_JUDGE_MODEL`, and a `step_models` entry beats
+the default — so the environment says what was *offered*, and the record is
+taken from the live judge object, which is the only thing that knows what was
+*used*. Note that `get_judge` passes no model, so the CLI cannot set one: the
+model comes from `SCRNA_JUDGE_MODEL` or the built-in default.
+
+**The prompt hashes are of the text, not the file.** `prompt_sha256` is taken
+over the composed system message the model was actually sent — base plus
+addendum, exactly as the judge assembles it — so editing either moves it.
+`addendum_sha256` sits alongside so a change can be attributed to the step's own
+file rather than to the base prompt every step shares. A step with no addendum
+has `prompt_sha256` equal to `base_prompt_sha256`, which is the truth about it.
+
+**It appends, it never overwrites.** A run resumed with `--resume-from` after
+changing `SCRNA_JUDGE_MODEL` is judged by two models and its verdicts are a
+mixture; overwriting would leave a file claiming the second produced all of
+them. `mode` is `new`, `artifact_resume` or `checkpoint_continue`.
+`--continue-from` builds its own judge and scores every step after the gate, so
+it appends too.
+
+**Nothing secret goes in.** No API key, and any `user:password@` in the endpoint
+URL is stripped before it is written. `run_metadata.json` is written beside
+results that get shared.
+
+Per verdict, the `judge` events in `audit.jsonl` carry a `model` field, so
+"which model said this" is a lookup rather than a join against timestamps. The
+stub records `null` there and `"backend": "stub"` in the session, because "the
+stub scored this" and "nobody knows" must not look the same.
+
 ## When something goes wrong
 
 **Intermittent HTTP 500 from Ollama.** Seen on large payloads under load. The

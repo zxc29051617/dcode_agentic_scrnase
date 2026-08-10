@@ -196,7 +196,12 @@ def make_judge_node(step: str, judge_tool: str, client: JudgeClient) -> NodeFn:
                 needs_human_review=True,
             )
 
-        audit.append("judge", judge_tool=judge_tool, **verdict.model_dump())
+        # Which model said this, on the event that records what it said.
+        # `judge_sessions` in the run metadata gives the configuration per
+        # execution; this makes the per-verdict answer a lookup rather than a
+        # join against timestamps. `None` is the stub, and says so.
+        model = getattr(client, "model_for", lambda _step: None)(step)
+        audit.append("judge", judge_tool=judge_tool, model=model, **verdict.model_dump())
         return {"judge_results": [verdict.model_dump()]}
 
     return node

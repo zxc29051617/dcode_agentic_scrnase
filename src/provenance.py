@@ -19,7 +19,9 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+
+from .judge import HASH_ALGORITHM
 
 #: Everything whose version can change a number in the output. Recording the
 #: pipeline's own git commit is not enough: identical code on a different
@@ -204,6 +206,51 @@ def capture_run_metadata(
         "packages": package_versions(),
         "seeds": {"random_state": resolved.get("random_state", 0)},
     }
+
+
+#: How a run arrived at the judge configuration being recorded. A run can be
+#: judged by more than one, and which mode added an entry is what lets a reader
+#: line it up against the audit log.
+JudgeSessionMode = Literal["new", "artifact_resume", "checkpoint_continue"]
+
+
+def record_judge_session(
+    metadata_path: str | Path, *, mode: str, session: dict[str, Any]
+) -> bool:
+    """Append which judge is about to score, without disturbing the last one.
+
+    Appended rather than assigned, and that is the whole design. A run resumed
+    with `--resume-from` after `SCRNA_JUDGE_MODEL` changed is judged by two
+    models, and its verdicts are a mixture: overwriting would leave a file
+    claiming the second model produced all of them. Each entry is stamped with
+    the time and the mode, so it can be lined up against the `judge` events in
+    the audit log, which carry the model per verdict.
+
+    Failure to record is not allowed to stop a run — the audit log still has the
+    per-verdict record either way — so this reports rather than raises.
+    """
+    path = Path(metadata_path)
+    try:
+        metadata = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+
+    sessions = metadata.get("judge_sessions")
+    if not isinstance(sessions, list):
+        sessions = []
+    sessions.append({
+        "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "mode": mode,
+        "hash_algorithm": HASH_ALGORITHM,
+        **{key: _jsonable(value) for key, value in session.items()},
+    })
+    metadata["judge_sessions"] = sessions
+
+    try:
+        path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
+    except (OSError, TypeError, ValueError):
+        return False
+    return True
 
 
 def record_revision(
