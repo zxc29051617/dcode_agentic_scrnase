@@ -15,3 +15,10 @@ data/*
 tools/*
 !tools/README.md
 .env
+
+# Analyses kept by hand; reports and figures are generated outputs, not source.
+results/*
+!results/README.md
+
+# Claude worktrees are separate checkouts of this repository.
+.claude/worktrees/
