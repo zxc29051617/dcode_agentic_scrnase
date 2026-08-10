@@ -24,6 +24,11 @@
 - **Revisable is an allowlist**：`StepSpec.revisable` 列出這個 step 的 gate
   允許人在 `revise` 時設定的 config key，其他一律拒絕並附理由。gate 是 run 開始
   之後唯一能寫進 `config` 的地方，所以它必須是白名單而不是「任何 key」。
+- **`config_keys` is a superset, on purpose**：`StepSpec.config_keys` 列出每個
+  step「值變了就可能產出不同結果」的 config key，`--resume-from` 用它算出
+  **最早不能再信任的 step**。多列一個只是白跑一次；**少列一個會沿用已經失效的
+  結果**，所以它刻意寫成 superset，而且由 `tests/test_resume_validation.py`
+  直接掃 skill 原始碼強制檢查，不靠人記得同步。
 
 ## Revisable parameters
 
@@ -57,6 +62,35 @@ documented CLI flag，值從命令列來或從 gate 來走同一條路。
 `GatePolicy.max_revisions_per_step`（預設 10）是防跑掉用的：`recursion_limit`
 擋不住 revise 迴圈，因為它是 per-`invoke` 計數，而每次 `Command(resume=...)`
 都會重新開始。超過就記成 `stop` 並寫明原因，不會變成默默 `accept`。
+
+## Resume：逐 step 驗證，不是整份 hash
+
+`--resume-from` 由 `persistence.plan_resume` 決定，輸出一個 **cut**：
+最早不能再信任的 step。從它開始（含）全部重跑，它之前的逐一驗證後才 reuse。
+
+會把 cut 往前推的有三件事：
+
+| 觸發 | cut 落在 |
+|---|---|
+| 輸入資料變了（`provenance.input_digest`，逐檔 SHA-256） | 第一個 step |
+| 某個 config key 變了 | `registry.earliest_step_reading` 算出的最早讀取者 |
+| 某個跑過的 step 驗不過 | 那個 step 自己 |
+
+每個 step 要能 reuse，六個條件全部要過，缺一就 fail closed 並連同下游一起重跑：
+
+1. `run_metadata.json` 讀得到，而且有記 `source.config`（舊 run 沒有 → 全部重跑）
+2. 輸入 digest 兩邊都算得出來且相同
+3. `<step>/output.json` 讀得到
+4. audit log 裡有這個 step 的 `step_end`，狀態是 `ok`（`scaffold` / `error` 不算）
+5. `output.json` 裡沒有 `errors`
+6. `ARTIFACT_PATH_KEYS` 記的每個檔案都還在
+
+**沒有紀錄的 step 不算失敗**，也不會推動 cut —— filtered 路線上 `load_raw_counts`
+本來就不會跑，它的缺席不代表 `merge_samples` 有問題。
+
+決策會寫成一筆 `resume_plan` audit 事件（reused / rerun_from / reasons），
+因為「reuse 了 18 個 step」跟「一個都沒 reuse」從外面看一模一樣，
+但只有一個描述的是同一次分析。
 
 ## Registry overview
 

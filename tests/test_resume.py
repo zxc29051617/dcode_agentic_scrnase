@@ -30,10 +30,26 @@ from tests import fixtures  # noqa: E402
 CHOICES = {"min_genes": 1, "max_pct_mito": 100}
 
 
+#: Built once per run directory. Regenerating it would re-gzip the matrix, and
+#: gzip writes its own modification time into the header — so the bytes change
+#: even though the contents do not, and `plan_resume` correctly reads that as a
+#: new input and refuses to reuse anything. A resume in real life points at the
+#: data that is already there; so does this.
+_BUNDLES: dict[str, tuple[dict, dict]] = {}
+
+
 def _bundle(root: Path):
-    bundle = fixtures.bundle_for({"input_type": "matrix", "matrix_kind": "filtered"}, root / "b")
-    reference = fixtures.make_reference(root, "ref", genomes=["GRCh38"])
-    return {"paths": [str(bundle)]}, {"species": "human", "transcriptome": str(reference), **CHOICES}
+    key = str(root)
+    if key not in _BUNDLES:
+        bundle = fixtures.bundle_for(
+            {"input_type": "matrix", "matrix_kind": "filtered"}, root / "b"
+        )
+        reference = fixtures.make_reference(root, "ref", genomes=["GRCh38"])
+        _BUNDLES[key] = (
+            {"paths": [str(bundle)]},
+            {"species": "human", "transcriptome": str(reference), **CHOICES},
+        )
+    return _BUNDLES[key]
 
 
 def _run(root: Path, **kwargs):
@@ -225,8 +241,18 @@ def test_a_deleted_artifact_means_that_step_runs_again():
     assert target not in summarize(second)["skipped"]
 
 
-def test_a_changed_threshold_reruns_everything():
-    """Resuming onto a different config would mix results from two analyses."""
+def test_a_changed_threshold_reruns_the_step_that_reads_it_and_everything_after():
+    """Resuming onto a different config must not mix results from two analyses.
+
+    This used to assert that *nothing* was reused, which was the old rule: one
+    hash for the whole directory, and any difference threw all of it away. That
+    was safe and needlessly expensive — `run_qc_metrics` does not read
+    `min_genes`, and recomputing it could not produce a different answer.
+
+    The property that actually matters is unchanged and is what is asserted now:
+    nothing computed *from* the old threshold survives. `test_resume_validation`
+    covers the same cut end to end for the other two triggers.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         first = _run(root, policy=GatePolicy(headless_decision="accept"))
@@ -239,7 +265,11 @@ def test_a_changed_threshold_reruns_everything():
             policy=GatePolicy(headless_decision="accept"),
             resume_run_id=first["run_id"],
         )
-    assert summarize(second)["skipped"] == []
+    skipped = summarize(second)["skipped"]
+    assert "run_qc_metrics" in skipped, "it cannot depend on a threshold it never reads"
+    for downstream in ("apply_cell_qc_filter", "detect_doublets", "run_pca",
+                       "run_clustering", "annotate_cells"):
+        assert downstream not in skipped, f"{downstream} came from the old threshold"
 
 
 def test_a_revised_step_reruns_instead_of_being_skipped_again():

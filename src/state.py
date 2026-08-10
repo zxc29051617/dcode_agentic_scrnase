@@ -105,9 +105,12 @@ def new_run_state(
     metadata_path = run_dir / "run_metadata.json"
 
     resolved_config = dict(config or {})
+    resolved_bundle = dict(input_bundle or {})
     run_dir.mkdir(parents=True, exist_ok=True)
     if not (resuming and metadata_path.exists()):
-        metadata = capture_run_metadata(run_id=run_id, config=resolved_config)
+        metadata = capture_run_metadata(
+            run_id=run_id, config=resolved_config, input_bundle=resolved_bundle
+        )
         metadata_path.write_text(
             json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8"
         )
@@ -117,7 +120,7 @@ def new_run_state(
         project=project,
         config=resolved_config,
         sample_metadata=dict(sample_metadata or {}),
-        input_bundle=dict(input_bundle or {}),
+        input_bundle=resolved_bundle,
         audit_log_path=str(audit_path),
         run_metadata_path=str(metadata_path),
         current_step="",

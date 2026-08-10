@@ -13,24 +13,51 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src import persistence  # noqa: E402
+from src.provenance import AuditLog, comparable_config, input_digest  # noqa: E402
 
 
-def _run_dir(root: Path, *, config_hash: str = "abc123") -> Path:
+def _bundle(root: Path, content: bytes = b"the input data") -> dict:
+    """A real file, because the digest that guards a resume hashes real bytes."""
+    path = root / "input.txt"
+    path.write_bytes(content)
+    return {"paths": [str(path)]}
+
+
+def _run_dir(root: Path, *, config: dict | None = None, bundle: dict | None = None) -> Path:
     run_dir = root / "run"
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "run_metadata.json").write_text(
-        json.dumps({"run_id": "r", "source": {"config_sha256": config_hash}}), encoding="utf-8"
+        json.dumps({
+            "run_id": "r",
+            "source": {
+                "config": comparable_config(config or {}),
+                "config_sha256": "abc123",
+                "input_digest": input_digest(bundle) if bundle else None,
+            },
+        }),
+        encoding="utf-8",
     )
     return run_dir
 
 
-def _finished_step(run_dir: Path, step: str, *, with_artifact: bool = True) -> Path:
+def _finished_step(
+    run_dir: Path, step: str, *, with_artifact: bool = True, status: str = "ok"
+) -> Path:
     artifact = run_dir / step / "adata.h5ad"
     artifact.parent.mkdir(parents=True, exist_ok=True)
     if with_artifact:
         artifact.write_bytes(b"not really an h5ad, but it exists")
     persistence.write_step_output(run_dir, step, {"adata_path": str(artifact), "metrics": {"n": 1}})
+    # The audit log is where a step's outcome is recorded, so a step that has an
+    # output.json but never reported finishing is not a completed step.
+    AuditLog(run_dir / "audit.jsonl").append(
+        "step_end", step=step, status=status, warnings=[], errors=[]
+    )
     return artifact
+
+
+def _plan(run_dir: Path, *, config: dict | None = None, bundle: dict | None = None):
+    return persistence.plan_resume(run_dir, config=config or {}, input_bundle=bundle)
 
 
 # --- the checkpointer ------------------------------------------------------------
@@ -87,72 +114,154 @@ def test_an_unserializable_output_does_not_lose_the_step():
 
 def test_a_finished_step_is_resumable():
     with tempfile.TemporaryDirectory() as tmp:
-        run_dir = _run_dir(Path(tmp))
+        root = Path(tmp)
+        bundle = _bundle(root)
+        run_dir = _run_dir(root, bundle=bundle)
         _finished_step(run_dir, "run_pca")
-        assert "run_pca" in persistence.resumable_steps(run_dir, "abc123")
+        assert "run_pca" in _plan(run_dir, bundle=bundle).reusable
 
 
 def test_a_step_whose_artifact_was_deleted_is_not_resumable():
     """The record is not the result — this is the whole reason for the check."""
     with tempfile.TemporaryDirectory() as tmp:
-        run_dir = _run_dir(Path(tmp))
+        root = Path(tmp)
+        bundle = _bundle(root)
+        run_dir = _run_dir(root, bundle=bundle)
         artifact = _finished_step(run_dir, "run_pca")
         artifact.unlink()
-        assert persistence.resumable_steps(run_dir, "abc123") == {}
+        plan = _plan(run_dir, bundle=bundle)
+        assert plan.reusable == {}
+        assert plan.rerun_from == "run_pca"
+        assert any("no longer on disk" in reason for reason in plan.reasons)
 
 
 def test_a_step_with_no_recorded_output_is_not_resumable():
     with tempfile.TemporaryDirectory() as tmp:
-        run_dir = _run_dir(Path(tmp))
+        root = Path(tmp)
+        bundle = _bundle(root)
+        run_dir = _run_dir(root, bundle=bundle)
         (run_dir / "run_pca").mkdir(parents=True)
         (run_dir / "run_pca" / "adata.h5ad").write_bytes(b"orphan")
-        assert persistence.resumable_steps(run_dir, "abc123") == {}
+        assert _plan(run_dir, bundle=bundle).reusable == {}
 
 
-def test_a_changed_config_disqualifies_the_whole_directory():
-    """A threshold changed at one step changes what every later step should be."""
+def test_a_step_that_recorded_an_error_is_not_a_result():
+    """`call_skill` calls a skill that returned errors `ok`; the errors are the truth."""
     with tempfile.TemporaryDirectory() as tmp:
-        run_dir = _run_dir(Path(tmp), config_hash="abc123")
-        _finished_step(run_dir, "run_pca")
-        assert persistence.resumable_steps(run_dir, "abc123")
-        assert persistence.resumable_steps(run_dir, "DIFFERENT") == {}
+        root = Path(tmp)
+        bundle = _bundle(root)
+        run_dir = _run_dir(root, bundle=bundle)
+        step = run_dir / "run_pca"
+        step.mkdir(parents=True)
+        (step / "adata.h5ad").write_bytes(b"here")
+        persistence.write_step_output(run_dir, "run_pca", {
+            "adata_path": str(step / "adata.h5ad"),
+            "errors": ["AnnData does not exist"],
+        })
+        AuditLog(run_dir / "audit.jsonl").append(
+            "step_end", step="run_pca", status="ok", warnings=[], errors=["boom"]
+        )
+        plan = _plan(run_dir, bundle=bundle)
+        assert plan.reusable == {}
+        assert any("completed with errors" in reason for reason in plan.reasons)
+
+
+def test_a_scaffold_is_never_reused_as_if_it_had_run():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        bundle = _bundle(root)
+        run_dir = _run_dir(root, bundle=bundle)
+        _finished_step(run_dir, "run_pca", status="scaffold")
+        plan = _plan(run_dir, bundle=bundle)
+        assert plan.reusable == {}
+        assert any("'scaffold'" in reason for reason in plan.reasons)
+
+
+def test_a_step_with_no_outcome_in_the_audit_log_is_not_trusted():
+    """An `output.json` with no `step_end` behind it is a half-written run."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        bundle = _bundle(root)
+        run_dir = _run_dir(root, bundle=bundle)
+        artifact = run_dir / "run_pca" / "adata.h5ad"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_bytes(b"here")
+        persistence.write_step_output(run_dir, "run_pca", {"adata_path": str(artifact)})
+        plan = _plan(run_dir, bundle=bundle)
+        assert plan.reusable == {}
+        assert any("outcome is unknown" in reason for reason in plan.reasons)
+
+
+def test_a_failed_step_takes_everything_after_it_with_it():
+    """Whatever came next was computed from what this one produced."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        bundle = _bundle(root)
+        run_dir = _run_dir(root, bundle=bundle)
+        _finished_step(run_dir, "run_qc_metrics")
+        artifact = _finished_step(run_dir, "run_pca")
+        _finished_step(run_dir, "run_clustering")
+        artifact.unlink()
+
+        plan = _plan(run_dir, bundle=bundle)
+        assert "run_qc_metrics" in plan.reusable, "it ran before the failure and still stands"
+        assert "run_pca" not in plan.reusable
+        assert "run_clustering" not in plan.reusable, "it was computed from the missing object"
+
+
+def test_a_step_that_never_ran_does_not_invalidate_the_ones_after_it():
+    """`load_raw_counts` never runs on the filtered route, and says nothing about merge."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        bundle = _bundle(root)
+        run_dir = _run_dir(root, bundle=bundle)
+        _finished_step(run_dir, "load_filtered_counts")
+        _finished_step(run_dir, "merge_samples")
+        plan = _plan(run_dir, bundle=bundle)
+        assert set(plan.reusable) == {"load_filtered_counts", "merge_samples"}
+        assert plan.rerun_from is None
 
 
 def test_an_unverifiable_config_refuses_to_resume():
-    """No metadata means the config cannot be compared, not that it matched.
-
-    The guard used to skip itself when `run_metadata.json` was missing or
-    unreadable, so a directory without one resumed onto any config at all —
-    the exact mixing of two analyses it exists to prevent.
-    """
+    """No metadata means nothing can be compared, not that everything matched."""
     with tempfile.TemporaryDirectory() as tmp:
-        run_dir = _run_dir(Path(tmp), config_hash="abc123")
+        root = Path(tmp)
+        bundle = _bundle(root)
+        run_dir = _run_dir(root, bundle=bundle)
         _finished_step(run_dir, "run_pca")
         metadata = run_dir / "run_metadata.json"
 
         metadata.unlink()
-        assert persistence.resumable_steps(run_dir, "abc123") == {}, "missing metadata"
+        assert _plan(run_dir, bundle=bundle).reusable == {}, "missing metadata"
 
         metadata.write_text("{ not json", encoding="utf-8")
-        assert persistence.resumable_steps(run_dir, "abc123") == {}, "corrupt metadata"
+        assert _plan(run_dir, bundle=bundle).reusable == {}, "corrupt metadata"
 
 
-def test_resuming_without_asking_about_config_still_works():
-    """`config_hash=None` is the caller saying it does not want the check."""
+def test_metadata_written_before_this_check_existed_is_recomputed_not_half_trusted():
+    """An older run recorded only a hash, so there is no config to diff."""
     with tempfile.TemporaryDirectory() as tmp:
-        run_dir = _run_dir(Path(tmp))
+        root = Path(tmp)
+        bundle = _bundle(root)
+        run_dir = _run_dir(root, bundle=bundle)
         _finished_step(run_dir, "run_pca")
-        (run_dir / "run_metadata.json").unlink()
-        assert "run_pca" in persistence.resumable_steps(run_dir, None)
+        (run_dir / "run_metadata.json").write_text(
+            json.dumps({"run_id": "r", "source": {"config_sha256": "abc123"}}), encoding="utf-8"
+        )
+        plan = _plan(run_dir, bundle=bundle)
+        assert plan.reusable == {}
+        assert any("records no config" in reason for reason in plan.reasons)
 
 
 def test_a_missing_run_directory_is_empty_not_an_error():
-    assert persistence.resumable_steps("/nope/not/here", "abc123") == {}
+    assert persistence.plan_resume("/nope/not/here", config={}).reusable == {}
 
 
 def test_every_recorded_path_has_to_exist_not_just_the_first():
     with tempfile.TemporaryDirectory() as tmp:
-        run_dir = _run_dir(Path(tmp))
+        root = Path(tmp)
+        bundle = _bundle(root)
+        run_dir = _run_dir(root, bundle=bundle)
         step = run_dir / "find_markers"
         step.mkdir(parents=True)
         (step / "adata.h5ad").write_bytes(b"here")
@@ -160,7 +269,82 @@ def test_every_recorded_path_has_to_exist_not_just_the_first():
             "adata_path": str(step / "adata.h5ad"),
             "marker_table_path": str(step / "markers.csv"),  # never written
         })
-        assert persistence.resumable_steps(run_dir, "abc123") == {}
+        AuditLog(run_dir / "audit.jsonl").append(
+            "step_end", step="find_markers", status="ok", warnings=[], errors=[]
+        )
+        assert _plan(run_dir, bundle=bundle).reusable == {}
+
+
+# --- the cut: which step stops being trustworthy ------------------------------------
+
+
+def test_a_changed_key_invalidates_from_the_earliest_step_that_reads_it():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        bundle = _bundle(root)
+        run_dir = _run_dir(root, config={"min_genes": 200}, bundle=bundle)
+        for step in ("run_qc_metrics", "apply_cell_qc_filter", "run_pca"):
+            _finished_step(run_dir, step)
+
+        plan = _plan(run_dir, config={"min_genes": 500}, bundle=bundle)
+        assert plan.rerun_from == "apply_cell_qc_filter"
+        assert "run_qc_metrics" in plan.reusable, "it does not read min_genes"
+        assert "apply_cell_qc_filter" not in plan.reusable
+        assert "run_pca" not in plan.reusable
+
+
+def test_an_unrecognised_key_invalidates_everything():
+    """A knob nobody has mapped is one whose blast radius nobody has established."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        bundle = _bundle(root)
+        run_dir = _run_dir(root, bundle=bundle)
+        _finished_step(run_dir, "ingest_validate")
+        plan = _plan(run_dir, config={"some_new_knob": 1}, bundle=bundle)
+        assert plan.rerun_from == "ingest_validate"
+        assert plan.reusable == {}
+
+
+def test_changed_input_data_invalidates_everything():
+    """Same path, same byte count — the edit a size check is allowed to miss."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        bundle = _bundle(root, b"original")
+        run_dir = _run_dir(root, bundle=bundle)
+        _finished_step(run_dir, "ingest_validate")
+        _finished_step(run_dir, "run_pca")
+
+        edited = b"EDITED!!"
+        assert len(edited) == len(b"original"), "the point is that the size is unchanged"
+        Path(bundle["paths"][0]).write_bytes(edited)
+        plan = _plan(run_dir, bundle=bundle)
+        assert plan.reusable == {}
+        assert any("input data changed" in reason for reason in plan.reasons)
+
+
+def test_input_that_cannot_be_compared_is_not_assumed_unchanged():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        bundle = _bundle(root)
+        run_dir = _run_dir(root, bundle=bundle)
+        _finished_step(run_dir, "ingest_validate")
+        Path(bundle["paths"][0]).unlink()
+        plan = _plan(run_dir, bundle=bundle)
+        assert plan.reusable == {}
+        assert any("cannot be compared" in reason for reason in plan.reasons)
+
+
+def test_an_unchanged_run_reuses_everything_and_says_so():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        bundle = _bundle(root)
+        run_dir = _run_dir(root, config={"species": "human"}, bundle=bundle)
+        for step in ("ingest_validate", "run_qc_metrics", "run_pca"):
+            _finished_step(run_dir, step)
+        plan = _plan(run_dir, config={"species": "human"}, bundle=bundle)
+        assert set(plan.reusable) == {"ingest_validate", "run_qc_metrics", "run_pca"}
+        assert plan.rerun_from is None
+        assert plan.reasons == ["nothing changed; every verified step is reused"]
 
 
 def main() -> int:

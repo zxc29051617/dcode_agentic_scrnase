@@ -112,13 +112,79 @@ def config_digest(config: dict[str, Any]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def comparable_config(config: dict[str, Any] | None) -> dict[str, Any]:
+    """The config as it survives a round trip through `run_metadata.json`.
+
+    A resume compares what is on disk against what is in memory, and those are
+    not the same objects: a tuple comes back a list, and anything exotic comes
+    back as its `repr`. Both sides go through this so the comparison is about
+    values that actually differ rather than about how JSON stores them.
+    """
+    return json.loads(json.dumps(dict(config or {}), sort_keys=True, default=repr))
+
+
+def input_digest(input_bundle: dict[str, Any] | None) -> str | None:
+    """Content hash of every file the run was pointed at, or None if it cannot be taken.
+
+    Returns None when the bundle names nothing, or names something that is no
+    longer there — both mean "cannot be compared", which a resume has to read as
+    "cannot be trusted" rather than as "unchanged".
+
+    **Bytes, not size and mtime.** The cheap check was tried first and misses
+    the edit that matters: a matrix regenerated with one value changed need not
+    change size at all, and mtime says nothing about content. The cost is one
+    pass over the input, paid once when a resume is planned, against a Cell
+    Ranger count that takes twenty minutes and a wrong answer that takes a paper.
+
+    It hashes the file as stored, which for a `.gz` includes the modification
+    time gzip writes into its own header — measured, not assumed. So
+    re-compressing an input that has not changed does read as a change and does
+    force a rerun. That is a false positive in the safe direction, and the
+    alternative — decompressing every input to compare what is inside — is a
+    per-format special case for a situation real data does not often produce.
+    """
+    paths = (input_bundle or {}).get("paths") or []
+    if not paths:
+        return None
+
+    entries: list[list[str]] = []
+    for raw in sorted(str(path) for path in paths):
+        root = Path(raw).expanduser()
+        if not root.exists():
+            return None
+        if root.is_file():
+            files = [(root.name, root)]
+        else:
+            files = [
+                (str(child.relative_to(root)), child)
+                for child in sorted(root.rglob("*"))
+                if child.is_file()
+            ]
+        for name, target in files:
+            digest = file_digest(target)
+            if digest is None:
+                return None
+            entries.append([f"{root.name}/{name}", digest])
+
+    payload = json.dumps(entries, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def capture_run_metadata(
     *,
     run_id: str,
     config: dict[str, Any] | None = None,
     command: list[str] | None = None,
+    input_bundle: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Everything needed to say what produced a run, gathered at run start."""
+    """Everything needed to say what produced a run, gathered at run start.
+
+    `config` is recorded in full alongside its hash, and `input_digest` beside
+    it. The hash alone can only answer "did anything change?", which is the
+    question that forces a resume to throw away the whole directory. Keeping the
+    values themselves lets it answer "*what* changed", and therefore which step
+    is the first that can no longer be trusted.
+    """
     resolved = dict(config or {})
     return {
         "run_id": run_id,
@@ -131,7 +197,9 @@ def capture_run_metadata(
         "source": {
             **git_state(),
             "command": list(command) if command is not None else list(sys.argv),
+            "config": comparable_config(resolved),
             "config_sha256": config_digest(resolved),
+            "input_digest": input_digest(input_bundle),
         },
         "packages": package_versions(),
         "seeds": {"random_state": resolved.get("random_state", 0)},
@@ -182,7 +250,13 @@ def record_revision(
         "overrides": {key: _jsonable(value) for key, value in overrides.items()},
     })
     metadata["revisions"] = revisions
-    metadata.setdefault("source", {})["config_sha256"] = config_digest(config)
+    source = metadata.setdefault("source", {})
+    # Both, and for different readers: the hash is what a whole-directory check
+    # compares, the config itself is what a per-step resume diffs to find the
+    # earliest step it invalidated. Updating one and not the other would leave
+    # them describing different runs.
+    source["config"] = comparable_config(config)
+    source["config_sha256"] = config_digest(config)
 
     try:
         path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")

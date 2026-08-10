@@ -15,7 +15,7 @@ from . import persistence
 from .graph import build_graph
 from .judge import get_judge
 from .policy import GatePolicy
-from .provenance import config_digest
+from .provenance import AuditLog
 from .state import new_run_state, summarize
 
 #: One superstep per node; the mainline plus judges is well over LangGraph's default of 25.
@@ -56,9 +56,21 @@ def run_workflow(
 
     if resume_run_id:
         run_dir = Path(runs_dir) / resume_run_id
-        done = persistence.resumable_steps(run_dir, config_digest(resolved))
-        state["artifacts"] = dict(done)
-        state["resumed_steps"] = {step: True for step in done}
+        plan = persistence.plan_resume(
+            run_dir, config=resolved, input_bundle=input_bundle or {}
+        )
+        state["artifacts"] = dict(plan.reusable)
+        state["resumed_steps"] = {step: True for step in plan.reusable}
+        # Which steps were kept and why is a decision worth auditing: a resume
+        # that reuses eighteen steps and one that reuses none look the same from
+        # outside, and only one of them describes a single analysis.
+        AuditLog(state["audit_log_path"]).append(
+            "resume_plan",
+            run_id=state["run_id"],
+            reused=sorted(plan.reusable),
+            rerun_from=plan.rerun_from,
+            reasons=plan.reasons,
+        )
 
     invoke_config = persistence.thread_config(
         state["run_id"], recursion_limit=recursion_limit, checkpointer=checkpointer
