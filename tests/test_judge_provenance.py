@@ -19,6 +19,7 @@ Run with `python tests/test_judge_provenance.py` (or `python tests/run_all.py`).
 from __future__ import annotations
 
 import json
+import re
 import sys
 import tempfile
 from contextlib import contextmanager
@@ -33,6 +34,8 @@ from src.judge import (  # noqa: E402
     LocalLLMJudge,
     StubJudge,
     describe_judge,
+    judge_session_id,
+    session_fingerprint,
     text_digest,
 )
 from src.policy import GatePolicy  # noqa: E402
@@ -387,7 +390,169 @@ def test_continuing_from_a_checkpoint_records_its_own_judge_too():
 
 
 def test_a_missing_metadata_file_does_not_stop_the_run():
-    assert record_judge_session("/nope/not/here.json", mode="new", session={}) is False
+    assert record_judge_session("/nope/not/here.json", mode="new", session={}) is None
+
+
+# --- session ids: joining a verdict to the judge that produced it ---------------------
+
+
+def _judge_events(final) -> list[dict]:
+    return [e for e in AuditLog(final["audit_log_path"]).read() if e["event"] == "judge"]
+
+
+def test_every_verdict_in_one_session_cites_the_same_session_id():
+    with tempfile.TemporaryDirectory() as tmp:
+        final = _run(Path(tmp))
+        events = _judge_events(final)
+        sessions = _sessions(final)
+
+    cited = {e["judge_session_id"] for e in events}
+    assert len(events) > 1, "more than one step was judged"
+    assert cited == {sessions[0]["session_id"]}, "one session, one id, on every verdict"
+
+
+def test_a_verdicts_session_id_resolves_in_the_run_metadata():
+    """The join has to actually work, not merely look plausible."""
+    with tempfile.TemporaryDirectory() as tmp:
+        final = _run(Path(tmp))
+        events = _judge_events(final)
+        sessions = _sessions(final)
+
+    known = {s["session_id"]: s for s in sessions}
+    for event in events:
+        assert event["judge_session_id"] in known, \
+            f"{event['step']} cites a session that is not recorded"
+        entry = known[event["judge_session_id"]]
+        assert entry["step_models"][event["step"]] == event["model"], \
+            "the session and the verdict must agree about the model"
+
+
+def test_an_artifact_resume_gets_a_new_session_id():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with judged_by(ModelNamingJudge("first-model")):
+            first = _run(root)
+        first_ids = {e["judge_session_id"] for e in _judge_events(first)}
+
+        with judged_by(ModelNamingJudge("second-model")):
+            second = _run(root, resume_run_id=first["run_id"])
+        sessions = _sessions(first)
+        after = _judge_events(second)
+
+    ids = [s["session_id"] for s in sessions]
+    assert len(set(ids)) == 2, "two executions, two ids"
+    assert first_ids == {ids[0]}
+    # Whatever this pass judged cites the second session, never the first.
+    resumed_ids = {e["judge_session_id"] for e in after} - first_ids
+    assert resumed_ids <= {ids[1]}
+
+
+def test_a_checkpoint_continue_gets_a_new_session_id():
+    from src.run import continue_workflow
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with judged_by(ModelNamingJudge("started-it")):
+            paused = run_workflow(
+                project="provenance",
+                input_bundle={"paths": [str(fixtures.bundle_for(
+                    {"input_type": "matrix", "matrix_kind": "filtered"}, root / "bundle"))]},
+                config={"species": "human",
+                        "transcriptome": str(fixtures.make_reference(
+                            root, "ref", genomes=["GRCh38"])),
+                        "min_genes": 1, "max_pct_mito": 100},
+                runs_dir=str(root / "runs"),
+                policy=GatePolicy(interactive=True),
+                checkpointer_kind="sqlite",
+                decide=None,
+            )
+        assert paused["status"] == "needs_review", "precondition: it stopped at a gate"
+        before = {e["judge_session_id"] for e in _judge_events(paused)}
+
+        with judged_by(ModelNamingJudge("finished-it")):
+            continue_workflow(
+                run_id=paused["run_id"], runs_dir=str(root / "runs"),
+                policy=GatePolicy(interactive=True),
+                decide=lambda _request: {"decision": "accept", "rationale": ""},
+            )
+        sessions = _sessions(paused)
+        events = _judge_events(paused)
+
+    ids = [s["session_id"] for s in sessions]
+    assert [s["mode"] for s in sessions] == ["new", "checkpoint_continue"]
+    assert len(set(ids)) == 2, "continuing is a second session, not the first one again"
+
+    cited_after = {e["judge_session_id"] for e in events} - before
+    assert cited_after == {ids[1]}, "verdicts scored after the gate cite the new session"
+    scored_by = {e["judge_session_id"]: e["model"] for e in events}
+    assert scored_by[ids[0]] == "started-it"
+    assert scored_by[ids[1]] == "finished-it"
+
+
+def test_the_stub_gets_a_session_id_and_still_reports_no_model():
+    with tempfile.TemporaryDirectory() as tmp:
+        final = _run(Path(tmp))
+        sessions = _sessions(final)
+        events = _judge_events(final)
+
+    assert sessions[0]["session_id"].startswith("js-")
+    assert sessions[0]["backend"] == "stub"
+    for event in events:
+        assert event["judge_session_id"] == sessions[0]["session_id"]
+        assert event["model"] is None, "a session id is not a claim that a model ran"
+
+
+def test_a_session_id_carries_no_endpoint_key_or_other_secret():
+    """The fingerprint is taken over what decides a verdict, not over where it ran."""
+    described = describe_judge(
+        LocalLLMJudge(model="gpt-oss:120b", api_key=SECRET,
+                      base_url="https://someone:hunter2@lab.example:11434/v1"),
+        STEPS,
+    )
+    identifier = judge_session_id(0, described)
+
+    for forbidden in (SECRET, "hunter2", "someone", "lab.example", "11434", "gpt-oss"):
+        assert forbidden not in identifier, f"{forbidden!r} leaked into {identifier!r}"
+    assert re.fullmatch(r"js-\d{2}-[0-9a-f]{12}", identifier), identifier
+
+
+def test_the_same_configuration_fingerprints_the_same_and_a_new_prompt_does_not():
+    """The case the model name alone cannot tell apart."""
+    with prompts("base prompt", {"run_qc_metrics": "the addendum"}):
+        first = describe_judge(LocalLLMJudge(model="m", api_key="x"), STEPS)
+        again = describe_judge(LocalLLMJudge(model="m", api_key="x"), STEPS)
+    with prompts("base prompt", {"run_qc_metrics": "the addendum, reworded"}):
+        reworded = describe_judge(LocalLLMJudge(model="m", api_key="x"), STEPS)
+
+    assert session_fingerprint(first) == session_fingerprint(again)
+    assert session_fingerprint(first) != session_fingerprint(reworded), \
+        "same model, different prompt — the whole reason the id is not just the model"
+    assert judge_session_id(0, first) != judge_session_id(0, reworded)
+
+
+def test_the_endpoint_alone_does_not_change_the_fingerprint():
+    """Serving the same model from a second machine is not a different judge."""
+    with prompts("base", {}):
+        here = describe_judge(
+            LocalLLMJudge(model="m", api_key="x", base_url="http://localhost:11434/v1"), STEPS)
+        there = describe_judge(
+            LocalLLMJudge(model="m", api_key="x", base_url="http://dgx.lab:11434/v1"), STEPS)
+
+    assert here["endpoint"] != there["endpoint"], "and both are still recorded"
+    assert session_fingerprint(here) == session_fingerprint(there)
+
+
+def test_two_identical_configurations_in_one_run_still_get_different_ids():
+    """The index is what makes it unique; the fingerprint is what makes it readable."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        first = _run(root)
+        _run(root, resume_run_id=first["run_id"])
+        sessions = _sessions(first)
+
+    assert sessions[0]["session_id"] != sessions[1]["session_id"]
+    assert sessions[0]["session_id"].split("-")[-1] == \
+        sessions[1]["session_id"].split("-")[-1], "identical judge, identical fingerprint"
 
 
 # --- 8. nothing secret ---------------------------------------------------------------------

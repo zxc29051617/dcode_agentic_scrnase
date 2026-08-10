@@ -74,6 +74,54 @@ def _endpoint_without_credentials(url: str) -> str:
     return urlunsplit((parts.scheme, host, parts.path, "", ""))
 
 
+#: What the fingerprint in a session id is taken over: everything that decides
+#: what the judge will *say*. The endpoint is deliberately excluded — which
+#: machine served the model is worth recording, and is recorded, but it does not
+#: change a verdict, and keeping it out of the fingerprint means a session id
+#: cannot carry a hostname or anything embedded beside one.
+SESSION_FINGERPRINT_FIELDS = (
+    "backend",
+    "default_model",
+    "step_models",
+    "base_prompt_sha256",
+    "step_prompts",
+    "temperature",
+    "structured_output",
+)
+
+
+def session_fingerprint(description: dict[str, Any]) -> str:
+    """A hash of the judge configuration, ignoring where it ran.
+
+    Two sessions on the same model but a different prompt fingerprint
+    differently, which is the case this exists for: the model name alone cannot
+    tell those apart, and reading it off a timestamp ordering is guesswork.
+    """
+    subset = {field: description.get(field) for field in SESSION_FINGERPRINT_FIELDS}
+    canonical = json.dumps(subset, sort_keys=True, ensure_ascii=False, default=repr)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def judge_session_id(index: int, description: dict[str, Any]) -> str:
+    """The id a judge session is filed under, and that its verdicts point back to.
+
+    Two parts, because one value has to answer two questions:
+
+      `js-01-a3f2…`  the position in this run's `judge_sessions`, which makes it
+                     unique even when a run is resumed under an identical
+                     configuration
+                     …and the configuration fingerprint, which makes two
+                     sessions visibly different when the prompt changed but the
+                     model did not
+
+    Recomputable from what is stored, so the link between a verdict and a
+    configuration can be checked rather than trusted. Scoped to its run, which
+    is where both the metadata and the audit log live; the same fingerprint in
+    two different runs does mean the same judge configuration.
+    """
+    return f"js-{index:02d}-{session_fingerprint(description)[:12]}"
+
+
 def describe_judge(client: Any, steps: Sequence[str]) -> dict[str, Any]:
     """What this judge is, in enough detail to explain a verdict later.
 

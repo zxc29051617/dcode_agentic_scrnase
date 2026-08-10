@@ -187,6 +187,7 @@ different results, so every run records which judge scored it.
 ```json
 "judge_sessions": [
   {
+    "session_id": "js-00-a3f21c7e04bd",
     "recorded_at": "2026-08-10T08:57:48+00:00",
     "mode": "new",
     "hash_algorithm": "sha256",
@@ -237,10 +238,34 @@ it appends too.
 URL is stripped before it is written. `run_metadata.json` is written beside
 results that get shared.
 
-Per verdict, the `judge` events in `audit.jsonl` carry a `model` field, so
-"which model said this" is a lookup rather than a join against timestamps. The
-stub records `null` there and `"backend": "stub"` in the session, because "the
-stub scored this" and "nobody knows" must not look the same.
+**Every verdict names its session.** The `judge` events in `audit.jsonl` carry
+`model` and `judge_session_id`, so "which model said this, under which prompt"
+is a lookup rather than a join against timestamps — which stops being
+unambiguous the moment a run is resumed twice in the same second. The stub
+records `model: null` and `"backend": "stub"`, because "the stub scored this"
+and "nobody knows" must not look the same.
+
+The id has two parts and each does a job:
+
+```
+js-00-a3f21c7e04bd
+   │  └── sha256 of the judge configuration, first 12 hex
+   └───── position in this run's judge_sessions
+```
+
+The index makes it unique even when a run is resumed under an identical
+configuration. The fingerprint makes two sessions *visibly* different when the
+prompt moved and the model did not — the case a model name alone cannot tell
+apart, and the reason this is not simply a random id. It is recomputable from
+what is stored, so the link between a verdict and a configuration can be checked
+rather than trusted, and the same fingerprint in two different runs does mean
+the same judge configuration.
+
+The fingerprint is taken over what decides a verdict — backend, models, prompt
+hashes, temperature, structured-output mode — and **not** over the endpoint.
+Serving the same model from a second machine is not a different judge, and
+keeping the endpoint out means a session id cannot carry a hostname or anything
+embedded beside one.
 
 ## When something goes wrong
 

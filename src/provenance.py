@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-from .judge import HASH_ALGORITHM
+from .judge import HASH_ALGORITHM, judge_session_id
 
 #: Everything whose version can change a number in the output. Recording the
 #: pipeline's own git commit is not enough: identical code on a different
@@ -216,29 +216,35 @@ JudgeSessionMode = Literal["new", "artifact_resume", "checkpoint_continue"]
 
 def record_judge_session(
     metadata_path: str | Path, *, mode: str, session: dict[str, Any]
-) -> bool:
-    """Append which judge is about to score, without disturbing the last one.
+) -> str | None:
+    """Append which judge is about to score, and return the id its verdicts cite.
 
     Appended rather than assigned, and that is the whole design. A run resumed
     with `--resume-from` after `SCRNA_JUDGE_MODEL` changed is judged by two
     models, and its verdicts are a mixture: overwriting would leave a file
-    claiming the second model produced all of them. Each entry is stamped with
-    the time and the mode, so it can be lined up against the `judge` events in
-    the audit log, which carry the model per verdict.
+    claiming the second model produced all of them.
+
+    The returned `session_id` is what closes the loop. Every `judge` event this
+    session writes carries it, so a verdict resolves to one entry by lookup —
+    not by comparing its timestamp against the session list and hoping the
+    ordering is unambiguous, which it is not when a run is resumed twice in the
+    same second.
 
     Failure to record is not allowed to stop a run — the audit log still has the
-    per-verdict record either way — so this reports rather than raises.
+    per-verdict model either way — so this reports `None` rather than raising.
     """
     path = Path(metadata_path)
     try:
         metadata = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return False
+        return None
 
     sessions = metadata.get("judge_sessions")
     if not isinstance(sessions, list):
         sessions = []
+    session_id = judge_session_id(len(sessions), session)
     sessions.append({
+        "session_id": session_id,
         "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "mode": mode,
         "hash_algorithm": HASH_ALGORITHM,
@@ -249,8 +255,8 @@ def record_judge_session(
     try:
         path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
     except (OSError, TypeError, ValueError):
-        return False
-    return True
+        return None
+    return session_id
 
 
 def record_revision(

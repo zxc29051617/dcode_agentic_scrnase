@@ -162,8 +162,17 @@ def _judge_view(step: str, output: dict[str, Any]) -> tuple[dict[str, Any], list
     return view, notes
 
 
-def make_judge_node(step: str, judge_tool: str, client: JudgeClient) -> NodeFn:
-    """Score the most recent result of `step` and append a verdict."""
+def make_judge_node(
+    step: str, judge_tool: str, client: JudgeClient, session_id: str | None = None
+) -> NodeFn:
+    """Score the most recent result of `step` and append a verdict.
+
+    `session_id` names the entry in the run metadata's `judge_sessions` that
+    describes this judge — the model, the prompt hashes, the temperature. It
+    travels onto every verdict so the two can be joined by lookup instead of by
+    comparing timestamps, which stops being unambiguous the moment a run is
+    resumed twice in the same second.
+    """
 
     def node(state: WorkflowState) -> dict[str, Any]:
         audit = _audit(state)
@@ -201,7 +210,13 @@ def make_judge_node(step: str, judge_tool: str, client: JudgeClient) -> NodeFn:
         # execution; this makes the per-verdict answer a lookup rather than a
         # join against timestamps. `None` is the stub, and says so.
         model = getattr(client, "model_for", lambda _step: None)(step)
-        audit.append("judge", judge_tool=judge_tool, model=model, **verdict.model_dump())
+        audit.append(
+            "judge",
+            judge_tool=judge_tool,
+            model=model,
+            judge_session_id=session_id,
+            **verdict.model_dump(),
+        )
         return {"judge_results": [verdict.model_dump()]}
 
     return node

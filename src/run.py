@@ -82,13 +82,14 @@ def run_workflow(
     # environment: `--judge` beats `SCRNA_JUDGE_BACKEND` and a per-step entry
     # beats `SCRNA_JUDGE_MODEL`, so only the object knows what won.
     judge_client = get_judge(judge_backend)
-    _record_judge_session(
+    judge_session = _record_judge_session(
         state["run_metadata_path"],
         judge_client,
         mode="artifact_resume" if resume_run_id else "new",
     )
     graph = build_graph(
-        policy=policy or GatePolicy(), judge=judge_client, checkpointer=checkpointer
+        policy=policy or GatePolicy(), judge=judge_client, checkpointer=checkpointer,
+        judge_session_id=judge_session,
     )
 
     if resume_run_id:
@@ -127,16 +128,16 @@ JUDGED_STEPS: tuple[str, ...] = tuple(
 )
 
 
-def _record_judge_session(metadata_path: str | None, client: Any, *, mode: str) -> None:
-    """Append what is about to do the judging to the run's provenance.
+def _record_judge_session(metadata_path: str | None, client: Any, *, mode: str) -> str | None:
+    """Append what is about to do the judging, and return the id verdicts cite.
 
     Recorded when the client is built rather than after the run, because a run
     that crashes or is stopped at a gate still had a judge, and the question
     "what scored this" has to be answerable for a run that did not finish.
     """
     if not metadata_path:
-        return
-    record_judge_session(
+        return None
+    return record_judge_session(
         metadata_path, mode=mode, session=describe_judge(client, JUDGED_STEPS)
     )
 
@@ -215,13 +216,14 @@ def continue_workflow(
         # be `stop` and nothing is scored: the entry states which judge was
         # live, and the audit log's `judge` events say what it actually scored.
         judge_client = get_judge(judge_backend)
-        _record_judge_session(
+        judge_session = _record_judge_session(
             str(run_dir / "run_metadata.json"), judge_client, mode="checkpoint_continue"
         )
         graph = build_graph(
             policy=policy or GatePolicy(interactive=True),
             judge=judge_client,
             checkpointer=checkpointer,
+            judge_session_id=judge_session,
         )
         invoke_config = persistence.thread_config(
             run_id, recursion_limit=recursion_limit, checkpointer=checkpointer
