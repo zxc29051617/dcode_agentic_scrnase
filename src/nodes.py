@@ -196,13 +196,24 @@ def make_judge_node(step: str, judge_tool: str, client: JudgeClient) -> NodeFn:
     return node
 
 
-def make_human_gate_node(
-    policy: GatePolicy, *, node_name: str = "human_gate", review_skill: str | None = None
+def make_gate_question_node(
+    *, node_name: str = "human_gate", review_skill: str | None = None
 ) -> NodeFn:
-    """Stop for a person and record their decision as `accept | revise | stop`.
+    """Assemble the question a gate is about to ask, and leave it in state.
 
-    Interactive runs block on LangGraph's `interrupt`; headless runs halt so a
-    warn/fail is never silently waved through.
+    Asking and answering are separate nodes because `interrupt()` raises out of
+    the node it is called in. That node never reaches a `return`, so a delta it
+    computed before interrupting does not exist — a graph node's only write
+    channel is its return value. `pending_review` was declared for exactly this
+    and could therefore only ever be set back to None, and a run suspended at a
+    gate reported `status="running"` with nothing pending. Splitting the gate in
+    two puts the question through a superstep that completes, so it is written
+    and checkpointed *before* the graph suspends.
+
+    What that buys: a paused run says what it is waiting for in its own state,
+    rather than only through the `__interrupt__` key that one caller happened to
+    unpack. Anything reading the state — the summary, a future API, a test that
+    invokes the graph directly — sees the same fact.
 
     `review_skill` names a skill that assembles the question. The escalation
     gate does not need one — it is asking about a single step, and the last
@@ -239,6 +250,27 @@ def make_human_gate_node(
             else:
                 request["review_error"] = outcome["errors"] or [outcome["status"]]
         audit.append("human_gate_open", **request)
+        return {"pending_review": request, "status": "needs_review"}
+
+    return node
+
+
+def make_human_gate_node(policy: GatePolicy, *, node_name: str = "human_gate") -> NodeFn:
+    """Put the pending question to a person and record `accept | revise | stop`.
+
+    Interactive runs block on LangGraph's `interrupt`; headless runs apply the
+    policy default so a warn/fail is never silently waved through.
+
+    The question comes from `pending_review`, written by the node before this
+    one, rather than being rebuilt here. Rebuilding it would mean the person
+    could be shown one thing and the state record another, and it is the state
+    record a report is later written from.
+    """
+
+    def node(state: WorkflowState) -> dict[str, Any]:
+        audit = _audit(state)
+        request = state.get("pending_review") or {}
+        step = request.get("step") or state.get("current_step") or ""
 
         if policy.interactive:
             raw = interrupt(request)
@@ -254,7 +286,7 @@ def make_human_gate_node(
             choice = "stop"
 
         entry = {
-            "gate": node_name,
+            "gate": request.get("gate") or node_name,
             "step": step,
             "decision": choice,
             "rationale": decision.get("rationale", ""),
@@ -266,8 +298,13 @@ def make_human_gate_node(
         }
         audit.append("human_gate_close", **entry)
 
-        # The question has been answered, so it is no longer pending.
-        delta: dict[str, Any] = {"human_decisions": [entry], "pending_review": None}
+        # The question has been answered, so it is no longer pending, and the
+        # run is no longer waiting on anybody.
+        delta: dict[str, Any] = {
+            "human_decisions": [entry],
+            "pending_review": None,
+            "status": "running",
+        }
         if choice == "stop":
             delta["halted"] = True
             delta["halt_reason"] = f"human stopped the run at {step or node_name}"

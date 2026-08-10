@@ -18,9 +18,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src import persistence  # noqa: E402
+from src.graph import build_graph  # noqa: E402
+from src.judge import StubJudge  # noqa: E402
 from src.policy import GatePolicy  # noqa: E402
-from src.run import run_workflow  # noqa: E402
-from src.state import summarize  # noqa: E402
+from src.run import DEFAULT_RECURSION_LIMIT, run_workflow  # noqa: E402
+from src.state import new_run_state, summarize  # noqa: E402
 from tests import fixtures  # noqa: E402
 
 #: The same operator choices the graph suite uses, for the same reason: these
@@ -85,6 +87,41 @@ def test_a_paused_run_does_not_report_itself_as_finished():
     assert report["status"] == "needs_review"
     assert report["pending_review"], "the question has to survive into the summary"
     assert report["pending_review"]["step"]
+
+
+def test_a_paused_graph_says_so_in_its_own_state_without_run_workflow():
+    """The pause has to be a fact in state, not something one caller reconstructs.
+
+    `run_workflow` used to attach `status` and `pending_review` to the dict it
+    returned, so anything else driving the graph — this suite's own smoke tests,
+    an API, a UI — saw `status="running"`, `halted=False`, `pending_review=None`
+    and could not tell a suspended run from a live one. Nothing here goes
+    through `run_workflow`; the assertions are on what the graph itself left.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        bundle, config = _bundle(root)
+        graph = build_graph(
+            policy=GatePolicy(interactive=True),
+            judge=StubJudge(),
+            checkpointer=persistence.make_checkpointer("memory"),
+        )
+        state = new_run_state(
+            project="test", config=config, input_bundle=bundle, runs_dir=root / "runs",
+        )
+        final = graph.invoke(state, config={
+            "recursion_limit": DEFAULT_RECURSION_LIMIT,
+            "configurable": {"thread_id": state["run_id"]},
+        })
+
+    assert "__interrupt__" in final, "precondition: the run actually paused"
+    assert final["status"] == "needs_review"
+    assert final["halted"] is False
+    assert final["pending_review"], "the question has to be in state, not only in __interrupt__"
+    assert final["pending_review"]["step"]
+    assert final["pending_review"]["gate"]
+    # The two views of the same pause must not be able to disagree.
+    assert final["pending_review"] == getattr(final["__interrupt__"][0], "value", None)
 
 
 def test_the_pending_question_carries_the_evidence_to_decide_on():

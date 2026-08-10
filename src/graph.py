@@ -15,6 +15,7 @@ from .judge import JudgeClient, get_judge
 from .nodes import (
     assert_registry_covered,
     make_branch_router,
+    make_gate_question_node,
     make_gate_router,
     make_human_gate_node,
     make_judge_node,
@@ -24,8 +25,15 @@ from .policy import DEFAULT_POLICY, GatePolicy
 from .registry import MAINLINE, REGISTRY
 from .state import WorkflowState, step_output
 
+#: Each gate is two nodes: one writes the question into state, the next puts it
+#: to a person. `interrupt()` raises out of its own node, so a single node can
+#: never both ask and record the asking — see `make_gate_question_node`. Every
+#: edge into a gate still names the question node, so the split is invisible to
+#: everything upstream of it.
 HUMAN_GATE = "human_gate"
+HUMAN_GATE_ANSWER = "human_gate_answer"
 FINAL_GATE = "human_review_decision"
+FINAL_GATE_ANSWER = "human_review_decision_answer"
 
 
 # --------------------------------------------------------------------------
@@ -213,10 +221,12 @@ def build_graph(
     # from `human_review_decision` rather than from the last step's verdict.
     graph.add_node(
         FINAL_GATE,
-        make_human_gate_node(policy, node_name=FINAL_GATE, review_skill=FINAL_GATE),
+        make_gate_question_node(node_name=FINAL_GATE, review_skill=FINAL_GATE),
     )
+    graph.add_node(FINAL_GATE_ANSWER, make_human_gate_node(policy, node_name=FINAL_GATE))
+    graph.add_edge(FINAL_GATE, FINAL_GATE_ANSWER)
     graph.add_conditional_edges(
-        FINAL_GATE,
+        FINAL_GATE_ANSWER,
         _final_gate_router,
         {"build_report": "build_report", "annotate_cells": "annotate_cells", "end": END},
     )
@@ -230,9 +240,11 @@ def build_graph(
     # resolve to FINAL_GATE itself (it is a node, not a step, so add_step never
     # ran for it) — omit it here and an `accept` on that step KeyErrors instead
     # of reaching the mainline gate.
-    graph.add_node(HUMAN_GATE, make_human_gate_node(policy, node_name=HUMAN_GATE))
+    graph.add_node(HUMAN_GATE, make_gate_question_node(node_name=HUMAN_GATE))
+    graph.add_node(HUMAN_GATE_ANSWER, make_human_gate_node(policy, node_name=HUMAN_GATE))
+    graph.add_edge(HUMAN_GATE, HUMAN_GATE_ANSWER)
     graph.add_conditional_edges(
-        HUMAN_GATE,
+        HUMAN_GATE_ANSWER,
         _make_escalation_router(successors),
         {**{name: name for name in added}, FINAL_GATE: FINAL_GATE, "end": END},
     )

@@ -66,12 +66,15 @@ def run_workflow(
     final = graph.invoke(state, config=invoke_config)
 
     # A paused graph returns with the question in `__interrupt__` rather than
-    # raising. Nothing consumed it before, so an interactive run that stopped
-    # to ask something reported itself as a clean completion.
+    # raising. The gate has already written that question into `pending_review`
+    # and set `status` to `needs_review`, so a run that stopped to ask something
+    # says so in its own state — this loop only has to answer it, not describe
+    # it. `__interrupt__` stays the signal to *resume*, which is the one thing
+    # it can say that state cannot.
     while "__interrupt__" in final:
-        request = getattr(final["__interrupt__"][0], "value", {}) or {}
         if decide is None:
-            return {**final, "status": "needs_review", "pending_review": request}
+            return final
+        request = getattr(final["__interrupt__"][0], "value", {}) or {}
         final = graph.invoke(Command(resume=decide(request)), config=invoke_config)
 
     # Reaching here means the graph ran to an end node. Only this caller knows

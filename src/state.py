@@ -57,9 +57,12 @@ class WorkflowState(TypedDict, total=False):
     #: never looks at it sees exactly the behaviour it saw before.
     status: RunStatus
 
-    #: The question a paused gate is waiting on. `interrupt()` alone suspends
-    #: the graph but leaves nothing in state, so a run that paused was
-    #: indistinguishable from one that finished.
+    #: The question a paused gate is waiting on, written by the gate before it
+    #: suspends and cleared when it is answered. `interrupt()` alone leaves
+    #: nothing here — it raises out of its node, so that node never returns a
+    #: delta — which is why asking and answering are two nodes. Without it a
+    #: paused run was indistinguishable from one that finished to anything that
+    #: did not unpack `__interrupt__` itself.
     pending_review: dict[str, Any] | None
 
     #: `{step: True}` for steps a previous run already completed, seeded when
