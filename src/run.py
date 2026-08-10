@@ -32,26 +32,53 @@ def run_workflow(
     runs_dir: str = "runs",
     recursion_limit: int = DEFAULT_RECURSION_LIMIT,
     checkpointer: Any = None,
+    checkpointer_kind: str | None = None,
     decide: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     resume_run_id: str | None = None,
 ) -> dict[str, Any]:
     """Run one pass of the workflow and return the final state.
 
-    The three new arguments all default to what the workflow did before them,
-    so a caller that passes none of them gets the previous behaviour exactly.
+    A caller that passes none of the optional arguments gets the behaviour the
+    workflow had before any of them existed.
 
     `checkpointer` is what lets a gate pause; `decide` is called with the
     pending question and returns the answer, driving the `Command(resume=...)`
     loop. `resume_run_id` reuses a run directory and skips the steps it already
     holds finished artifacts for.
+
+    `checkpointer_kind` builds one instead of taking one, which the `sqlite`
+    kind needs: its database goes in the run directory, and the run directory is
+    not known until the run id is. A checkpointer built here is closed here; one
+    passed in belongs to the caller and is left alone.
+
+    ## Two resumes, and they are not the same thing
+
+    This function's `resume_run_id` is the *artifact* resume: start the graph at
+    the beginning and skip the steps whose results on disk are still valid. It
+    answers "what work can be reused".
+
+    `continue_workflow` is the *checkpoint* resume: pick up a graph that is
+    suspended mid-run and answer the question it stopped on. It answers "where
+    was this run when it stopped".
+
+    They are kept separate because they can disagree and the disagreement is
+    informative: a checkpoint says a step completed, the artifact check says its
+    output is gone. Conflating them into one "resume" would have to pick a
+    winner silently.
     """
     resolved = dict(config or {})
-    graph = build_graph(
-        policy=policy or GatePolicy(), judge=get_judge(judge_backend), checkpointer=checkpointer
-    )
     state = new_run_state(
         project=project, config=resolved, input_bundle=input_bundle,
         runs_dir=runs_dir, run_id=resume_run_id,
+    )
+    owned = None
+    if checkpointer is None and checkpointer_kind:
+        owned = persistence.make_checkpointer(
+            checkpointer_kind, run_dir=Path(runs_dir) / state["run_id"]
+        )
+        checkpointer = owned
+    graph = build_graph(
+        policy=policy or GatePolicy(), judge=get_judge(judge_backend), checkpointer=checkpointer
     )
 
     if resume_run_id:
@@ -75,25 +102,113 @@ def run_workflow(
     invoke_config = persistence.thread_config(
         state["run_id"], recursion_limit=recursion_limit, checkpointer=checkpointer
     )
-    final = graph.invoke(state, config=invoke_config)
+    try:
+        final = graph.invoke(state, config=invoke_config)
+        final = _answer_until_done(graph, final, invoke_config, decide)
+    finally:
+        persistence.close_checkpointer(owned)
+    return final
 
-    # A paused graph returns with the question in `__interrupt__` rather than
-    # raising. The gate has already written that question into `pending_review`
-    # and set `status` to `needs_review`, so a run that stopped to ask something
-    # says so in its own state — this loop only has to answer it, not describe
-    # it. `__interrupt__` stays the signal to *resume*, which is the one thing
-    # it can say that state cannot.
+
+def _answer_until_done(
+    graph: Any,
+    final: dict[str, Any],
+    invoke_config: dict[str, Any],
+    decide: Callable[[dict[str, Any]], dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """Answer whatever the graph stopped to ask, until it stops asking.
+
+    A paused graph returns with the question in `__interrupt__` rather than
+    raising. The gate has already written that question into `pending_review`
+    and set `status` to `needs_review`, so a run that stopped to ask something
+    says so in its own state — this loop only has to answer it, not describe it.
+    `__interrupt__` stays the signal to *resume*, which is the one thing it can
+    say that state cannot.
+    """
     while "__interrupt__" in final:
         if decide is None:
+            # Nobody is available to answer. The run stays suspended, and with a
+            # durable checkpointer it can be picked up later by
+            # `continue_workflow` from another process.
             return final
         request = getattr(final["__interrupt__"][0], "value", {}) or {}
-        final = graph.invoke(Command(resume=decide(request)), config=invoke_config)
+        try:
+            answer = decide(request)
+        except EOFError:
+            # There is no one at the terminal after all — the session was closed,
+            # or stdin was never a terminal. That is the same situation as having
+            # no way to ask, not a failure of the run: the gate stays suspended
+            # and a durable checkpoint keeps it answerable from another process.
+            return final
+        final = graph.invoke(Command(resume=answer), config=invoke_config)
 
     # Reaching here means the graph ran to an end node. Only this caller knows
     # that; a node cannot tell whether it is the last one.
     if not final.get("halted"):
         final = {**final, "status": "failed" if final.get("errors") else "completed"}
     return final
+
+
+def continue_workflow(
+    *,
+    run_id: str,
+    runs_dir: str = "runs",
+    policy: GatePolicy | None = None,
+    judge_backend: str | None = None,
+    recursion_limit: int = DEFAULT_RECURSION_LIMIT,
+    decide: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Pick up a run suspended at a gate, in a process that did not start it.
+
+    This is the checkpoint resume, and it is deliberately not the artifact one.
+    Nothing here builds a state, reads `output.json`, or plans what to reuse:
+    the graph's own checkpoint already holds where it was and everything it had,
+    and `Command(resume=...)` continues from precisely there. The steps that
+    already ran do not run again, so the audit log and the artifacts are not
+    written twice.
+
+    What it will not do is start over. Every way of failing to find the run
+    raises `ResumeError` — a missing run directory, a missing database, a thread
+    id no checkpoint matches, a run that is not actually waiting. Each of those
+    could have been "call `invoke` with a fresh state and see what happens",
+    which produces a second analysis under the first one's run id and writes it
+    into the first one's directory.
+    """
+    run_dir = Path(runs_dir) / run_id
+    checkpointer = persistence.open_saved_checkpointer(run_dir)
+    try:
+        graph = build_graph(
+            policy=policy or GatePolicy(interactive=True),
+            judge=get_judge(judge_backend),
+            checkpointer=checkpointer,
+        )
+        invoke_config = persistence.thread_config(
+            run_id, recursion_limit=recursion_limit, checkpointer=checkpointer
+        )
+        snapshot = graph.get_state(invoke_config)
+        request = persistence.pending_question(
+            snapshot, thread_id=run_id, run_dir=run_dir
+        )
+
+        audit = AuditLog(snapshot.values.get("audit_log_path") or (run_dir / "audit.jsonl"))
+        audit.append(
+            "checkpoint_resumed",
+            run_id=run_id,
+            thread_id=run_id,
+            waiting_at=request.get("step"),
+            gate=request.get("gate"),
+            checkpoint=str(persistence.checkpoint_path(run_dir)),
+        )
+
+        if decide is None:
+            raise persistence.ResumeError(
+                f"thread {run_id!r} is waiting at the {request.get('gate')} gate on "
+                f"{request.get('step')!r}, but no way to answer was given"
+            )
+        final = graph.invoke(Command(resume=decide(request)), config=invoke_config)
+        return _answer_until_done(graph, final, invoke_config, decide)
+    finally:
+        persistence.close_checkpointer(checkpointer)
 
 
 def ask_for_overrides(request: dict[str, Any]) -> dict[str, Any]:
@@ -165,9 +280,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--input",
         nargs="+",
-        required=True,
         metavar="PATH",
-        help="bundle directories or files; ingest_validate detects the route from these",
+        help="bundle directories or files; ingest_validate detects the route from these. "
+             "Required unless --continue-from names a run that already has them",
     )
     parser.add_argument(
         "--species",
@@ -261,12 +376,28 @@ def main(argv: list[str] | None = None) -> int:
     )
     resume.add_argument(
         "--resume-from", metavar="RUN_ID",
-        help="reuse an existing runs/<RUN_ID> directory and skip the steps whose "
-             "artifacts are still there; refuses if the config has changed",
+        help="artifact resume: re-run runs/<RUN_ID> from the start, reusing every "
+             "step whose recorded result is still valid. Re-runs from the first "
+             "step the config or the input data invalidated",
+    )
+    resume.add_argument(
+        "--continue-from", metavar="RUN_ID",
+        help="checkpoint resume: pick up runs/<RUN_ID> where it stopped at a gate "
+             "and answer the question it is waiting on. Needs a run started with "
+             "--interactive, which is what writes the checkpoint database. "
+             "Nothing already done is repeated",
     )
 
     parser.add_argument("--runs-dir", default="runs")
     args = parser.parse_args(argv)
+
+    # Continuing needs no input: the checkpoint holds everything the run had.
+    if args.continue_from:
+        if args.input:
+            parser.error("--continue-from takes no --input; the checkpoint has it")
+        return _continue_main(args)
+    if not args.input:
+        parser.error("--input is required (or --continue-from to pick up a paused run)")
 
     # A flag the operator never typed must not reach a skill as an explicit
     # `None`: several read their defaults with `config.get(key, DEFAULT)`, which
@@ -300,7 +431,11 @@ def main(argv: list[str] | None = None) -> int:
         project=args.project,
         input_bundle={"paths": args.input},
         config=config,
-        checkpointer=persistence.make_checkpointer("memory" if args.interactive else "none"),
+        # An interactive run is one that can stop and wait, so its checkpoint
+        # goes in the run directory rather than in memory: the process holding
+        # it may be closed before anybody answers, and `--continue-from` picks
+        # it up from there.
+        checkpointer_kind="sqlite" if args.interactive else "none",
         decide=ask_on_terminal if args.interactive else None,
         resume_run_id=args.resume_from,
         policy=GatePolicy(
@@ -312,8 +447,55 @@ def main(argv: list[str] | None = None) -> int:
         runs_dir=args.runs_dir,
     )
 
+    report = summarize(final)
+    print(json.dumps(report, indent=2, ensure_ascii=False))
+    if report["status"] == "needs_review":
+        # The run is suspended, not broken. Say how to pick it up, because the
+        # command needs the run id and the run id was generated in here.
+        pending = report.get("pending_review") or {}
+        print(
+            f"\nwaiting at the {pending.get('gate')} gate on {pending.get('step')!r}. "
+            f"Continue with:\n"
+            f"  python -m src.run --continue-from {final['run_id']} --interactive",
+            file=sys.stderr,
+        )
+    return 1 if final.get("errors") else 0
+
+
+def _continue_main(args: argparse.Namespace) -> int:
+    """`--continue-from`: answer the gate a previous process stopped at."""
+    try:
+        final = continue_workflow(
+            run_id=args.continue_from,
+            runs_dir=args.runs_dir,
+            decide=ask_on_terminal if args.interactive else _policy_answer(args),
+            policy=GatePolicy(
+                autocontinue_on_warn=args.allow_warn,
+                headless_decision=args.headless_decision,
+                interactive=args.interactive,
+            ),
+            judge_backend=args.judge,
+        )
+    except persistence.ResumeError as exc:
+        # Loud and specific. The alternative every one of these replaces is
+        # starting the graph from the beginning, which looks like it worked.
+        print(f"cannot continue {args.continue_from}: {exc}", file=sys.stderr)
+        return 2
+
     print(json.dumps(summarize(final), indent=2, ensure_ascii=False))
     return 1 if final.get("errors") else 0
+
+
+def _policy_answer(args: argparse.Namespace) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """What a non-interactive `--continue-from` answers with."""
+
+    def decide(_request: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "decision": args.headless_decision,
+            "rationale": f"--continue-from with --headless-decision {args.headless_decision!r}",
+        }
+
+    return decide
 
 
 if __name__ == "__main__":

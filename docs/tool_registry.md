@@ -92,6 +92,37 @@ documented CLI flag，值從命令列來或從 gate 來走同一條路。
 因為「reuse 了 18 個 step」跟「一個都沒 reuse」從外面看一模一樣，
 但只有一個描述的是同一次分析。
 
+## 兩種 resume，責任分開
+
+| | 問的問題 | 用什麼回答 |
+|---|---|---|
+| `--resume-from RUN_ID` | 哪些**結果**還有效 | 磁碟上的 artifact + metadata + audit log |
+| `--continue-from RUN_ID` | 這次執行**停在哪裡** | LangGraph checkpoint（SQLite） |
+
+兩者不合併，理由沒有變：checkpoint 記的是 graph 做過什麼，它可能跟磁碟不一致
+——刪掉一個 `.h5ad`、或用 standalone CLI 單獨重跑某個 step，checkpoint 仍然
+認為那個 step 完成了。讓它回答「哪些結果還有效」就會讓這個失敗變成無聲的。
+
+所以各自只回答自己看得到的事，不需要有人在衝突時當裁判。
+
+```bash
+# 停在 gate，process 可以直接關掉
+python -m src.run --input <matrix> --species human --interactive
+
+# 之後任何時候，另一個 process 接手回答
+python -m src.run --continue-from <RUN_ID> --interactive
+```
+
+checkpoint 檔在 **`runs/<run_id>/checkpoint.sqlite`**，跟該次 run 的 artifact
+放在一起——刪掉一次 run 就一併刪掉它的 checkpoint，兩次 run 也不可能共用
+thread table。只有 `--interactive` 會寫；不會停下來等人的執行不需要付這個成本。
+
+`--continue-from` 找不到東西時一律 `ResumeError` 並 exit code 2，**絕不從
+START 重跑**：run 目錄不存在、checkpoint 檔不存在、thread_id 在資料庫裡找不到、
+資料庫壞掉、或那次 run 根本沒有停在 gate（例如已經被回答過了）。每一種的替代
+方案都是「用新的 state 呼叫 invoke 看看會怎樣」，而那會在第一次 run 的 id 底下
+產生第二份分析。
+
 ## Registry overview
 
 | Stage | Tool name | Type | Input | Output | Judge node | Next step |

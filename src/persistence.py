@@ -5,8 +5,11 @@ a pipeline in the position of believing two contradictory things at once.
 
 **Pausing** (`make_checkpointer`, `thread_config`) uses LangGraph's own
 mechanism: `interrupt()` suspends inside a superstep and `Command(resume=...)`
-answers it. That needs a checkpointer, and the in-memory one is enough —
-pausing is about waiting for a person who is already there.
+answers it. An interactive run keeps that checkpoint in
+`runs/<run_id>/checkpoint.sqlite`, so a gate waiting for a person outlives the
+process that opened it and `run.continue_workflow` can answer it from another
+one. The in-memory saver is still there for a caller that only needs a gate to
+open inside one process.
 
 **Resuming** (`plan_resume`) does not use the checkpointer at all. It reads what
 is on disk, which makes the artifact directory the single source of truth about
@@ -27,18 +30,27 @@ not in the audit log; a status that is not `ok`; recorded errors; a recorded
 file that is no longer there. Any of those and the step is recomputed, along
 with everything after it — because whatever came next was computed from it.
 
-A persistent checkpointer would answer both, and was deliberately not used. It
-would introduce a second record of what has run, and the two can disagree:
-delete a `.h5ad`, or rerun one step through its standalone CLI — which this
-project supports for all 26 of them — and the checkpoint still insists the step
-is complete. The failure is silent and produces a report describing a run that
-did not happen. It is also coupled to graph topology.
+The checkpoint is durable now, and the two mechanisms are still not merged. The
+reason they must not be is unchanged: a checkpoint is a record of what the graph
+did, and it can disagree with what is on disk. Delete a `.h5ad`, or rerun one
+step through its standalone CLI — which this project supports for all 26 of them
+— and the checkpoint still insists the step is complete. Letting it answer
+"which results are still valid" would make that failure silent and produce a
+report describing a run that did not happen.
 
-The cost of that choice is precise and worth stating: a gate that is *waiting*
-cannot be resumed in a new process, because a pending question is not an
-artifact. Resuming re-runs from the last completed step and asks again. If that
-ever becomes expensive, `make_checkpointer` is the one function that has to
-change.
+So each answers only what it can see:
+
+    plan_resume        what work is still valid   -> --resume-from
+    the checkpoint     where the graph stopped    -> --continue-from
+
+`--resume-from` starts the graph from the beginning and skips steps whose
+recorded results verify. `--continue-from` does not build a state at all: it
+opens the run's own checkpoint, finds the question the run is suspended on, and
+answers it. A run picked up that way does not re-run anything, so the artifacts
+and the audit log are not written twice.
+
+Where they would disagree, nobody has to pick a winner, because neither is asked
+the other's question.
 
 ## The other cost is disk
 Every step writing its own AnnData is what makes resuming possible, and it is
@@ -55,6 +67,7 @@ provenance while giving up the ability to resume it.
 from __future__ import annotations
 
 import json
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -77,12 +90,38 @@ DEFAULT_RECURSION_LIMIT = 150
 # --- pausing ------------------------------------------------------------------
 
 
-def make_checkpointer(kind: str = "memory") -> Any:
-    """A checkpointer for `interrupt()`, or None to keep the current behaviour.
+class ResumeError(RuntimeError):
+    """A run cannot be picked up, and saying so beats starting a new one.
 
-    `memory` is deliberate rather than provisional: see the module docstring.
-    `none` is what every existing caller gets, so a run that does not ask to
-    pause behaves exactly as it did before this module existed.
+    Every path that raises this had the alternative of quietly running from
+    `START`, which produces a second analysis wearing the first one's run id.
+    """
+
+
+#: The LangGraph checkpoint database, one per run, beside that run's artifacts.
+#: In the run directory rather than a shared store so that deleting a run
+#: deletes its checkpoint with it, and two runs can never share a thread table.
+CHECKPOINT_NAME = "checkpoint.sqlite"
+
+
+def checkpoint_path(run_dir: str | Path) -> Path:
+    return Path(run_dir) / CHECKPOINT_NAME
+
+
+def make_checkpointer(kind: str = "memory", *, run_dir: str | Path | None = None) -> Any:
+    """A checkpointer for `interrupt()`, or None for a run that cannot pause.
+
+    `none` is what a non-interactive run gets, and behaves exactly as it did
+    before this module existed.
+
+    `memory` pauses within one process. It is what the tests that only need a
+    gate to open use, and what a single interactive session needed before there
+    was anywhere to put a checkpoint.
+
+    `sqlite` is the durable one, and needs `run_dir` because that is where the
+    database goes. A gate that suspends here survives the process: the pending
+    question, the state behind it, and the position in the graph are all in the
+    file, and `continue_workflow` picks them up from a new interpreter.
     """
     if kind in (None, "none"):
         return None
@@ -90,7 +129,86 @@ def make_checkpointer(kind: str = "memory") -> Any:
         from langgraph.checkpoint.memory import InMemorySaver
 
         return InMemorySaver()
-    raise ValueError(f"unknown checkpointer: {kind!r} (expected 'memory' or 'none')")
+    if kind == "sqlite":
+        if run_dir is None:
+            raise ValueError("the sqlite checkpointer needs a run_dir to put its database in")
+        from langgraph.checkpoint.sqlite import SqliteSaver
+
+        path = checkpoint_path(run_dir)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # `check_same_thread=False` because LangGraph may touch the connection
+        # from a worker thread; the saver serialises its own writes.
+        saver = SqliteSaver(sqlite3.connect(str(path), check_same_thread=False))
+        saver.setup()
+        return saver
+    raise ValueError(f"unknown checkpointer: {kind!r} (expected 'sqlite', 'memory' or 'none')")
+
+
+def close_checkpointer(checkpointer: Any) -> None:
+    """Release a checkpointer's database handle, if it holds one."""
+    connection = getattr(checkpointer, "conn", None)
+    if connection is not None:
+        try:
+            connection.close()
+        except Exception:  # noqa: BLE001 - closing must not mask the run's outcome
+            pass
+
+
+def open_saved_checkpointer(run_dir: str | Path) -> Any:
+    """The checkpointer for an existing run, or a `ResumeError` explaining why not.
+
+    Refuses to create the database. A missing file here means the run was never
+    started with a durable checkpoint — or was started somewhere else — and
+    making an empty one would turn "there is nothing to continue" into a graph
+    that runs from the beginning.
+    """
+    root = Path(run_dir)
+    if not root.is_dir():
+        raise ResumeError(f"no run directory at {root}")
+    path = checkpoint_path(root)
+    if not path.exists():
+        raise ResumeError(
+            f"no checkpoint at {path}. Only a run started with a durable checkpoint "
+            f"can be continued; --resume-from re-runs from artifacts instead."
+        )
+    from langgraph.checkpoint.sqlite import SqliteSaver
+
+    try:
+        saver = SqliteSaver(sqlite3.connect(str(path), check_same_thread=False))
+        saver.setup()
+    except sqlite3.DatabaseError as exc:
+        raise ResumeError(f"{path} is not a readable checkpoint database: {exc}") from exc
+    return saver
+
+
+def pending_question(snapshot: Any, *, thread_id: str, run_dir: str | Path) -> dict[str, Any]:
+    """The question a checkpointed run is suspended on, or a `ResumeError`.
+
+    Three distinct failures, told apart because the fix differs. No state at all
+    means the thread id does not match any run in this database. State but
+    nothing pending means the run is not waiting for anybody — it finished, or
+    it halted. A pending node with no interrupt value would be a LangGraph
+    version mismatch rather than anything an operator did.
+    """
+    if not getattr(snapshot, "values", None):
+        raise ResumeError(
+            f"no checkpoint for thread {thread_id!r} in {checkpoint_path(run_dir)}. "
+            f"The thread id is the run id; check runs/ for the one you mean."
+        )
+    interrupts = list(getattr(snapshot, "interrupts", ()) or ())
+    if not interrupts:
+        status = (snapshot.values or {}).get("status") or "unknown"
+        raise ResumeError(
+            f"thread {thread_id!r} is not waiting at a gate (status {status!r}, "
+            f"next {tuple(getattr(snapshot, 'next', ()) or ())}). There is nothing to answer."
+        )
+    value = getattr(interrupts[0], "value", None)
+    if not isinstance(value, dict):
+        raise ResumeError(
+            f"thread {thread_id!r} is suspended but its pending question is "
+            f"{type(value).__name__}, not a gate request"
+        )
+    return value
 
 
 def thread_config(run_id: str, *, recursion_limit: int = DEFAULT_RECURSION_LIMIT,

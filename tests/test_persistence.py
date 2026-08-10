@@ -75,11 +75,54 @@ def test_the_memory_checkpointer_is_what_interrupt_needs():
 
 def test_an_unknown_checkpointer_is_refused_rather_than_ignored():
     try:
-        persistence.make_checkpointer("sqlite")
+        persistence.make_checkpointer("redis-maybe")
     except ValueError as exc:
         assert "unknown checkpointer" in str(exc)
     else:
         raise AssertionError("an unavailable backend must not be silently ignored")
+
+
+def test_the_sqlite_checkpointer_refuses_to_guess_where_its_database_goes():
+    """It belongs to one run, so it cannot be built without knowing which."""
+    try:
+        persistence.make_checkpointer("sqlite")
+    except ValueError as exc:
+        assert "run_dir" in str(exc)
+    else:
+        raise AssertionError("a database with no home must not be created anyway")
+
+
+def test_the_sqlite_checkpointer_writes_into_the_run_directory():
+    with tempfile.TemporaryDirectory() as tmp:
+        run_dir = Path(tmp) / "run"
+        saver = persistence.make_checkpointer("sqlite", run_dir=run_dir)
+        try:
+            assert persistence.checkpoint_path(run_dir).exists()
+            assert persistence.checkpoint_path(run_dir).name == "checkpoint.sqlite"
+        finally:
+            persistence.close_checkpointer(saver)
+
+
+def test_continuing_a_run_with_no_checkpoint_refuses_to_create_one():
+    with tempfile.TemporaryDirectory() as tmp:
+        run_dir = Path(tmp) / "run"
+        run_dir.mkdir()
+        try:
+            persistence.open_saved_checkpointer(run_dir)
+        except persistence.ResumeError as exc:
+            assert "no checkpoint at" in str(exc)
+        else:
+            raise AssertionError("an absent checkpoint must not be conjured into an empty one")
+        assert not persistence.checkpoint_path(run_dir).exists()
+
+
+def test_continuing_a_run_that_does_not_exist_says_which_directory():
+    try:
+        persistence.open_saved_checkpointer("/nope/not/here")
+    except persistence.ResumeError as exc:
+        assert "no run directory" in str(exc)
+    else:
+        raise AssertionError("a missing run must not resolve to a new one")
 
 
 def test_thread_id_is_only_set_when_there_is_something_to_checkpoint():
