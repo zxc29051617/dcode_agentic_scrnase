@@ -43,6 +43,7 @@ from tests import (  # noqa: E402
     test_sample_qc_triage,
     test_nodes,
     test_judge,
+    test_judge_provenance,
     test_step_prompts,
     test_run_qc_metrics,
 )
@@ -82,6 +83,7 @@ MODULES = (
     test_sample_qc_triage,
     test_nodes,
     test_judge,
+    test_judge_provenance,
     test_step_prompts,
     test_graph_smoke,
 )

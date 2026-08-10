@@ -175,6 +175,103 @@ instruction changed nothing.
 
 `prompts/steps/README.md` has the required shape and how to add one.
 
+## What gets recorded about the judge
+
+A verdict is only as interpretable as the thing that produced it, and on the
+measurement above `gpt-oss:120b` scored 12/12 where `llama3.1:8b` scored 6/12 on
+the same cases. Two runs of the same data judged by different models are two
+different results, so every run records which judge scored it.
+
+`run_metadata.json` grows a `judge_sessions` list:
+
+```json
+"judge_sessions": [
+  {
+    "session_id": "js-00-a3f21c7e04bd",
+    "recorded_at": "2026-08-10T08:57:48+00:00",
+    "mode": "new",
+    "hash_algorithm": "sha256",
+    "backend": "local",
+    "default_model": "gpt-oss:120b",
+    "step_models": { "run_qc_metrics": "small:1b", "run_pca": "gpt-oss:120b" },
+    "base_prompt_sha256": "ee2bc398…",
+    "step_prompts": {
+      "run_qc_metrics": {
+        "prompt_sha256": "cb16a10b…",
+        "addendum": "run_qc_metrics.md",
+        "addendum_sha256": "df912158…"
+      },
+      "run_pca": { "prompt_sha256": "ee2bc398…", "addendum": null,
+                   "addendum_sha256": null }
+    },
+    "temperature": 0.0,
+    "structured_output": "with_structured_output(JudgeResult), raw-JSON fallback",
+    "endpoint": "http://lsbnb-dgx2.iis.sinica.edu.tw:11434/v1"
+  }
+]
+```
+
+Four things about it are deliberate:
+
+**The values are the ones that won.** `--judge` beats `SCRNA_JUDGE_BACKEND`, a
+constructor argument beats `SCRNA_JUDGE_MODEL`, and a `step_models` entry beats
+the default — so the environment says what was *offered*, and the record is
+taken from the live judge object, which is the only thing that knows what was
+*used*. Note that `get_judge` passes no model, so the CLI cannot set one: the
+model comes from `SCRNA_JUDGE_MODEL` or the built-in default.
+
+**The prompt hashes are of the text, not the file.** `prompt_sha256` is taken
+over the composed system message the model was actually sent — base plus
+addendum, exactly as the judge assembles it — so editing either moves it.
+`addendum_sha256` sits alongside so a change can be attributed to the step's own
+file rather than to the base prompt every step shares. A step with no addendum
+has `prompt_sha256` equal to `base_prompt_sha256`, which is the truth about it.
+
+**It appends, it never overwrites.** A run resumed with `--resume-from` after
+changing `SCRNA_JUDGE_MODEL` is judged by two models and its verdicts are a
+mixture; overwriting would leave a file claiming the second produced all of
+them. `mode` is `new`, `artifact_resume` or `checkpoint_continue`.
+`--continue-from` builds its own judge and scores every step after the gate, so
+it appends too.
+
+**Nothing secret goes in.** No API key, and any `user:password@` in the endpoint
+URL is stripped before it is written. `run_metadata.json` is written beside
+results that get shared.
+
+**Every verdict names its session.** The `judge` events in `audit.jsonl` carry
+`model` and `judge_session_id`, so "which model said this, under which prompt"
+is a lookup rather than a join against timestamps — which stops being
+unambiguous the moment a run is resumed twice in the same second. The stub
+records `model: null` and `"backend": "stub"`, because "the stub scored this"
+and "nobody knows" must not look the same.
+
+The id has two parts and each does a job:
+
+```
+js-00-a3f21c7e04bd
+   │  └── sha256 of the judge configuration, first 12 hex
+   └───── position in this run's judge_sessions
+```
+
+The index makes it unique even when a run is resumed under an identical
+configuration. The fingerprint makes two sessions *visibly* different when the
+prompt moved and the model did not — the case a model name alone cannot tell
+apart, and the reason this is not simply a random id. It is recomputable from
+what is stored, so the link between a verdict and a configuration can be checked
+rather than trusted, and the same fingerprint in two different runs does mean
+the same judge configuration.
+
+The format is `js-\d{2,}-[0-9a-f]{12}` — **at least** two digits. The index is
+zero-padded so the common cases line up when read, not truncated, so a study
+resumed a hundred times reaches `js-100-…` rather than colliding with `js-00-…`.
+Anything parsing these should not assume a fixed width.
+
+The fingerprint is taken over what decides a verdict — backend, models, prompt
+hashes, temperature, structured-output mode — and **not** over the endpoint.
+Serving the same model from a second machine is not a different judge, and
+keeping the endpoint out means a session id cannot carry a hostname or anything
+embedded beside one.
+
 ## When something goes wrong
 
 **Intermittent HTTP 500 from Ollama.** Seen on large payloads under load. The

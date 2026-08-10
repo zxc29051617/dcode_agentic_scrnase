@@ -112,8 +112,16 @@ def build_graph(
     policy: GatePolicy = DEFAULT_POLICY,
     judge: JudgeClient | None = None,
     checkpointer: Any = None,
+    judge_session_id: str | None = None,
 ):
-    """Wire and compile the workflow graph."""
+    """Wire and compile the workflow graph.
+
+    `judge_session_id` is the entry in the run metadata that describes `judge`.
+    It is passed in rather than derived here because the caller is what recorded
+    it, and a second derivation would be a second answer to the same question.
+    Absent — as in a test that builds a graph directly — the verdicts simply
+    carry no session, which is honest about there being none.
+    """
     client = judge or get_judge()
     graph = StateGraph(WorkflowState)
 
@@ -129,7 +137,7 @@ def build_graph(
     def add_judge(step: str) -> str:
         tool = REGISTRY[step].judge
         assert tool is not None, f"{step} has no judge in the registry"
-        graph.add_node(tool, make_judge_node(step, tool, client))
+        graph.add_node(tool, make_judge_node(step, tool, client, judge_session_id))
         graph.add_edge(step, tool)
         return tool
 
