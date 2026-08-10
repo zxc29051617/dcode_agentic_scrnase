@@ -1,0 +1,162 @@
+# The suite, on every pull request and every push to master.
+#
+# The environment comes from `conda-lock.yml`, not from re-solving
+# `environment.yml`: a CI run that resolves its own dependencies is testing
+# whatever the channels served that morning, which is the thing the lockfile
+# exists to stop.
+name: tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# Read-only, and nothing here reads a repository secret. The full suite has to
+# be runnable by anyone who forks this, including on a pull request from a fork,
+# where secrets are not available at all.
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: full suite · linux-64 from conda-lock.yml
+    runs-on: ubuntu-latest
+    # The suite runs a real Scanpy pipeline on fixtures dozens of times; ~20
+    # minutes locally. Sixty is room for a cold cache and a slow runner, and
+    # still short enough that a hang is caught rather than waited out.
+    timeout-minutes: 60
+
+    env:
+      # The judge is the only part of this that can reach the network. Pinned to
+      # the deterministic stub so CI never talks to the lab endpoint, OpenAI, or
+      # anything else — and so a verdict in CI depends on the code under test
+      # rather than on a model's mood.
+      SCRNA_JUDGE_BACKEND: stub
+      # A fixed absolute path, because a conda environment bakes its own prefix
+      # into scripts and activation hooks: caching one only works if it is
+      # restored where it was built.
+      CI_ENV: ${{ github.workspace }}/.ci-env
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Restore the environment
+        id: cache-env
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ci-env
+          # Keyed on the lockfile itself, so any dependency change misses the
+          # cache and rebuilds. `environment.yml` is deliberately not in the key:
+          # editing it without re-locking must not silently reuse the old
+          # environment, and the drift check below fails that case outright.
+          key: ci-env-linux-64-${{ hashFiles('conda-lock.yml') }}
+
+      - name: Build the environment from the lockfile
+        if: steps.cache-env.outputs.cache-hit != 'true'
+        run: |
+          python -m pip install --quiet "conda-lock==4.0.2"
+          # `--micromamba` lets conda-lock fetch its own solver, so this does not
+          # depend on whatever conda the runner image happens to ship.
+          #
+          # `conda-lock install` and not `micromamba -f conda-lock.yml`: measured,
+          # micromamba installs the 257 conda packages and silently skips all 55
+          # pip ones, which would leave no langgraph and no scanpy.
+          conda-lock install --micromamba --prefix "$CI_ENV" conda-lock.yml
+
+      - name: Put the environment on PATH
+        run: |
+          echo "$CI_ENV/bin" >> "$GITHUB_PATH"
+
+      - name: Report what is actually installed
+        run: |
+          python -VV
+          python - <<'PY'
+          import importlib.metadata as m
+          for name in ("langgraph", "langgraph-checkpoint-sqlite", "langchain-openai",
+                       "pydantic", "scanpy", "anndata", "numpy", "scipy", "pandas",
+                       "scikit-learn", "harmonypy", "scrublet", "celltypist",
+                       "leidenalg", "igraph", "h5py"):
+              try:
+                  print(f"{name:32} {m.version(name)}")
+              except m.PackageNotFoundError:
+                  raise SystemExit(f"{name} is missing from the locked environment")
+          PY
+          # The FASTQ route shells out to these; without them two graph tests
+          # fail rather than skip, so their absence must be caught here.
+          fastqc --version
+          multiqc --version
+
+      - name: The lockfile still matches environment.yml
+        run: |
+          python -m pip install --quiet "conda-lock==4.0.2"
+          # Re-solves only when environment.yml actually changed, so an unchanged
+          # input costs nothing and cannot produce a spurious diff from channel
+          # drift. A pin edited without re-locking fails here.
+          conda-lock lock --file environment.yml --platform linux-64 --check-input-hash
+          git diff --exit-code -- conda-lock.yml \
+            || { echo "::error::conda-lock.yml is out of date; run: conda-lock lock --file environment.yml --platform linux-64"; exit 1; }
+
+      - name: Run the test suite
+        run: |
+          set -o pipefail
+          python tests/run_all.py 2>&1 | tee suite.log
+
+      - name: The exported graph matches the code
+        run: python scripts/export_graph.py --check
+
+      - name: No test skipped for a missing dependency
+        if: always()
+        run: |
+          # Skips are expected here and are not all equal. The public 10x
+          # datasets, the reference transcriptomes and Cell Ranger's own output
+          # are tens of gigabytes and are not on a runner; tests that need them
+          # skip with a reason naming the data. A skip that names a missing tool
+          # or import is different in kind — it means the environment did not
+          # build, and a green suite that mostly did not run is worse than a red
+          # one.
+          #
+          # Every reason the suite can currently emit, checked against the
+          # sources rather than guessed:
+          #
+          #   data      10x public matrices not downloaded
+          #   data      neuron_1k_v3 / pbmc_1k_protein_v3 not downloaded
+          #   data      no 10x FASTQ bundles downloaded
+          #   data      pbmc_1k_v3 fastqs not present
+          #   data      no real cellranger output on this machine
+          #   data      ... has not been counted (see data/README.md)
+          #   data      both pbmc libraries need counting first (see data/README.md)
+          #   data      reference/ not linked; run scripts/link_reference.sh
+          #   DEPENDENCY  fastqc not installed          <- must fail this step
+          if [ ! -f suite.log ]; then echo "::error::no suite output"; exit 1; fi
+          grep -E '^  skip' suite.log \
+            | grep -viE 'not downloaded|not present|not linked|no real cellranger|no 10x FASTQ bundles|data/README\.md' \
+            > unexpected-skips.txt || true
+          if [ -s unexpected-skips.txt ]; then
+            echo "::error::a test skipped for something other than absent test data"
+            cat unexpected-skips.txt
+            exit 1
+          fi
+          echo "all $(grep -cE '^  skip' suite.log) skip(s) name absent test data:"
+          grep -E '^  skip' suite.log || true
+
+      - name: Keep the test output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: suite-output
+          path: |
+            suite.log
+            unexpected-skips.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+# Once `scripts/export_registry_docs.py` exists, its `--check` belongs beside the
+# graph check above — the same drift argument, for the registry tables.
