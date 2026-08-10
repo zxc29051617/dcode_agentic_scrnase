@@ -17,7 +17,7 @@ from .judge import describe_judge, get_judge
 from .policy import GatePolicy
 from .provenance import AuditLog, record_judge_session
 from .registry import REGISTRY
-from .state import new_run_state, summarize
+from .state import new_run_state, summarize, unresolved_choices
 
 #: One superstep per node; the mainline plus judges is well over LangGraph's default of 25.
 DEFAULT_RECURSION_LIMIT = 150
@@ -174,11 +174,53 @@ def _answer_until_done(
             return final
         final = graph.invoke(Command(resume=answer), config=invoke_config)
 
-    # Reaching here means the graph ran to an end node. Only this caller knows
-    # that; a node cannot tell whether it is the last one.
-    if not final.get("halted"):
-        final = {**final, "status": "failed" if final.get("errors") else "completed"}
-    return final
+    return _finish(final)
+
+
+def _finish(final: dict[str, Any]) -> dict[str, Any]:
+    """Say how the run ended. Only this caller knows that it did.
+
+    ## A run that produced no report did not complete
+
+    `completed` used to mean "the graph reached an end node without halting",
+    which is a fact about the graph rather than about the analysis. It was true
+    of a run that stopped dead because nobody chose the QC thresholds: the gate
+    offered `accept`, `accept` could not carry an unfiltered object into the
+    mainline, so the route ended — with no clustering, no markers, no report,
+    and `status: completed`.
+
+    So completion is defined by the artefact instead. `build_report` is the last
+    node on every route that finishes; a run with no entry for it did not get
+    there, whatever else it managed, and that is a halt.
+
+    A report that ran and *failed* is a different outcome and keeps its own
+    name: the run got to the end and the end is broken.
+    """
+    if final.get("halted"):
+        return final
+
+    by_step = {r["step"]: r["status"] for r in final.get("step_results") or []}
+    if "build_report" not in by_step:
+        return {**final, "halted": True, "status": "halted",
+                "halt_reason": _why_no_report(final)}
+
+    return {**final, "status": "failed" if final.get("errors") else "completed"}
+
+
+def _why_no_report(final: dict[str, Any]) -> str:
+    """The most specific reason available for ending without a report.
+
+    An unresolved choice is named outright, because it is both the usual cause
+    and the one a person can act on: the run is not broken, it is waiting for a
+    number nobody supplied.
+    """
+    open_choices = unresolved_choices(final.get("artifacts"))
+    if open_choices:
+        waiting = "; ".join(f"{step} ({key} is {value})" for step, key, value in open_choices)
+        return (f"stopped without a report: {waiting}. "
+                f"Supply the value and resume, or answer `revise` at the gate")
+    last = final.get("current_step") or "the first step"
+    return f"stopped without a report: the run ended at {last} before build_report"
 
 
 def continue_workflow(
@@ -502,7 +544,31 @@ def main(argv: list[str] | None = None) -> int:
             f"  python -m src.run --continue-from {final['run_id']} --interactive",
             file=sys.stderr,
         )
-    return 1 if final.get("errors") else 0
+    return _exit_code(report)
+
+
+#: What the shell is told. A caller scripting this needs one question answered —
+#: did I get a report — and the previous code answered a different one, returning
+#: 0 for a run that halted at the first gate with nothing produced.
+#:
+#: `needs_review` is deliberately 0: an interactive run that stopped to ask
+#: something has not failed, it is waiting, and `--continue-from` picks it up. A
+#: headless run never reaches that state.
+EXIT_CODES: dict[str, int] = {
+    "completed": 0,
+    "needs_review": 0,
+    "failed": 1,
+    "halted": 2,
+    "running": 3,
+}
+
+
+def _exit_code(report: dict[str, Any]) -> int:
+    status = str(report.get("status") or "running")
+    if status == "completed" and report.get("errors"):
+        # A report was produced and something still went wrong on the way.
+        return EXIT_CODES["failed"]
+    return EXIT_CODES.get(status, 3)
 
 
 def _continue_main(args: argparse.Namespace) -> int:
@@ -523,10 +589,11 @@ def _continue_main(args: argparse.Namespace) -> int:
         # Loud and specific. The alternative every one of these replaces is
         # starting the graph from the beginning, which looks like it worked.
         print(f"cannot continue {args.continue_from}: {exc}", file=sys.stderr)
-        return 2
+        return 4
 
-    print(json.dumps(summarize(final), indent=2, ensure_ascii=False))
-    return 1 if final.get("errors") else 0
+    report = summarize(final)
+    print(json.dumps(report, indent=2, ensure_ascii=False))
+    return _exit_code(report)
 
 
 def _policy_answer(args: argparse.Namespace) -> Callable[[dict[str, Any]], dict[str, Any]]:

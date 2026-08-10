@@ -138,6 +138,38 @@ def new_run_state(
     )
 
 
+#: Steps that stop rather than guess, and the field each uses to say so. Named
+#: per step because each reports its own outcome under its own name, and
+#: guessing at a shared convention is how one of them gets missed.
+#:
+#: Lives here rather than in the skill that first needed it, because two places
+#: deciding what "unresolved" means is two places that can disagree about
+#: whether a run finished.
+UNRESOLVED_STATE_KEYS: dict[str, str] = {
+    "cell_calling_review": "cell_calling_state",
+    "apply_cell_qc_filter": "filter_state",
+    "annotate_cells": "annotation_state",
+}
+
+
+def unresolved_choices(artifacts: dict[str, Any] | None) -> list[tuple[str, str, str]]:
+    """`(step, field, value)` for every choice a step left for a person to make.
+
+    A `*_state` that still ends in `review` is a step that produced evidence and
+    then declined to pick a number. Two of them — the cell count and the QC
+    thresholds — cannot be waved past with `accept`, because there is no
+    filtered object to hand on, so a run carrying one of these did not finish
+    the analysis whatever else it managed.
+    """
+    recorded = artifacts or {}
+    open_choices: list[tuple[str, str, str]] = []
+    for step, key in sorted(UNRESOLVED_STATE_KEYS.items()):
+        value = (recorded.get(step) or {}).get(key)
+        if value and value != "applied" and str(value).endswith("review"):
+            open_choices.append((step, key, str(value)))
+    return open_choices
+
+
 def step_output(state: WorkflowState, step: str) -> dict[str, Any]:
     """Return the recorded output of `step`, or an empty dict."""
     return (state.get("artifacts") or {}).get(step) or {}
