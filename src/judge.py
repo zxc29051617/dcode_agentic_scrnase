@@ -118,6 +118,11 @@ def judge_session_id(index: int, description: dict[str, Any]) -> str:
     configuration can be checked rather than trusted. Scoped to its run, which
     is where both the metadata and the audit log live; the same fingerprint in
     two different runs does mean the same judge configuration.
+
+    The index is padded to *at least* two digits and is not truncated to two:
+    `js-\\d{2,}-[0-9a-f]{12}` is the format, and a run resumed a hundred times
+    reaches `js-100-…`. Zero-padding is only there so the common cases line up
+    when read; a fixed width would eventually either collide or lie.
     """
     return f"js-{index:02d}-{session_fingerprint(description)[:12]}"
 

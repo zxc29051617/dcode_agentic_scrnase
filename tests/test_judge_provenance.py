@@ -48,6 +48,13 @@ STEPS = ("run_qc_metrics", "run_pca", "cross_check_annotation")
 #: A value that must never appear in a file written beside shared results.
 SECRET = "sk-do-not-write-this-anywhere-1234567890"
 
+#: The session id contract, written here rather than imported so the test states
+#: it independently of the code that produces it. `\d{2,}` and not `\d{2}`: the
+#: index is zero-padded to two digits so the common cases line up when read, not
+#: truncated to two, and a long-running study resumed a hundred times reaches
+#: `js-100-…`. A fixed width would eventually have to either collide or lie.
+SESSION_ID_FORMAT = r"js-\d{2,}-[0-9a-f]{12}"
+
 
 # --- helpers ----------------------------------------------------------------------
 
@@ -513,7 +520,7 @@ def test_a_session_id_carries_no_endpoint_key_or_other_secret():
 
     for forbidden in (SECRET, "hunter2", "someone", "lab.example", "11434", "gpt-oss"):
         assert forbidden not in identifier, f"{forbidden!r} leaked into {identifier!r}"
-    assert re.fullmatch(r"js-\d{2}-[0-9a-f]{12}", identifier), identifier
+    assert re.fullmatch(SESSION_ID_FORMAT, identifier), identifier
 
 
 def test_the_same_configuration_fingerprints_the_same_and_a_new_prompt_does_not():
@@ -540,6 +547,53 @@ def test_the_endpoint_alone_does_not_change_the_fingerprint():
 
     assert here["endpoint"] != there["endpoint"], "and both are still recorded"
     assert session_fingerprint(here) == session_fingerprint(there)
+
+
+def test_the_index_keeps_growing_past_two_digits_rather_than_wrapping():
+    """A long study resumed a hundred times must not start reusing ids.
+
+    Not a failure today — nothing here has been resumed ninety-nine times — but
+    the padding is a reading convenience and the format has to say so, or the
+    first run that crosses the boundary produces ids that no longer match what
+    anything downstream was written to expect.
+    """
+    with prompts("base", {}):
+        described = describe_judge(LocalLLMJudge(model="m", api_key="x"), STEPS)
+
+    for index, expected in [(0, "js-00-"), (7, "js-07-"), (99, "js-99-"),
+                            (100, "js-100-"), (1234, "js-1234-")]:
+        identifier = judge_session_id(index, described)
+        assert identifier.startswith(expected), identifier
+        assert re.fullmatch(SESSION_ID_FORMAT, identifier), identifier
+
+    # The two halves stay independent: a bigger index does not disturb the
+    # fingerprint, which is what makes "same judge, later session" readable.
+    suffixes = {judge_session_id(i, described).rsplit("-", 1)[1] for i in (0, 100, 1234)}
+    assert len(suffixes) == 1
+
+    # And the ids are still distinct across the boundary.
+    assert len({judge_session_id(i, described) for i in range(95, 106)}) == 11
+
+
+def test_a_run_that_already_has_a_hundred_sessions_gets_the_next_one():
+    """The index comes from the recorded list, so this is the real assignment path."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "run_metadata.json"
+        path.write_text(json.dumps({
+            "run_id": "r",
+            "judge_sessions": [{"session_id": f"js-{i:02d}-000000000000"} for i in range(100)],
+        }), encoding="utf-8")
+
+        assigned = record_judge_session(
+            path, mode="artifact_resume", session={"backend": "stub"}
+        )
+        sessions = json.loads(path.read_text(encoding="utf-8"))["judge_sessions"]
+
+    assert assigned.startswith("js-100-"), assigned
+    assert re.fullmatch(SESSION_ID_FORMAT, assigned), assigned
+    assert len(sessions) == 101, "it appended rather than replacing"
+    assert sessions[-1]["session_id"] == assigned
+    assert len({s["session_id"] for s in sessions}) == 101, "no id was reused"
 
 
 def test_two_identical_configurations_in_one_run_still_get_different_ids():

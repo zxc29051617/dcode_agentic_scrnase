@@ -261,6 +261,11 @@ what is stored, so the link between a verdict and a configuration can be checked
 rather than trusted, and the same fingerprint in two different runs does mean
 the same judge configuration.
 
+The format is `js-\d{2,}-[0-9a-f]{12}` — **at least** two digits. The index is
+zero-padded so the common cases line up when read, not truncated, so a study
+resumed a hundred times reaches `js-100-…` rather than colliding with `js-00-…`.
+Anything parsing these should not assume a fixed width.
+
 The fingerprint is taken over what decides a verdict — backend, models, prompt
 hashes, temperature, structured-output mode — and **not** over the endpoint.
 Serving the same model from a second machine is not a different judge, and
