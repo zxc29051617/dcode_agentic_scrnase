@@ -175,8 +175,11 @@ REGISTRY: dict[str, StepSpec] = {
                  revisable=("scmayomap_tissue",),
                  config_keys=("scmayomap_tissue",)),
         StepSpec("human_review_decision", "gate", None),
+        # `species` is read by the run-identity section. Declaring it changes no
+        # cut — `resolve_reference` and `matrix_preflight` read it far earlier —
+        # but the declaration has to match what the source does.
         StepSpec("build_report", "utility", "judge_report",
-                 config_keys=("inline_figures",)),
+                 config_keys=("inline_figures", "species")),
     )
 }
 
