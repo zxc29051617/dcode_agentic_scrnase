@@ -115,7 +115,7 @@ class ModelNamingJudge(StubJudge):
 def judged_by(client):
     """Make `run_workflow` use this judge, without needing an endpoint."""
     original = run_module.get_judge
-    run_module.get_judge = lambda _backend=None: client
+    run_module.get_judge = lambda _backend=None, _model=None: client
     try:
         yield
     finally:

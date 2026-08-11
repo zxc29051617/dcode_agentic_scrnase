@@ -1,5 +1,7 @@
 # dcode_agentic_scrnaseq
 
+[![tests](https://github.com/zxc29051617/dcode_agentic_scrnase/actions/workflows/tests.yml/badge.svg)](https://github.com/zxc29051617/dcode_agentic_scrnase/actions/workflows/tests.yml)
+
 這是新的單細胞 RNA-seq agent workflow 研究/實作區，只在這個資料夾內建立與修改，不動 `claude_agentic_scrna/`。
 
 ## 目標
@@ -22,7 +24,7 @@
 **程式碼**（進 git）
 - `src/`：LangGraph orchestrator 實作
 - `skills/`：每個 workflow step 一個工具（`SKILL.md` 契約 + Python 實作），26 個，與 `src/registry.py` 一一對應
-- `tests/`：452 個測試，`python tests/run_all.py` 全跑
+- `tests/`：`python tests/run_all.py` 全跑（數量見下面的 CI baseline）
 - `scripts/`：維運腳本（取測試資料、連 reference、匯出 graph、查磁碟用量）
 
 **資料與設定**（進 git）
@@ -98,8 +100,26 @@ python skills/cellranger_count/cellranger_count.py \
 python tests/run_all.py
 ```
 
-資料、reference、工具都在專案內，但**內容不進 git**（約 27 GB）。缺的時候相關測試會
-乾淨地 skip，所以剛 clone 下來就能跑，只是測得比較少：
+### 會跑出幾個測試,取決於你手上有什麼資料
+
+**不要期待每台電腦都是同一個數字。** 測試數量固定,但有多少會實際執行,取決於
+本機有沒有那幾十 GB 的公開資料集、reference transcriptome 和 Cell Ranger 的輸出。
+缺的時候相關測試會**乾淨地 skip 並說明缺什麼**,不會失敗。
+
+| 環境 | 結果 |
+|---|---|
+| **CI baseline**(GitHub runner,沒有任何大型資料) | **0 fail,20 個 skip 全部是缺資料** |
+| 有實驗室資料的機器 | 更多 data-dependent 測試會真的跑,skip 數字下降 |
+
+**會變的是通過數,不會變的是那兩件事** —— 沒有 failure,而且每個 skip 都指名它缺
+哪份資料。這裡刻意不把通過數寫死:上一版 README 同時宣稱 452 和 463,兩個都錯。
+要看當下的數字,點上面那顆 badge。
+
+（寫這段時量到的是 597 pass / 0 fail / 20 skip;你讀到時多半已經不是了,這正是
+為什麼判斷標準是上面那兩件事而不是這個數字。）
+
+CI 會另外檢查 skip 的**理由**:缺資料的 skip 可以接受,缺 dependency 的 skip
+會讓 build 失敗 —— 一套大部分沒跑到卻是綠的測試,比紅的更糟。
 
 ```bash
 bash scripts/get_test_data.sh          # 列出需要什麼、有什麼
@@ -161,16 +181,29 @@ python -m src.run --input <raw_feature_bc_matrix.h5> --force-cells 1500
 工具會把跟 Cell Ranger 判定的差異列出來讓你判斷。
 
 Judge 預設用 `StubJudge`（不需要模型，只看 status/warnings/errors），
-全部 463 個測試都跑在它上面，不碰網路。要接真的模型:
+整套測試都跑在它上面，不碰網路。要接真的模型:
 
 ```bash
-cp .env.example .env      # 填 endpoint、模型、key（.env 不進 git）
+cp .env.example .env      # 填 endpoint、模型、key（.env 不進 git，程式啟動時會讀）
 python scripts/check_judge_endpoint.py    # 兩秒，先確認通不通
-python -m src.run --judge local ...
+python -m src.run --input <matrix> --judge local --judge-model gpt-oss:120b
 ```
 
 **任何 OpenAI 相容端點都可以**——Ollama、vLLM、LM Studio，以及 OpenAI 本身。
-換端點只要改 `.env`，程式碼一行都不用動。
+換端點只要改 `.env`，程式碼一行都不用動。`--judge ollama` 和
+`--judge openai-compatible` 都是 `local` 的別名，它們走同一個 client。
+
+設定的優先順序，高的贏（`.env` 只填「還沒設定」的變數，所以它永遠在最下面）：
+
+| | backend | model |
+|---|---|---|
+| 1 | `--judge` | `--judge-model` |
+| 2 | `SCRNA_JUDGE_BACKEND` | `SCRNA_JUDGE_MODEL` |
+| 3 | `.env` 裡的同名變數 | `.env` 裡的同名變數 |
+| 4 | `stub` | `qwen2.5:7b-instruct` |
+
+實際生效的值會記進 `run_metadata.json` 的 `judge_sessions`，每一筆 verdict 也
+會在 audit log 裡帶上產生它的 model —— 記的是**解析後的結果**，不是環境變數。
 
 > **完整說明見 [`docs/judge_setup.md`](docs/judge_setup.md)**：三種端點的設定範例、
 > 出問題時怎麼分辨是網路/模型/schema、模型實測比較、**以及送出去的 payload
@@ -245,6 +278,42 @@ judge verdict、人工決策、套件版本與模型 hash）。條件不成立�
 bash scripts/run_disk_usage.sh        # 各次執行多大、跑完了沒
 find runs/<run_id> -name adata.h5ad -delete   # 留報告，丟中間檔（就不能再續跑）
 ```
+
+## 兩種續跑,問的是不同的問題
+
+名字很像,做的事完全不同,**不要混用**:
+
+| | 問題 | 依據 | 什麼時候用 |
+|---|---|---|---|
+| `--resume-from RUN_ID` | 哪些**結果**還有效? | 磁碟上的 artifact、`run_metadata.json`、audit log | 改了參數或資料,想重跑但不想從頭 |
+| `--continue-from RUN_ID` | 這次執行**停在哪裡**? | `runs/<run_id>/checkpoint.sqlite` | 上次停在 human gate,要回答它 |
+
+```bash
+# 改了 QC threshold,重跑受影響的部分,前面沒受影響的沿用
+python -m src.run --input <matrix> --resume-from 20260810T065058Z-f34afde0 --min-genes 200
+
+# 上次 --interactive 停在 gate,process 已經關掉了,現在回來回答
+python -m src.run --continue-from 20260810T065058Z-f34afde0 --interactive
+```
+
+`--resume-from` 會算出一個 **cut**:最早不能再信任的 step。改 `--celltypist-model`
+只會從 `annotate_cells` 重跑,PCA 和 clustering 沿用;改輸入資料則整份重跑。
+
+`--continue-from` 只有 `--interactive` 跑過的 run 才有 checkpoint 可以接
+(那是唯一會寫 `checkpoint.sqlite` 的模式)。找不到就明確報錯,**絕不從頭重跑**。
+
+### exit code
+
+| code | 意思 |
+|---|---|
+| `0` | `completed`(有產出報告),或 `needs_review`(停在 gate 等人,可以 `--continue-from`) |
+| `1` | `failed` —— 過程中有 error |
+| `2` | `halted` —— **停了而且沒有產出報告**(例如 QC threshold 沒給、或人選了 stop) |
+| `3` | `running` —— 不該漏出來 |
+| `4` | `--continue-from` 找不到可以回答的東西 |
+
+`2` 跟 `4` 分開,因為「分析停住」跟「找不到那次執行」是兩種不同的問題。
+腳本要問「我拿到報告了嗎」,判斷 exit code 是不是 `0` 就夠。
 
 ## src/ 分層
 

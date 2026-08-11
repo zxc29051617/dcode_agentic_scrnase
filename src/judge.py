@@ -415,11 +415,43 @@ class LocalLLMJudge:
             return JudgeResult.model_validate(data)
 
 
-def get_judge(backend: str | None = None) -> JudgeClient:
-    """Build a judge from `backend` or the `SCRNA_JUDGE_BACKEND` env var."""
-    choice = (backend or os.environ.get("SCRNA_JUDGE_BACKEND", "stub")).lower()
+#: Every accepted `--judge` value. `ollama` and `openai-compatible` are aliases
+#: for `local` and always have been — the client speaks the OpenAI HTTP API and
+#: does not care who is serving it. They are named because the documentation
+#: named them, and because "which of these three do I want" is a question the
+#: answer to is "any of them".
+#:
+#: The CLI's `choices` is built from this, so a value the CLI accepts and a
+#: value `get_judge` accepts cannot drift apart again: `--judge ollama` was
+#: documented, accepted here, and rejected by argparse.
+BACKEND_ALIASES: dict[str, str] = {
+    "stub": "stub",
+    "local": "local",
+    "ollama": "local",
+    "openai-compatible": "local",
+}
+
+
+def get_judge(backend: str | None = None, model: str | None = None) -> JudgeClient:
+    """Build the judge this run will use.
+
+    Resolution, highest first:
+
+        backend   the `--judge` argument > SCRNA_JUDGE_BACKEND > "stub"
+        model     the `--judge-model` argument > SCRNA_JUDGE_MODEL > built-in
+
+    `.env` sits underneath both, because `src.envfile` only fills variables that
+    are not already set — so a file cannot beat an export, and neither can beat
+    the command line.
+
+    `model` is ignored by the stub, which calls no model. Passing one with
+    `--judge stub` is not an error: it is a run that chose not to use it.
+    """
+    requested = backend or os.environ.get("SCRNA_JUDGE_BACKEND") or "stub"
+    choice = BACKEND_ALIASES.get(requested.strip().lower())
+    if choice is None:
+        accepted = ", ".join(sorted(BACKEND_ALIASES))
+        raise ValueError(f"unknown judge backend: {requested!r} (expected one of: {accepted})")
     if choice == "stub":
         return StubJudge()
-    if choice in {"local", "ollama", "openai-compatible"}:
-        return LocalLLMJudge()
-    raise ValueError(f"unknown judge backend: {choice!r} (expected 'stub' or 'local')")
+    return LocalLLMJudge(model=model)

@@ -21,13 +21,23 @@ tests, no network. Use it whenever you want the pipeline's behaviour rather than
 the model's opinion.
 
 `local` is a misleading name kept for compatibility: it means *any
-OpenAI-compatible endpoint*, local or not. `--judge openai-compatible` is
-accepted as an alias.
+OpenAI-compatible endpoint*, local or not. `ollama` and `openai-compatible` are
+accepted as aliases for it — all three build the same client, which speaks the
+OpenAI HTTP API and does not care who is serving it.
+
+    --judge stub                 the deterministic stub, no model, no network
+    --judge local                \
+    --judge ollama                > the same thing, three spellings
+    --judge openai-compatible    /
+
+Anything else is refused by name, by both the CLI and `get_judge`, listing what
+is accepted. The two aliases were documented here and rejected by argparse until
+the list was generated from one place.
 
 ## Configuring an endpoint
 
 Four environment variables, normally set in `.env` (gitignored — your key never
-reaches a commit):
+reaches a commit). The file is read at startup:
 
 ```bash
 cp .env.example .env
@@ -38,7 +48,35 @@ cp .env.example .env
 | `SCRNA_JUDGE_BASE_URL` | the endpoint, **including `/v1`** |
 | `SCRNA_JUDGE_MODEL` | the model name as that server spells it |
 | `SCRNA_JUDGE_API_KEY` | your key, or any string for servers that ignore it |
-| `SCRNA_JUDGE_BACKEND` | `stub` or `local`; `--judge` overrides it |
+| `SCRNA_JUDGE_BACKEND` | `stub`, `local`, `ollama` or `openai-compatible` |
+
+## What wins
+
+Highest first. `.env` fills only variables that are **not already set**, so it
+can never undo an export, and neither can undo a flag:
+
+| | backend | model |
+|---|---|---|
+| 1 | `--judge` | `--judge-model` |
+| 2 | `SCRNA_JUDGE_BACKEND` | `SCRNA_JUDGE_MODEL` |
+| 3 | the same name in `.env` | the same name in `.env` |
+| 4 | `stub` | `qwen2.5:7b-instruct` |
+
+```bash
+python -m src.run --input <matrix> --judge local --judge-model gpt-oss:120b
+```
+
+Two things this fixes rather than describes. `--judge` used to default to
+`"stub"`, which meant the CLI always passed an explicit value and
+`SCRNA_JUDGE_BACKEND` could never be reached from the command line — a variable
+this guide told people to set, that did nothing. And `.env` was documented here
+from the beginning and read by nothing, so following these instructions exactly
+gave you the stub with no indication why.
+
+What actually got used is recorded per run in `run_metadata.json` under
+`judge_sessions`, and per verdict in the audit log. The recorded value is the
+resolved one, not the environment variable — see *What gets recorded about the
+judge* below.
 
 ### Ollama, on a server (the lab DGX)
 
