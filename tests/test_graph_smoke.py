@@ -63,6 +63,13 @@ IMPLEMENTED = [
 #: let routing be tested, not to suggest what a real run should use.
 OPERATOR_CHOICES = {"min_genes": 1, "max_pct_mito": 100}
 
+#: What makes a FASTQ fixture identifiable as 10x data, supplied explicitly so
+#: the answer does not depend on whether this machine has Cell Ranger installed.
+#: `fastq_preflight` reads chemistry from whitelist membership; without a
+#: whitelist it warns, and the run stops at the gate for a reason that has
+#: nothing to do with the code under test.
+RECOGNISABLE_READS = {"barcode_whitelist_dir": str(fixtures.SYNTHETIC_WHITELIST_DIR)}
+
 
 def _run(config, *, policy=WALK, judge=None):
     """Run the graph on a fixture bundle with a working reference.
@@ -142,13 +149,26 @@ def test_fastq_qc_really_runs_inside_the_graph():
 
 
 def test_a_failed_count_never_reaches_the_report():
-    """Cell Ranger cannot run on a fixture, and that must stop the pipeline."""
-    final = _run({"input_type": "fastq"}, policy=GatePolicy())
+    """A count that cannot run must stop the pipeline.
+
+    The binary is named explicitly, and named as something that cannot exist, so
+    the outcome is the same on a machine with Cell Ranger installed and one
+    without. Left to the search, this test asked two different questions
+    depending on the developer: on a machine with Cell Ranger it really invoked
+    it and watched it reject the fixture; on a machine without one it never got
+    past `fastq_preflight` and passed for an unrelated reason.
+    """
+    final = _run(
+        {"input_type": "fastq", "binary": "/nonexistent/cellranger-never-installed",
+         **RECOGNISABLE_READS},
+        policy=GatePolicy(),
+    )
     steps = _steps(final)
     assert final["halted"] is True
     assert "build_report" not in steps
     assert "run_qc_metrics" not in steps
     assert any("cellranger" in e for e in final["errors"])
+    assert "cellranger_count" in steps, "it has to get far enough to try"
 
 
 def test_a_raw_matrix_always_goes_through_cell_calling_review():
@@ -339,12 +359,17 @@ def test_species_mismatch_stops_the_run():
     assert any("species mismatch" in e for e in final["errors"])
 
 
-def test_fastq_preflight_passes_with_a_valid_reference_and_real_reads():
-    """Needs a bundle whose barcodes are on a real whitelist.
+def test_fastq_preflight_passes_with_a_valid_reference_and_recognisable_reads():
+    """Needs a bundle whose barcodes are on a whitelist the test supplies.
 
     Chemistry is identified by whitelist membership, so a fixture of random ACGT
     is correctly reported as "not 10x data" — a warning, and the run would stop
-    at the gate for it. `make_10x_fastq_trio` draws real barcodes.
+    at the gate for it.
+
+    The whitelist is `tests/whitelists/`, passed in as
+    `config.barcode_whitelist_dir`. It used to be whichever one Cell Ranger had
+    installed, found by globbing the home directory, which meant this test
+    passed on a developer's machine and failed on a runner.
     """
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -353,7 +378,7 @@ def test_fastq_preflight_passes_with_a_valid_reference_and_real_reads():
         graph = build_graph(policy=WALK, judge=StubJudge())
         state = new_run_state(
             project="test",
-            config={"species": "human", "transcriptome": str(ref)},
+            config={"species": "human", "transcriptome": str(ref), **RECOGNISABLE_READS},
             input_bundle={"paths": [str(bundle)]},
             runs_dir=root / "runs",
         )

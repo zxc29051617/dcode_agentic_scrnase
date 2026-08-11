@@ -95,8 +95,25 @@ class Library:
     warnings: list[str] = field(default_factory=list)
 
 
-def _whitelist_dir() -> Path | None:
-    """Cell Ranger ships the barcode whitelists; find them next to the binary."""
+def _whitelist_dir(config: dict[str, Any] | None = None) -> Path | None:
+    """Where the barcode whitelists are.
+
+    `config.barcode_whitelist_dir` wins when it is set and exists. Nothing in a
+    real run sets it — the default is unchanged, and is to look where Cell Ranger
+    actually installs them. It exists so a caller that has whitelists somewhere
+    else can say so, which is what lets the tests run on a machine that has no
+    Cell Ranger at all instead of quietly testing something weaker.
+
+    A configured directory that is not there is ignored rather than fatal: the
+    search below still runs, and an unidentifiable chemistry is already a warning
+    with its reason attached.
+    """
+    configured = (config or {}).get("barcode_whitelist_dir")
+    if configured:
+        candidate = Path(str(configured)).expanduser()
+        if candidate.is_dir():
+            return candidate
+
     import glob as _glob
 
     for pattern in (
@@ -133,7 +150,9 @@ def _sample_barcodes(files: list[Path], length: int = 16) -> list[str]:
 _chemistry_cache: dict[tuple, tuple[list[str], dict[str, Any]]] = {}
 
 
-def identify_chemistry(r1_files: list[Path]) -> tuple[list[str], dict[str, Any]]:
+def identify_chemistry(
+    r1_files: list[Path], config: dict[str, Any] | None = None
+) -> tuple[list[str], dict[str, Any]]:
     """Which kit these reads came from, by whitelist membership.
 
     Streams each whitelist against the sampled barcodes rather than loading it
@@ -143,14 +162,19 @@ def identify_chemistry(r1_files: list[Path]) -> tuple[list[str], dict[str, Any]]
     Returns (candidate kits, evidence). An empty list means undecided, which is
     an honest answer and better than the read-length guess this replaced.
     """
+    directory = _whitelist_dir(config)
+
+    # The directory is part of the cache key, not just the reads: the same
+    # bundle read against a different set of whitelists is a different question,
+    # and answering it from the cache would return a chemistry nobody looked up.
     try:
         key = tuple(sorted((str(f), f.stat().st_mtime_ns) for f in r1_files))
     except OSError:
         key = tuple(sorted(str(f) for f in r1_files))
+    key = (key, str(directory))
     if key in _chemistry_cache:
         return _chemistry_cache[key]
 
-    directory = _whitelist_dir()
     if directory is None:
         return [], {"reason": "Cell Ranger's barcode whitelists were not found"}
 
@@ -239,7 +263,9 @@ def _group_by_sample(files: list[Path]) -> tuple[dict[str, dict[str, list[Path]]
     return grouped, unparsed
 
 
-def _build_library(sample: str, reads_to_files: dict[str, list[Path]]) -> Library:
+def _build_library(
+    sample: str, reads_to_files: dict[str, list[Path]], config: dict[str, Any] | None = None
+) -> Library:
     lanes = sorted(
         {
             m.group("lane")
@@ -275,7 +301,7 @@ def _build_library(sample: str, reads_to_files: dict[str, list[Path]]) -> Librar
     # Chemistry comes from the barcode whitelist, not the read length.
     r1_files = reads_to_files.get("R1", [])
     if r1_files:
-        kits, evidence = identify_chemistry(r1_files)
+        kits, evidence = identify_chemistry(r1_files, config)
         library.chemistry_guess = kits
         library.chemistry_evidence = evidence
         if not kits:
@@ -419,7 +445,9 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
             )
         grouped = kept
 
-    libraries = [_build_library(sample, reads) for sample, reads in sorted(grouped.items())]
+    libraries = [
+        _build_library(sample, reads, config) for sample, reads in sorted(grouped.items())
+    ]
 
     samplesheet = config.get("samplesheet")
     if samplesheet:
