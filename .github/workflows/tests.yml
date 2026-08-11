@@ -109,8 +109,16 @@ jobs:
           set -o pipefail
           python tests/run_all.py 2>&1 | tee suite.log
 
+      # Two generators, two sources of truth, both checked rather than trusted.
+      # `graph.mmd` is drawn from the compiled graph, so the diagram cannot
+      # describe wiring that does not exist; the step tables are written from
+      # `src/registry.py`, so the docs cannot list a skill that was deleted —
+      # which they did, for nineteen of them, until there was a check.
       - name: The exported graph matches the code
         run: python scripts/export_graph.py --check
+
+      - name: The generated doc sections match the registry
+        run: python scripts/export_registry_docs.py --check
 
       - name: No test skipped for a missing dependency
         if: always()
@@ -158,5 +166,3 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-# Once `scripts/export_registry_docs.py` exists, its `--check` belongs beside the
-# graph check above — the same drift argument, for the registry tables.
