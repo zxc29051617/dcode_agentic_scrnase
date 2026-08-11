@@ -253,8 +253,20 @@ def build_graph(
         },
     )
 
+    # The report is judged like everything else, and its verdict is allowed to
+    # stop the run like everything else. It used to edge straight to END, which
+    # made `judge_report` the one judge whose `fail` was written to the audit log
+    # and then ignored — and the report is the artefact the whole run exists to
+    # produce, so it is the last place a bad verdict should be advisory.
+    #
+    # `revise` here re-runs `build_report` itself: the escalation gate's path map
+    # already contains every step node, and the report is one.
     add_step("build_report")
-    graph.add_edge(add_judge("build_report"), END)
+    graph.add_conditional_edges(
+        add_judge("build_report"),
+        make_gate_router(policy),
+        {"continue": END, "human_gate": HUMAN_GATE},
+    )
     successors["build_report"] = lambda _state: END
 
     # ---- escalation gate ----------------------------------------------------

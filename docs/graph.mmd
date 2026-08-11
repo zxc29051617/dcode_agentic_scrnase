@@ -153,6 +153,8 @@ graph TD;
 	judge_raw_counts -. &nbsp;mainline&nbsp; .-> merge_samples;
 	judge_reference -. &nbsp;continue&nbsp; .-> fastq_preflight;
 	judge_reference -.-> human_gate;
+	judge_report -. &nbsp;continue&nbsp; .-> __end__;
+	judge_report -.-> human_gate;
 	judge_sample_qc -.-> human_gate;
 	judge_sample_qc -. &nbsp;matrix&nbsp; .-> matrix_preflight;
 	judge_sample_qc -. &nbsp;fastq&nbsp; .-> resolve_reference;
@@ -171,7 +173,6 @@ graph TD;
 	run_qc_metrics --> judge_qc;
 	run_umap --> judge_umap;
 	sample_qc_triage --> judge_sample_qc;
-	judge_report --> __end__;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0
 	classDef last fill:#bfb6fc

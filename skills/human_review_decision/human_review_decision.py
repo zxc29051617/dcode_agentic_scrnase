@@ -46,6 +46,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from src import persistence  # noqa: E402
+from src.state import unresolved_choices  # noqa: E402
 
 TOOL_NAME = "human_review_decision"
 INPUT_FIELDS = (
@@ -67,13 +68,9 @@ OUTPUT_FIELDS = (
 #: disagree about which clusters are shaky.
 LOW_CONFIDENCE_MEDIAN = 0.5
 
-#: Steps that report a `*_state` of `needs_review` left a choice unmade. Naming
-#: the field per step beats guessing at a convention.
-UNRESOLVED_STATE_KEYS = {
-    "cell_calling_review": "cell_calling_state",
-    "apply_cell_qc_filter": "filter_state",
-    "annotate_cells": "annotation_state",
-}
+#: Which steps can leave a choice unmade is decided in `src/state.py`, so that
+#: this gate and the code that judges whether a run finished cannot disagree
+#: about what "unresolved" means.
 
 
 def _findings(art: dict[str, Any]) -> dict[str, Any]:
@@ -144,10 +141,8 @@ def _open_concerns(art: dict[str, Any]) -> list[str]:
     """
     concerns: list[str] = []
 
-    for step, key in sorted(UNRESOLVED_STATE_KEYS.items()):
-        state = (art.get(step) or {}).get(key)
-        if state and state != "applied" and state.endswith("review"):
-            concerns.append(f"{step}: {key} is {state!r} — a choice there was never made")
+    for step, key, value in unresolved_choices(art):
+        concerns.append(f"{step}: {key} is {value!r} — a choice there was never made")
 
     for step, output in sorted(art.items()):
         if not isinstance(output, dict):
