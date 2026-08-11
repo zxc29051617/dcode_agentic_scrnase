@@ -101,7 +101,7 @@ REGISTRY: dict[str, StepSpec] = {
         StepSpec("matrix_preflight", "utility", "judge_matrix_preflight",
                  config_keys=("species",)),
         StepSpec("fastq_preflight", "upstream", "judge_fastq_preflight",
-                 config_keys=("reference", "samplesheet")),
+                 config_keys=("barcode_whitelist_dir", "reference", "samplesheet")),
         # Structural checks first (milliseconds), sequencing quality second
         # (minutes): a bundle missing an R2 should never reach FastQC.
         StepSpec("fastq_qc", "upstream", "judge_fastq_qc",

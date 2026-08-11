@@ -117,41 +117,70 @@ checkpoint 檔在 **`runs/<run_id>/checkpoint.sqlite`**，跟該次 run 的 arti
 放在一起——刪掉一次 run 就一併刪掉它的 checkpoint，兩次 run 也不可能共用
 thread table。只有 `--interactive` 會寫；不會停下來等人的執行不需要付這個成本。
 
-`--continue-from` 找不到東西時一律 `ResumeError` 並 exit code 2，**絕不從
+`--continue-from` 找不到東西時一律 `ResumeError` 並 **exit code 4**，**絕不從
 START 重跑**：run 目錄不存在、checkpoint 檔不存在、thread_id 在資料庫裡找不到、
 資料庫壞掉、或那次 run 根本沒有停在 gate（例如已經被回答過了）。每一種的替代
 方案都是「用新的 state 呼叫 invoke 看看會怎樣」，而那會在第一次 run 的 id 底下
 產生第二份分析。
 
+exit code 的完整對照（`src/run.py` 的 `EXIT_CODES`）：`0` completed 或
+needs_review、`1` failed、`2` halted（沒產出報告就停了）、`3` running、
+`4` 無法 continue。`2` 跟 `4` 分開，是因為「分析停住」跟「找不到可回答的東西」
+是兩種不同的問題。
+
 ## Registry overview
 
-| Stage | Tool name | Type | Input | Output | Judge node | Next step |
-|---|---|---|---|---|---|---|
-| ingest | `ingest_validate` | utility | input bundle | normalized state + detected input type | `judge_ingest` | route |
-| sample QC | `sample_qc_triage` | optional pre-route | QC metrics CSV | sample flags + summary | `judge_sample_qc` | FASTQ or matrix route |
-| reference | `resolve_reference` | utility | species or explicit path | transcriptome path + QC constants + species check | `judge_reference` | `fastq_preflight` |
-| matrix preflight | `matrix_preflight` | utility | count matrix | readability + species + orientation + gene id convention | `judge_matrix_preflight` | `count_matrix_classify` |
-| FASTQ preflight | `fastq_preflight` | upstream | FASTQ bundle + samplesheet + references + chemistry config | preflight report + readiness | `judge_fastq_preflight` | `cellranger_count` |
-| cellranger count | `cellranger_count` | upstream | FASTQ bundle + references + samplesheet + chemistry config | BAM + raw_feature_bc_matrix + filtered_feature_bc_matrix + run metrics + optional preferred_h5ad | `judge_cellranger_count` | count matrix route |
-| sequencing QC | `fastq_qc` | upstream | FASTQ bundle | FastQC + MultiQC report + per-read metrics | `judge_fastq_qc` | `cellranger_count` |
-| matrix classify | `count_matrix_classify` | router | count matrix / h5ad | `raw` / `filtered` / `unknown` | `judge_matrix_classify` | raw or filtered route |
-| raw matrix load | `load_raw_counts` | analysis | raw matrix / raw-count h5ad | AnnData + source state | `judge_raw_counts` | cell calling review or mainline |
-| filtered matrix load | `load_filtered_counts` | analysis | filtered matrix / filtered-count h5ad | AnnData + source state | `judge_filtered_counts` | mainline |
-| cell calling review | `cell_calling_review` | analysis | raw matrix summary | cell calling decision payload | `judge_cell_calling` | mainline / human gate |
-| merge | `merge_samples` | analysis | one AnnData per library | one AnnData with a `sample` column | `judge_merge` | `post_load_validate` |
-| standardize | `post_load_validate` | analysis | merged AnnData | one shape for the mainline + raw counts layer | `judge_post_load` | `run_qc_metrics` |
-| QC | `run_qc_metrics` | analysis | AnnData | QC metrics table | `judge_qc` | cell QC filter |
-| cell QC filter | `apply_cell_qc_filter` | analysis | AnnData + thresholds | filtered AnnData | `judge_cell_qc_filter` | doublet detection |
-| doublet detection | `detect_doublets` | analysis | AnnData | doublet calls + filtered AnnData | `judge_doublets` | preprocess |
-| preprocess | `normalize_hvg_prepare` | analysis | AnnData | normalized AnnData + HVGs | `judge_preprocess` | PCA |
-| PCA | `run_pca` | analysis | AnnData | PCA embedding + loadings | `judge_pca` | integration / clustering |
-| integration | `run_integration` | analysis | AnnData | integrated embedding | `judge_integration` | clustering |
-| clustering | `run_clustering` | analysis | AnnData | cluster labels | `judge_clustering` | UMAP |
-| UMAP | `run_umap` | analysis | AnnData | UMAP coordinates | `judge_umap` | markers |
-| markers | `find_markers` | analysis | AnnData + cluster labels | marker table | `judge_markers` | annotation |
-| annotation | `annotate_cells` | analysis | marker table + evidence | labels + confidence | `judge_annotation` | human review |
-| human review | `human_review_decision` | gate | judge payload + candidate labels | accept / revise / stop | n/a | report or reroute |
-| report | `build_report` | utility | final state + artifacts | HTML / PDF / JSON summary | `judge_report` optional | done |
+<!-- BEGIN GENERATED registry-table — python scripts/export_registry_docs.py -->
+
+26 steps, in the order `src/registry.py` declares them — which is
+also a valid topological order for both routes, and is what
+`registry.steps_invalidated_by` reads to decide what a config change stales.
+
+| # | step | kind | judge node | branches | revisable at its gate |
+|---|---|---|---|---|---|
+| 1 | `ingest_validate` | utility | `judge_ingest` | yes | — |
+| 2 | `sample_qc_triage` | utility | `judge_sample_qc` | yes | — |
+| 3 | `resolve_reference` | utility | `judge_reference` | — | — |
+| 4 | `matrix_preflight` | utility | `judge_matrix_preflight` | — | — |
+| 5 | `fastq_preflight` | upstream | `judge_fastq_preflight` | — | — |
+| 6 | `fastq_qc` | upstream | `judge_fastq_qc` | — | — |
+| 7 | `cellranger_count` | upstream | `judge_cellranger_count` | — | — |
+| 8 | `count_matrix_classify` | router | `judge_matrix_classify` | yes | — |
+| 9 | `load_raw_counts` | analysis | `judge_raw_counts` | yes | — |
+| 10 | `load_filtered_counts` | analysis | `judge_filtered_counts` | — | — |
+| 11 | `cell_calling_review` | analysis | `judge_cell_calling` | yes | `force_cells`, `min_umi` |
+| 12 | `merge_samples` | analysis | `judge_merge` | — | — |
+| 13 | `post_load_validate` | analysis | `judge_post_load` | — | — |
+| 14 | `run_qc_metrics` | analysis | `judge_qc` | — | — |
+| 15 | `apply_cell_qc_filter` | analysis | `judge_cell_qc_filter` | yes | `min_genes`, `min_counts`, `max_pct_mito` |
+| 16 | `detect_doublets` | analysis | `judge_doublets` | — | — |
+| 17 | `normalize_hvg_prepare` | analysis | `judge_preprocess` | — | — |
+| 18 | `run_pca` | analysis | `judge_pca` | — | — |
+| 19 | `run_integration` | analysis | `judge_integration` | — | — |
+| 20 | `run_clustering` | analysis | `judge_clustering` | — | — |
+| 21 | `run_umap` | analysis | `judge_umap` | — | — |
+| 22 | `find_markers` | analysis | `judge_markers` | — | — |
+| 23 | `annotate_cells` | analysis | `judge_annotation` | — | `celltypist_model` |
+| 24 | `cross_check_annotation` | analysis | `judge_cross_check` | — | `scmayomap_tissue` |
+| 25 | `human_review_decision` | gate | — | — | — |
+| 26 | `build_report` | utility | `judge_report` | — | — |
+
+25 of 26 steps are judged; `human_review_decision` is a gate,
+not a scored step. 6 own their outgoing edges in `graph.py` rather than
+having a single successor. 4 accept a value from a person at their
+gate — the four that stop rather than guess.
+
+`judge node` is a **node name in the graph and a label in the audit log**, not a
+module: there is one judge implementation in `src/judge.py` and every step hands
+it a different payload. Inputs, outputs and failure modes are per step and live in
+`skills/<step>/SKILL.md`; the exact topology is `docs/graph.mmd`, generated from
+the compiled graph by `scripts/export_graph.py`.
+
+<!-- END GENERATED registry-table -->
+
+The table is written by `scripts/export_registry_docs.py` from `src/registry.py`
+and CI checks it with `--check`. Editing it by hand will be overwritten; change
+the registry instead.
 
 ## Tool groups
 
@@ -231,33 +260,27 @@ START 重跑**：run 目錄不存在、checkpoint 檔不存在、thread_id 在�
 #### `annotate_cells`
 - **Purpose**: assign putative cell labels using markers / reference evidence.
 
-### 4. Judge tools
+### 4. Judging
 
-Each stage gets its own judge tool:
+There is no judge tool, and no `skills/judge_*`. This section used to list
+nineteen of them, contradicting the design rule six screens above — an early
+MCP-first design that was dropped, whose folders were deleted and whose
+documentation stayed.
 
-- `judge_ingest`
-- `judge_sample_qc`
-- `judge_fastq_preflight`
-- `judge_cellranger_count`
-- `judge_matrix_classify`
-- `judge_raw_counts`
-- `judge_filtered_counts`
-- `judge_cell_calling`
-- `judge_qc`
-- `judge_cell_qc_filter`
-- `judge_doublets`
-- `judge_preprocess`
-- `judge_pca`
-- `judge_integration`
-- `judge_clustering`
-- `judge_umap`
-- `judge_markers`
-- `judge_annotation`
-- `judge_report` (optional)
+One implementation in `src/judge.py`, one `JudgeResult` contract, and each step
+hands it a different payload. `REGISTRY[step].judge` is the **name of the node
+in the graph and the label in the audit log**, which is why the generated table
+calls that column "judge node".
+
+Which steps are judged, and under what node name, is in the generated table
+above rather than repeated here. `build_report` is judged like every other step
+and its verdict reaches the same gate — it used to edge straight to `END`, which
+made it the one judge whose `fail` was recorded and then ignored.
 
 ### Judge contract
 
-Every judge tool should return the same JSON shape:
+Every verdict is the same JSON shape, validated against
+`schemas/judge_result.schema.json`:
 
 ```json
 {
@@ -317,8 +340,14 @@ If later turned into ClawBio-style skills, the same logical split can be used:
 
 - The orchestrator does not know implementation details of any tool; it needs
   the registry only to know **what to call next**.
-- A step is added by writing `skills/<name>/<name>.py` with a
-  `run(payload) -> dict` and one `StepSpec` in `src/registry.py`. `graph.py`
-  does not change — the wiring is generated from the registry.
+- A step is added in three places, not two: `skills/<name>/<name>.py` with a
+  `run(payload) -> dict`, one `StepSpec` in `src/registry.py`, **and its edges in
+  `src/graph.py`**. This used to say the wiring was generated from the registry.
+  It never has been. The registry says which steps exist and what judges them;
+  `graph.py` says what follows what, and it has to, because a conditional edge
+  is a Python predicate over state and no table can hold one.
+  `assert_registry_covered()` catches a step that was registered and never
+  wired, which is the failure that claim would otherwise hide.
 - Because the call is a plain import, every step is also a standalone CLI:
-  `python skills/<name>/<name>.py --help`. All 25 work.
+  `python skills/<name>/<name>.py --help`. The count is in the generated table
+  above rather than written here, because it was wrong the last three times.

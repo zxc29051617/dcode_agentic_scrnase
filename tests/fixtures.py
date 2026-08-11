@@ -172,29 +172,37 @@ def make_fastq_dir_with_reads(
     return directory
 
 
-def _real_barcodes(n: int) -> list[str] | None:
-    """Barcodes from Cell Ranger's own v2 whitelist, when it is installed.
+#: A whitelist the repository owns, so a bundle that claims to carry
+#: recognisable 10x reads does not depend on a Cell Ranger install being present.
+#: Pass it to `fastq_preflight` as `config.barcode_whitelist_dir`; see
+#: `tests/whitelists/README.md` for why the filename inside matters.
+SYNTHETIC_WHITELIST_DIR = Path(__file__).resolve().parent / "whitelists"
+SYNTHETIC_WHITELIST = SYNTHETIC_WHITELIST_DIR / "737K-august-2016.txt"
 
-    `fastq_preflight` identifies chemistry by whitelist membership, so random
-    ACGT strings are — correctly — reported as "not 10x data". A fixture that
-    wants to stand in for a real bundle has to carry barcodes that really are on
-    a list. Returns None when Cell Ranger is not installed, and the caller falls
-    back to random ones.
+
+def synthetic_barcodes(n: int | None = None) -> list[str]:
+    """The barcodes `make_10x_fastq_trio` writes into R1.
+
+    Raises rather than returning None. The previous version read Cell Ranger's
+    own list when it happened to be installed and silently fell back to random
+    ACGT when it was not — and random ACGT is correctly reported as "not 10x
+    data", so on a machine without Cell Ranger two graph tests failed for a
+    reason that had nothing to do with the code under test. A fixture that
+    cannot keep its promise has to say so, not quietly keep a weaker one.
     """
-    import glob as _glob
-
-    for pattern in (
-        "~/projects/cellranger-*/lib/python/cellranger/barcodes/737K-august-2016.txt",
-        "/opt/cellranger-*/lib/python/cellranger/barcodes/737K-august-2016.txt",
-    ):
-        matches = sorted(_glob.glob(str(Path(pattern).expanduser())))
-        if not matches:
-            continue
-        with open(matches[-1], encoding="utf-8") as handle:
-            found = [line.strip() for _, line in zip(range(n), handle) if line.strip()]
-        if found:
-            return found
-    return None
+    if not SYNTHETIC_WHITELIST.exists():
+        raise FileNotFoundError(
+            f"{SYNTHETIC_WHITELIST} is missing; it is committed to this repository "
+            f"because the FASTQ fixtures cannot produce identifiable 10x reads without it"
+        )
+    barcodes = [
+        line.strip()
+        for line in SYNTHETIC_WHITELIST.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    if not barcodes:
+        raise ValueError(f"{SYNTHETIC_WHITELIST} is empty")
+    return barcodes if n is None else barcodes[:n]
 
 
 def make_10x_fastq_trio(
@@ -205,7 +213,13 @@ def make_10x_fastq_trio(
     r2_quality: int = 37,
     name: str = "fastq",
 ) -> Path:
-    """A 10x-shaped R1/R2/I1 trio with real, varied quality strings.
+    """A 10x-shaped R1/R2/I1 trio whose barcodes are on a whitelist.
+
+    R1 carries a barcode from `tests/whitelists/737K-august-2016.txt` plus a
+    random UMI, so `fastq_preflight` can identify a chemistry — pass
+    `SYNTHETIC_WHITELIST_DIR` as `config.barcode_whitelist_dir` and it will.
+    This never consults a Cell Ranger install and never degrades to random
+    barcodes; if the whitelist is missing it raises.
 
     The quality characters must span a realistic range: FastQC guesses the
     encoding from the characters it sees, and a file whose quality is one
@@ -218,15 +232,15 @@ def make_10x_fastq_trio(
     rng = random.Random(0)
     directory = Path(root) / name
     directory.mkdir(parents=True, exist_ok=True)
-    whitelist = _real_barcodes(n_reads)
+    whitelist = synthetic_barcodes()
 
     def write(filename: str, length: int, quality: int) -> None:
         is_r1 = "_R1_" in filename
         with gzip.open(directory / filename, "wt") as handle:
             for i in range(n_reads):
-                if is_r1 and whitelist:
-                    # A real barcode plus a random UMI, so chemistry detection
-                    # has something to recognise.
+                if is_r1:
+                    # A whitelisted barcode plus a random UMI, so chemistry
+                    # detection has something to recognise.
                     umi = "".join(rng.choice("ACGT") for _ in range(length - 16))
                     seq = whitelist[i % len(whitelist)] + umi
                 else:
