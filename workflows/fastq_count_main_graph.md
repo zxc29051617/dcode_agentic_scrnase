@@ -1,5 +1,22 @@
 # FastQ + Count matrix main graph
 
+> **這是高層設計文件,不是精確的 topology。**
+>
+> 它說明**為什麼**流程長這樣——兩個入口、raw/filtered 分流、哪裡必須停下來
+> 問人。圖是手繪的,為了讀懂而簡化,**不保證與程式碼一致**。
+>
+> 精確的 graph 是 **[`../docs/graph.mmd`](../docs/graph.mmd)**,由
+> `scripts/export_graph.py` 從編譯後的 graph 產生,`--check` 在 CI 裡擋漂移。
+> 它有全部 56 個 node 和每一條 conditional edge,包括這裡為了可讀性省略的
+> judge node 與兩段式 human gate。
+>
+> 兩者對不上時,以 `docs/graph.mmd` 為準——它是從 `build_graph()` 匯出的,
+> 這份是人寫的。
+>
+> 每個 step 的 metadata(kind、judge node、branches、revisable)在
+> [`../docs/tool_registry.md`](../docs/tool_registry.md) 的產生區段,來源是
+> `src/registry.py`。
+
 這版只保留兩個主入口：
 
 - **FASTQ**
