@@ -13,7 +13,8 @@ from langgraph.types import Command
 
 from . import persistence
 from .graph import build_graph
-from .judge import describe_judge, get_judge
+from .envfile import load as load_env_file
+from .judge import BACKEND_ALIASES, describe_judge, get_judge
 from .policy import GatePolicy
 from .provenance import AuditLog, record_judge_session
 from .registry import REGISTRY
@@ -30,6 +31,7 @@ def run_workflow(
     input_bundle: dict[str, Any] | None = None,
     policy: GatePolicy | None = None,
     judge_backend: str | None = None,
+    judge_model: str | None = None,
     runs_dir: str = "runs",
     recursion_limit: int = DEFAULT_RECURSION_LIMIT,
     checkpointer: Any = None,
@@ -81,7 +83,7 @@ def run_workflow(
     # Built once and both used and described, rather than described from the
     # environment: `--judge` beats `SCRNA_JUDGE_BACKEND` and a per-step entry
     # beats `SCRNA_JUDGE_MODEL`, so only the object knows what won.
-    judge_client = get_judge(judge_backend)
+    judge_client = get_judge(judge_backend, judge_model)
     judge_session = _record_judge_session(
         state["run_metadata_path"],
         judge_client,
@@ -229,6 +231,7 @@ def continue_workflow(
     runs_dir: str = "runs",
     policy: GatePolicy | None = None,
     judge_backend: str | None = None,
+    judge_model: str | None = None,
     recursion_limit: int = DEFAULT_RECURSION_LIMIT,
     decide: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -257,7 +260,7 @@ def continue_workflow(
         # provenance has to say so. Recorded even when the answer turns out to
         # be `stop` and nothing is scored: the entry states which judge was
         # live, and the audit log's `judge` events say what it actually scored.
-        judge_client = get_judge(judge_backend)
+        judge_client = get_judge(judge_backend, judge_model)
         judge_session = _record_judge_session(
             str(run_dir / "run_metadata.json"), judge_client, mode="checkpoint_continue"
         )
@@ -359,7 +362,15 @@ def ask_on_terminal(request: dict[str, Any]) -> dict[str, Any]:
         print("   please answer accept, revise or stop", file=sys.stderr)
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """The command line, as a value, so it can be inspected without running one.
+
+    Extracted so tests can ask what the CLI accepts. Several of the things
+    this module documents were wrong precisely because nothing checked the
+    parser against the prose: `--judge openai-compatible` was in the guide and
+    rejected by argparse, and `--judge`'s default made `SCRNA_JUDGE_BACKEND`
+    unreachable.
+    """
     parser = argparse.ArgumentParser(description="Run the scRNA-seq agentic workflow.")
     parser.add_argument("--project", default="demo")
     parser.add_argument(
@@ -441,7 +452,24 @@ def main(argv: list[str] | None = None) -> int:
                      help="seed for PCA, Harmony, Leiden, UMAP, t-SNE and Scrublet (default 0)")
 
     parser.add_argument("--sample-qc-triage", action="store_true")
-    parser.add_argument("--judge", choices=["stub", "local"], default="stub")
+    # `default=None`, not `"stub"`. With a default the CLI always passed an
+    # explicit value, so `SCRNA_JUDGE_BACKEND` could never be reached from the
+    # command line — the variable was documented, exported by people, and dead.
+    # `get_judge` owns the fallback so there is one place that decides.
+    judge_group = parser.add_argument_group("the judge")
+    judge_group.add_argument(
+        "--judge",
+        choices=sorted(BACKEND_ALIASES),
+        default=None,
+        help="which judge to score steps with. `ollama` and `openai-compatible` are "
+             "aliases for `local`. Overrides SCRNA_JUDGE_BACKEND; default stub",
+    )
+    judge_group.add_argument(
+        "--judge-model",
+        metavar="NAME",
+        help="model for `--judge local`, e.g. gpt-oss:120b. Overrides "
+             "SCRNA_JUDGE_MODEL. Ignored by the stub, which calls no model",
+    )
     parser.add_argument(
         "--allow-warn", action="store_true", help="let `warn` continue instead of stopping"
     )
@@ -474,7 +502,22 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     parser.add_argument("--runs-dir", default="runs")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    # Before anything reads an environment variable. `.env` fills only what is
+    # not already set, so an export still wins and so does the command line.
+    # Only the names of the variables it introduced are ever printed — the
+    # values are why the file is gitignored.
+    env_path, env_keys = load_env_file()
+
+    parser = build_parser()
     args = parser.parse_args(argv)
+
+    if env_path is not None and env_keys:
+        print(f"loaded {len(env_keys)} setting(s) from {env_path}: "
+              f"{', '.join(sorted(env_keys))}", file=sys.stderr)
 
     # Continuing needs no input: the checkpoint holds everything the run had.
     if args.continue_from:
@@ -529,6 +572,7 @@ def main(argv: list[str] | None = None) -> int:
             interactive=args.interactive,
         ),
         judge_backend=args.judge,
+        judge_model=args.judge_model,
         runs_dir=args.runs_dir,
     )
 
@@ -584,6 +628,7 @@ def _continue_main(args: argparse.Namespace) -> int:
                 interactive=args.interactive,
             ),
             judge_backend=args.judge,
+            judge_model=args.judge_model,
         )
     except persistence.ResumeError as exc:
         # Loud and specific. The alternative every one of these replaces is
