@@ -43,6 +43,9 @@ def build_payload(state: WorkflowState, step: str) -> dict[str, Any]:
     return {
         "step": step,
         "run_id": state.get("run_id"),
+        # The report titles itself with this. Without it `build_report` fell back
+        # to the run id, so every report was headed by a timestamp.
+        "project": state.get("project"),
         "run_dir": run_dir,
         "config": {**{k: v for k, v in config.items() if k != "steps"}, **step_config},
         "input_bundle": state.get("input_bundle") or {},

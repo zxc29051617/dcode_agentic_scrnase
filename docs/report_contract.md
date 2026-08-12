@@ -85,11 +85,44 @@ compute. Do not call it proof.
 
 | # | Group | Reads | Available when |
 |---|---|---|---|
+| P0 | Run identity: project, run id, status at report time, input, species, start, git commit + dirty, config digest | `payload.project` + `run_metadata.json` + `artifacts.ingest_validate` | always |
 | P1 | Decision table: every threshold, its value, and its source (`operator` / `config` / derived / default) | step summaries | always |
 | P2 | Judge verdicts per step, with score and reasons; and any values the judge suggested, recorded whether or not they were followed | `state["judge_results"]` | always |
-| P3 | Human decisions: gate, step, accept/revise/stop, rationale | `state["human_decisions"]` | always |
+| P3 | Human decisions: gate, step, revise target, decision, operator, decided at, rationale, applied and refused overrides | `human_gate_close` audit events | a gate was answered |
 | P4 | Warnings and notes, grouped by step | step summaries | always |
 | P5 | Reproducibility: run id, command, git commit + dirty, seed, package versions, reference and model hashes | `run_metadata.json` + `annotate_cells.model_sha256` | always |
+| P6 | Judge provenance: sessions (id, mode, backend, default model, temperature, structured output, sanitised endpoint), per-step model overrides, prompt hashes, and every verdict linked to its session | `run_metadata.json` `judge_sessions` + `judge` audit events | a session or a verdict was recorded |
+| P7 | Reused work: steps reused, the step it re-ran from, and why | `resume_plan` audit events | always — says so when nothing was reused |
+| P8 | Parameter revisions: when, which step, what changed | `run_metadata.json` `revisions` | always — says so when nothing changed |
+| P9 | Checkpoint and continue: whether a durable checkpoint exists, and whether it was ever continued | `runs/<id>/checkpoint.sqlite` + `checkpoint_resumed` audit events | always |
+
+**The audit tier reports; it does not recompute.** Every number in P0 and P6–P9
+is read from something the run already wrote down. Three consequences worth
+stating, because each is a mistake that reads plausibly:
+
+- **Reuse comes from the recorded plan, not from the artifacts.** An `adata.h5ad`
+  present when the report is written may have been produced by *this* run. Only
+  the `resume_plan` event says what was reused.
+- **A checkpoint on disk is not a continue.** `checkpoint.sqlite` means the run
+  *could* have been picked up in another process; only a `checkpoint_resumed`
+  event means it *was*. They are reported as two separate facts.
+- **P0 does not state a final status.** The report is written by a step inside
+  the run, so no outcome exists yet. It says the run was still going, or names
+  the gate a person stopped it at.
+
+**A gap is never filled in.** A field with no record renders as `Not recorded`.
+A run made before a field existed still produces a report — it says what it does
+not know. In particular an absent `operator` is not the person running the
+report, and an absent model is not the model configured today.
+
+**Malformed provenance is reported, not skipped.** If `judge_sessions` is a
+string or `source` is not an object, the section still renders and carries a line
+saying which field could not be read. A section that silently disappears looks
+identical to a run that had nothing to say.
+
+**No secret is rendered.** The endpoint is shown with any embedded credentials
+stripped; the API key is never in the model to begin with. Both renderings are
+checked against planted sentinels.
 
 ## The ReportModel
 

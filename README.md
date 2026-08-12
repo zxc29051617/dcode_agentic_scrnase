@@ -112,11 +112,9 @@ python tests/run_all.py
 | 有實驗室資料的機器 | 更多 data-dependent 測試會真的跑,skip 數字下降 |
 
 **會變的是通過數,不會變的是那兩件事** —— 沒有 failure,而且每個 skip 都指名它缺
-哪份資料。這裡刻意不把通過數寫死:上一版 README 同時宣稱 452 和 463,兩個都錯。
-要看當下的數字,點上面那顆 badge。
-
-（寫這段時量到的是 597 pass / 0 fail / 20 skip;你讀到時多半已經不是了,這正是
-為什麼判斷標準是上面那兩件事而不是這個數字。）
+哪份資料。這裡刻意不把通過數寫死:上一版 README 同時宣稱 452 和 463,兩個都錯,
+而寫一個「量測當下」的快照只是把過期時間延後而已。要看當下的數字,點上面那顆
+badge,它讀的是 master 的實際狀態。
 
 CI 會另外檢查 skip 的**理由**:缺資料的 skip 可以接受,缺 dependency 的 skip
 會讓 build 失敗 —— 一套大部分沒跑到卻是綠的測試,比紅的更糟。
@@ -345,11 +343,29 @@ python -m src.run --continue-from 20260810T065058Z-f34afde0 --interactive
 5. **在 `src/registry.py` 加一個 `StepSpec`**，並補上 `tests/test_my_new_step.py`
    （測試風格見任一個現有的測試檔）
 
-**不用動 `graph.py`** — 接線是從 registry 生成的。加一個 `StepSpec` 會長出
-step node 跟 judge node 各一個,以及 `step → judge`、judge 的 `continue` /
-`human_gate` 兩條條件邊、還有人工 gate 回到這一步的回程。
+6. **在 `src/graph.py` 接線** — 這一步不能省略。
 
-`docs/graph.mmd` 是編譯後 graph 的匯出(54 node / 110 edge),改完用
+**兩個真相來源,各管一半:**
+
+| | 負責什麼 |
+|---|---|
+| `src/registry.py` | 有哪些 step、各自的 kind、由哪個 judge node 評分、可改哪些參數 |
+| `src/graph.py` | **topology** —— 誰接誰、conditional routing、human gate 的接線 |
+
+只加 `StepSpec` 而不動 `graph.py` 不會「自動長出」接線,而是**直接失敗**:
+
+```
+AssertionError: registry steps missing from the graph: ['my_new_step']
+```
+
+那是 `assert_registry_covered()` 在 `build_graph()` 裡擋下來的,正是為了讓
+「註冊了但沒接線」變成明確錯誤而不是無聲的漏接。
+
+要改多少 `graph.py` 取決於這一步怎麼進流程:接在主線尾端用 `linear()` 一行;
+自己決定下一步的(像 `count_matrix_classify`)要寫 branch predicate 和 path map。
+conditional edge 是對 state 的 Python predicate,沒有表格裝得下它。
+
+`docs/graph.mmd` 是編譯後 graph 的匯出(node/edge 數量以該檔為準,這裡不重複),改完用
 
 ```bash
 python scripts/export_graph.py            # 重新產生

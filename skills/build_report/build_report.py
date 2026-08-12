@@ -676,8 +676,12 @@ def _section_reproducibility(metadata: dict[str, Any], art: dict[str, Any]) -> S
     if not metadata:
         return Section("P5", "Reproducibility", "audit", False,
                        "run_metadata.json was not found beside the audit log")
-    runtime = metadata.get("runtime") or {}
-    source = metadata.get("source") or {}
+    # Shape-checked rather than assumed: a `source` that is a string — a
+    # hand-edited or truncated metadata file — used to raise AttributeError here
+    # and take the whole report down with it.
+    problems: list[str] = []
+    runtime = _shape(metadata.get("runtime"), dict, "P5", "runtime", problems)
+    source = _shape(metadata.get("source"), dict, "P5", "source", problems)
     rows = [
         ["run id", metadata.get("run_id")],
         ["started", runtime.get("started_at")],
@@ -694,9 +698,10 @@ def _section_reproducibility(metadata: dict[str, Any], art: dict[str, Any]) -> S
     if annotate.get("model_sha256"):
         rows.append(["CellTypist model", f"{annotate.get('model')} "
                                          f"({annotate['model_sha256'][:16]}…)"])
-    packages = [[name, version] for name, version in (metadata.get("packages") or {}).items()
+    packages = [[name, version] for name, version
+                in _shape(metadata.get("packages"), dict, "P5", "packages", problems).items()
                 if version]
-    body = []
+    body = list(problems)
     if source.get("dirty"):
         body.append("**The working tree had uncommitted changes.** The commit below does not "
                     "fully describe the code that ran.")
@@ -705,6 +710,343 @@ def _section_reproducibility(metadata: dict[str, Any], art: dict[str, Any]) -> S
         tables=[Table("Run", ["field", "value"], [[k, _fmt(v)] for k, v in rows]),
                 Table("Package versions", ["package", "version"], packages)],
     )
+
+
+# --- provenance sections ------------------------------------------------------------
+#
+# Everything below reports what was *recorded*. None of it recomputes a fact the
+# pipeline already wrote down, and none of it infers one that was not: a field
+# with no record says `Not recorded` and why, because a plausible guess in a
+# provenance section is worse than a gap — a gap can be noticed.
+
+#: What a missing value says. One string, so a reader learns it once.
+ABSENT = "Not recorded"
+
+
+def _shape(value: Any, kind: type, section: str, field_name: str,
+           problems: list[str]) -> Any:
+    """Return `value` if it is the expected shape, else note it and return empty.
+
+    Malformed provenance is reported, never skipped. A section that silently
+    vanishes because a JSON field was a string looks identical to a run that
+    genuinely had nothing to say.
+    """
+    if value is None:
+        return kind()
+    if isinstance(value, kind):
+        return value
+    problems.append(
+        f"{section}: `{field_name}` is {type(value).__name__}, expected "
+        f"{kind.__name__} — the recorded value could not be read"
+    )
+    return kind()
+
+
+def _section_identity(payload: dict[str, Any], metadata: dict[str, Any],
+                      audit: list[dict[str, Any]], art: dict[str, Any]) -> Section:
+    """P0 · what this run was, before any of what it found."""
+    problems: list[str] = []
+    runtime = _shape(metadata.get("runtime"), dict, "P0", "runtime", problems)
+    source = _shape(metadata.get("source"), dict, "P0", "source", problems)
+    config = _shape(source.get("config"), dict, "P0", "source.config", problems)
+
+    ingest = art.get("ingest_validate") or {}
+    inputs = (payload.get("input_bundle") or {}).get("paths") or []
+
+    # The report is written *during* the run, so there is no final status yet;
+    # saying so beats inventing "completed" for a run that has not ended.
+    halts = [r for r in audit if r.get("event") == "human_gate_close"
+             and r.get("decision") == "stop"]
+    last_event = audit[-1].get("ts") if audit else None
+
+    rows = [
+        ["project", payload.get("project") or ABSENT],
+        ["run id", metadata.get("run_id") or payload.get("run_id") or ABSENT],
+        ["status at report time", "a person stopped the run at "
+            f"{halts[-1].get('step') or 'a gate'}" if halts
+            else "still running — this report is written before the run ends"],
+        ["input", ", ".join(str(p) for p in inputs) if inputs else ABSENT],
+        ["input type", ingest.get("input_type") or ABSENT],
+        ["species", config.get("species") or (payload.get("config") or {}).get("species")
+            or ABSENT],
+        ["started", runtime.get("started_at") or ABSENT],
+        ["last recorded event", last_event or ABSENT],
+        ["git commit", source.get("commit") or ABSENT],
+        ["git dirty", _fmt(source.get("dirty")) if source.get("dirty") is not None else ABSENT],
+        ["config sha256", (source.get("config_sha256") or "")[:16] + "…"
+            if source.get("config_sha256") else ABSENT],
+    ]
+    body = list(problems)
+    if not metadata:
+        body.append("`run_metadata.json` was not found beside the audit log, so the "
+                    "environment and command that produced this run are unknown.")
+    return Section("P0", "Run identity", "audit", True, body=body,
+                   tables=[Table("This run", ["field", "value"],
+                                 [[k, _fmt(v)] for k, v in rows])])
+
+
+def _decision_rows(decisions: list[dict[str, Any]]) -> list[list[Any]]:
+    """One row per gate answered, with what was asked for and what took effect."""
+    rows = []
+    for record in decisions:
+        applied = record.get("overrides")
+        rejected = record.get("rejected_overrides")
+        # `overrides` is what survived the allowlist; a `revise` that carried
+        # nothing and a `revise` that changed a threshold are different events
+        # and must not render the same.
+        if isinstance(applied, dict) and applied:
+            applied_text = ", ".join(f"{k}={v!r}" for k, v in sorted(applied.items()))
+        elif record.get("decision") == "revise":
+            applied_text = "none — the step re-ran unchanged"
+        else:
+            applied_text = "—"
+        rejected_text = "; ".join(rejected) if isinstance(rejected, list) and rejected else "—"
+        rows.append([
+            record.get("gate") or ABSENT,
+            record.get("step") or ABSENT,
+            record.get("revise_target") or "—",
+            record.get("decision") or ABSENT,
+            record.get("operator") or ABSENT,
+            record.get("decided_at") or ABSENT,
+            record.get("rationale") or "—",
+            applied_text,
+            rejected_text,
+        ])
+    return rows
+
+
+def _section_human(audit: list[dict[str, Any]]) -> Section:
+    """P3 · who decided what, when, and what it changed.
+
+    `operator` and `decided_at` are read, never defaulted: a run recorded before
+    the gate wrote them shows `Not recorded` rather than today's username, which
+    would be a claim about a person who may not have been involved.
+    """
+    decisions = [r for r in audit if r.get("event") == "human_gate_close"]
+    if not decisions:
+        return Section("P3", "Human decisions", "audit", False,
+                       "the run never stopped at a gate")
+    body = []
+    revised = [d for d in decisions if d.get("decision") == "revise"]
+    changed = [d for d in revised if isinstance(d.get("overrides"), dict) and d["overrides"]]
+    if revised:
+        body.append(
+            f"{len(revised)} gate(s) answered `revise`, {len(changed)} of which supplied a "
+            f"new value. A `revise` with no value re-runs the step against the same "
+            f"config and produces the same result."
+        )
+    return Section(
+        "P3", "Human decisions", "audit", True, body=body,
+        tables=[Table(
+            "Gates",
+            ["gate", "step", "revise target", "decision", "operator", "decided at",
+             "rationale", "applied overrides", "refused"],
+            _decision_rows(decisions),
+        )],
+    )
+
+
+def _section_judge_provenance(metadata: dict[str, Any],
+                              audit: list[dict[str, Any]]) -> Section:
+    """P6 · which judge produced which verdict.
+
+    Summarised rather than listed: twenty-five identical rows saying
+    `gpt-oss:120b` is not provenance a person reads, it is provenance a person
+    scrolls past. The session carries the default; the table below it carries
+    only the steps that differ from it, and the verdict table links each verdict
+    to the session that produced it.
+    """
+    problems: list[str] = []
+    sessions = _shape(metadata.get("judge_sessions"), list, "P6", "judge_sessions", problems)
+    verdicts = [r for r in audit if r.get("event") == "judge"]
+
+    if not sessions and not verdicts:
+        return Section("P6", "Judge provenance", "audit", False,
+                       "no judge session was recorded and nothing was judged; "
+                       "runs from before judge provenance existed have neither")
+
+    session_rows = []
+    override_rows = []
+    prompt_rows = []
+    for entry in sessions:
+        if not isinstance(entry, dict):
+            problems.append("P6: a judge_sessions entry is not an object")
+            continue
+        session_id = entry.get("session_id") or ABSENT
+        default_model = entry.get("default_model")
+        step_models = entry.get("step_models") if isinstance(entry.get("step_models"), dict) else {}
+        overrides = {step: model for step, model in step_models.items()
+                     if model != default_model}
+        session_rows.append([
+            session_id,
+            entry.get("mode") or ABSENT,
+            entry.get("backend") or ABSENT,
+            default_model if default_model is not None else "none — no model was called",
+            _fmt(entry.get("temperature")) if entry.get("temperature") is not None else ABSENT,
+            entry.get("structured_output") or ABSENT,
+            entry.get("endpoint") or ABSENT,
+            entry.get("recorded_at") or ABSENT,
+        ])
+        for step, model in sorted(overrides.items()):
+            override_rows.append([session_id, step, model])
+
+        base = entry.get("base_prompt_sha256")
+        step_prompts = entry.get("step_prompts") if isinstance(entry.get("step_prompts"), dict) else {}
+        addenda = {step: value for step, value in step_prompts.items()
+                   if isinstance(value, dict) and value.get("addendum")}
+        prompt_rows.append([
+            session_id,
+            (base[:16] + "…") if base else "none — the stub reads no prompt",
+            f"{len(addenda)} step prompt(s)" if addenda else "none",
+        ])
+        for step, value in sorted(addenda.items()):
+            prompt_rows.append([
+                f"  ↳ {step}",
+                (value.get("prompt_sha256") or "")[:16] + "…",
+                f"{value.get('addendum')} ({(value.get('addendum_sha256') or '')[:12]}…)",
+            ])
+
+    verdict_rows = [[
+        record.get("judge_session_id") or ABSENT,
+        record.get("step") or ABSENT,
+        record.get("verdict") or ABSENT,
+        _fmt(record.get("score")),
+        record.get("model") if record.get("model") is not None else "none — stub",
+    ] for record in verdicts]
+
+    cited = {r.get("judge_session_id") for r in verdicts if r.get("judge_session_id")}
+    known = {r[0] for r in session_rows}
+    dangling = sorted(cited - known)
+    if dangling:
+        problems.append(
+            f"P6: {len(dangling)} verdict(s) cite a session that is not recorded "
+            f"({', '.join(dangling)})"
+        )
+
+    body = list(problems)
+    if sessions and not verdicts:
+        body.append("A judge was configured but nothing was scored in this run.")
+    if len(session_rows) > 1:
+        body.append(
+            f"This run was judged by {len(session_rows)} sessions. Verdicts produced "
+            f"under different sessions may have come from different models or prompts; "
+            f"the `judge session` column below says which."
+        )
+
+    tables = [Table("Judge sessions",
+                    ["session", "mode", "backend", "default model", "temperature",
+                     "structured output", "endpoint", "recorded at"], session_rows)]
+    if override_rows:
+        tables.append(Table("Per-step model overrides (steps not on the session default)",
+                            ["session", "step", "model"], override_rows))
+    if prompt_rows:
+        tables.append(Table("Prompt versions", ["session / step", "prompt sha256", "addendum"],
+                            prompt_rows))
+    if verdict_rows:
+        tables.append(Table("Verdicts", ["judge session", "step", "verdict", "score", "model"],
+                            verdict_rows))
+    return Section("P6", "Judge provenance", "audit", True, body=body, tables=tables)
+
+
+def _section_resume(audit: list[dict[str, Any]]) -> Section:
+    """P7 · what this run reused instead of computing.
+
+    Read from the `resume_plan` event the run wrote, not inferred from which
+    artifacts happen to exist now. Those are different questions: an artifact
+    present at report time may have been written by *this* run.
+    """
+    problems: list[str] = []
+    plans = [r for r in audit if r.get("event") == "resume_plan"]
+    if not plans:
+        return Section("P7", "Reused work", "audit", True,
+                       body=["This run did not reuse prior artifacts — every step that ran, "
+                             "ran here."])
+
+    rows = []
+    reasons_rows = []
+    for plan in plans:
+        reused = _shape(plan.get("reused"), list, "P7", "reused", problems)
+        reasons = _shape(plan.get("reasons"), list, "P7", "reasons", problems)
+        rows.append([
+            plan.get("ts") or ABSENT,
+            str(len(reused)),
+            plan.get("rerun_from") or "nothing — everything recorded was reusable",
+        ])
+        for reason in reasons:
+            reasons_rows.append([plan.get("ts") or ABSENT, str(reason)])
+
+    reused_all = sorted({step for plan in plans
+                         for step in (plan.get("reused") or []) if isinstance(step, str)})
+    tables = [Table("Resume", ["at", "steps reused", "re-ran from"], rows)]
+    if reused_all:
+        tables.append(Table("Steps reused", ["step"], [[s] for s in reused_all]))
+    if reasons_rows:
+        tables.append(Table("Why it re-ran from there", ["at", "reason"], reasons_rows))
+    return Section("P7", "Reused work", "audit", True, body=list(problems), tables=tables)
+
+
+def _section_revisions(metadata: dict[str, Any]) -> Section:
+    """P8 · parameters a person changed after the run started."""
+    problems: list[str] = []
+    revisions = _shape(metadata.get("revisions"), list, "P8", "revisions", problems)
+    if not revisions:
+        return Section("P8", "Parameter revisions", "audit", True,
+                       body=["No parameter was changed after this run started. Every value "
+                             "came from the command line or a documented default."]
+                            + problems)
+
+    rows = []
+    for entry in revisions:
+        if not isinstance(entry, dict):
+            problems.append("P8: a revisions entry is not an object")
+            continue
+        overrides = entry.get("overrides") if isinstance(entry.get("overrides"), dict) else {}
+        rows.append([
+            entry.get("at") or ABSENT,
+            entry.get("step") or ABSENT,
+            ", ".join(f"{k}={v!r}" for k, v in sorted(overrides.items())) or "—",
+        ])
+    body = [
+        "Each of these re-ran the named step and everything after it. The run's recorded "
+        "`config_sha256` moved with them, so resuming this directory with the original "
+        "command line will not match it.",
+    ] + problems
+    return Section("P8", "Parameter revisions", "audit", True, body=body,
+                   tables=[Table("Revisions", ["at", "step", "changed"], rows)])
+
+
+def _section_checkpoint(run_dir: Path, audit: list[dict[str, Any]]) -> Section:
+    """P9 · whether this run could be, and was, picked up in another process.
+
+    Two separate facts. A `checkpoint.sqlite` on disk says the run *could* be
+    continued; only a `checkpoint_resumed` event says it *was*. Reporting the
+    first as the second would turn "this run was interactive" into "somebody
+    answered a gate from another process", which is a different history.
+    """
+    database = run_dir / "checkpoint.sqlite"
+    resumed = [r for r in audit if r.get("event") == "checkpoint_resumed"]
+
+    rows = [["durable checkpoint written",
+             "yes — this run could be continued in another process" if database.exists()
+             else "no — this run was not started with --interactive"],
+            ["continued from a checkpoint",
+             f"yes, {len(resumed)} time(s)" if resumed else "no"]]
+    if database.exists():
+        rows.append(["checkpoint", str(database)])
+
+    tables = [Table("Checkpoint", ["field", "value"], rows)]
+    if resumed:
+        tables.append(Table(
+            "Continued", ["at", "thread", "waiting at", "gate", "judge session"],
+            [[r.get("ts") or ABSENT, r.get("thread_id") or ABSENT,
+              r.get("waiting_at") or ABSENT, r.get("gate") or ABSENT,
+              r.get("judge_session_id") or "—"] for r in resumed],
+        ))
+    body = []
+    if database.exists() and not resumed:
+        body.append("The checkpoint exists because the run was interactive. Nothing in the "
+                    "audit log says it was ever continued from another process.")
+    return Section("P9", "Checkpoint and continue", "audit", True, body=body, tables=tables)
 
 
 # --- assembling -------------------------------------------------------------------
@@ -737,9 +1079,14 @@ def collect(payload: dict[str, Any]) -> tuple[ReportModel, Path]:
         _section_doublets(final, art, figures),
         _section_pca(final, art, figures),
         _section_integration(final, art, figures),
+        _section_identity(payload, metadata, audit, art),
         _section_decisions(art),
         _section_verdicts(audit),
         _section_human(audit),
+        _section_judge_provenance(metadata, audit),
+        _section_resume(audit),
+        _section_revisions(metadata),
+        _section_checkpoint(run_dir, audit),
         _section_messages(art),
         _section_reproducibility(metadata, art),
     ]
