@@ -524,11 +524,55 @@ def _section_pca(final: Any, art: dict[str, Any], figures: Path) -> Section:
                    figures=[path], tables=[Table("Settings", ["setting", "value"], rows)])
 
 
+def _why_not_integrated(summary: dict[str, Any]) -> str:
+    """Say which of the several reasons applies, rather than only that it did not run.
+
+    A blank "integration was not run" reads the same whether nobody chose, the
+    operator chose not to, or the design made it impossible. Those are three
+    different things to tell a reader.
+    """
+    mode, source = summary.get("integration_mode"), summary.get("mode_source")
+    confounding = summary.get("confounding") or {}
+    if confounding.get("fully_confounded"):
+        return (
+            "integration was refused: condition and technical batch are fully "
+            "confounded, so correcting the batch would have removed the condition"
+        )
+    if mode == "none" and source == "operator":
+        return "no integration was requested, so the uncorrected PCA was used throughout"
+    if source == "unanswered":
+        return (
+            "no integration mode was chosen, so the uncorrected PCA was used. A "
+            "library was not assumed to be a technical batch"
+        )
+    if summary.get("batch_key") and summary.get("n_batches") == 1:
+        return "there is one technical batch, so there was nothing to correct against"
+    return "integration was not run, so there is no before-and-after to compare"
+
+
+def _design_lines(summary: dict[str, Any]) -> list[str]:
+    """The contingency table, as counts of libraries and nothing else."""
+    confounding = summary.get("confounding") or {}
+    table = confounding.get("table") or {}
+    if not table:
+        return []
+    batches = sorted({b for row in table.values() for b in row})
+    lines = [
+        "Libraries by condition and technical batch:",
+        "| condition | " + " | ".join(batches) + " |",
+        "|---" * (len(batches) + 1) + "|",
+    ]
+    for condition in sorted(table):
+        counts = " | ".join(str(table[condition].get(b, 0)) for b in batches)
+        lines.append(f"| {condition} | {counts} |")
+    return lines
+
+
 def _section_integration(final: Any, art: dict[str, Any], figures: Path) -> Section:
     summary = (art.get("run_integration") or {}).get("integration_summary") or {}
     if not summary.get("integrated"):
         return Section("A6", "Integration diagnostic", "appendix", False,
-                       "integration was not run, so there is no before-and-after to compare")
+                       _why_not_integrated(summary), body=_design_lines(summary))
     if final is None or "X_umap_unintegrated" not in getattr(final, "obsm", {}):
         return Section("A6", "Integration diagnostic", "appendix", False,
                        "no pre-integration embedding was recorded")
