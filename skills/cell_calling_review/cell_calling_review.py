@@ -75,27 +75,102 @@ OUTPUT_FIELDS = (
 PREVIEW_COUNTS = (500, 1_000, 2_000, 3_000, 5_000, 10_000)
 
 
-def _cellranger_called_barcodes(artifacts: dict[str, Any]) -> set[str] | None:
-    """The barcodes Cell Ranger itself kept, for comparison. None if unavailable."""
+def _read_called_barcodes(path: Path) -> set[str] | None:
+    """The barcodes in one filtered matrix, or None if it cannot be read."""
+    try:
+        import h5py
+
+        with h5py.File(path, "r") as handle:
+            group = handle.get("matrix")
+            if group is None:
+                return None
+            return {
+                b.decode() if isinstance(b, bytes) else str(b)
+                for b in group["barcodes"][:]
+            }
+    except Exception:  # noqa: BLE001 - a missing comparison is not a failure
+        return None
+
+
+def _cellranger_called_by_library(
+    artifacts: dict[str, Any]
+) -> tuple[dict[str, set[str]], list[str]]:
+    """`{library_id: called barcodes}`, and what could not be resolved.
+
+    Keyed by the library's own id, never by position. This used to return a
+    single set — the first library whose matrix could be read — which every
+    sample was then compared against. With more than one library that silently
+    compared each sample to somebody else's cell calls, and 10x barcode strings
+    are drawn from a fixed whitelist, so the overlap looked plausible rather
+    than obviously wrong.
+
+    A duplicated `library_id` is dropped rather than resolved: with two matrices
+    claiming the same name there is no evidence for choosing between them, and
+    picking either is a coin toss reported as a measurement.
+    """
     libraries = (artifacts.get("cellranger_count") or {}).get("libraries") or []
-    for library in libraries:
+    seen: dict[str, set[str]] = {}
+    duplicated: set[str] = set()
+    problems: list[str] = []
+
+    for index, library in enumerate(libraries):
+        if not isinstance(library, dict):
+            problems.append(f"cellranger_count.libraries[{index}] is not an object")
+            continue
+        library_id = str(library.get("library_id") or "").strip()
+        if not library_id:
+            problems.append(
+                f"cellranger_count.libraries[{index}] has no library_id, so its cell "
+                f"calls cannot be matched to a sample"
+            )
+            continue
+        if library_id in seen or library_id in duplicated:
+            duplicated.add(library_id)
+            seen.pop(library_id, None)
+            continue
         path = Path(str(library.get("filtered_feature_bc_matrix", "")))
         if not path.is_file():
+            problems.append(
+                f"{library_id}: no readable filtered matrix at {path}, so there is "
+                f"nothing to compare its selection against"
+            )
             continue
-        try:
-            import h5py
+        barcodes = _read_called_barcodes(path)
+        if barcodes is None:
+            problems.append(f"{library_id}: {path} could not be read as a 10x matrix")
+            continue
+        seen[library_id] = barcodes
 
-            with h5py.File(path, "r") as handle:
-                group = handle.get("matrix")
-                if group is None:
-                    continue
-                return {
-                    b.decode() if isinstance(b, bytes) else str(b)
-                    for b in group["barcodes"][:]
-                }
-        except Exception:  # noqa: BLE001 - a missing comparison is not a failure
-            return None
-    return None
+    for library_id in sorted(duplicated):
+        problems.append(
+            f"{library_id}: more than one Cell Ranger library claims this id, so its "
+            f"cell calls are ambiguous and no comparison is made"
+        )
+    return seen, problems
+
+
+def _called_for_sample(
+    sample: str, by_library: dict[str, set[str]], n_samples: int
+) -> tuple[set[str] | None, str | None]:
+    """The Cell Ranger calls for exactly this sample, or why there are none.
+
+    Falls back to the only library when there is exactly one sample and exactly
+    one library — the standalone-CLI case, where the object and the matrix
+    plainly belong together and there is nothing to confuse them with. With more
+    than one of either, an unmatched sample gets no comparison rather than
+    somebody else's.
+    """
+    if sample in by_library:
+        return by_library[sample], None
+    if n_samples == 1 and len(by_library) == 1:
+        return next(iter(by_library.values())), None
+    if not by_library:
+        return None, None
+    return None, (
+        f"{sample}: no Cell Ranger library with this id "
+        f"(available: {', '.join(sorted(by_library))}), so this selection is not "
+        f"compared against Cell Ranger's"
+    )
 
 
 def _preview(totals: Any, evidence: dict[str, Any]) -> list[dict[str, Any]]:
@@ -209,7 +284,10 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
             return setting.get(name)
         return setting
 
-    called = _cellranger_called_barcodes(artifacts)
+    # Per library, keyed by its own id: a sample is only ever compared with
+    # the Cell Ranger run that produced it.
+    called_by_library, library_problems = _cellranger_called_by_library(artifacts)
+    warnings.extend(library_problems)
     out_dir = Path(payload.get("run_dir") or ".") / TOOL_NAME
 
     per_sample: dict[str, Any] = {}
@@ -225,6 +303,10 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
         totals = matrix_io.total_counts(adata)
         evidence = matrix_io.barcode_rank_evidence(totals)
         evidence["preview"] = _preview(totals, evidence)
+        called, unmatched = _called_for_sample(name, called_by_library, len(incoming))
+        if unmatched:
+            warnings.append(unmatched)
+            evidence["vs_cellranger_unavailable"] = unmatched
         if called is not None:
             evidence["cellranger_cells"] = len(called)
 
@@ -386,12 +468,20 @@ def main(argv: list[str] | None = None) -> int:
     group.add_argument("--force-cells", type=int, help="keep the top N barcodes by UMI")
     group.add_argument("--min-umi", type=int, help="keep barcodes with at least this many UMI")
     parser.add_argument("--cellranger-filtered", help="Cell Ranger's own call, to compare against")
+    parser.add_argument("--library-id", default="sample1",
+                        help="which library --cellranger-filtered belongs to "
+                             "(default: sample1, the name a single-file run gets)")
     args = parser.parse_args(argv)
 
     artifacts: dict[str, Any] = {"load_raw_counts": {"adata_path": args.adata}}
     if args.cellranger_filtered:
+        # Named rather than positional: a library is matched to a sample by its
+        # id, and an entry with no id has nothing to match on.
         artifacts["cellranger_count"] = {
-            "libraries": [{"filtered_feature_bc_matrix": args.cellranger_filtered}]
+            "libraries": [{
+                "library_id": args.library_id,
+                "filtered_feature_bc_matrix": args.cellranger_filtered,
+            }]
         }
 
     result = run(

@@ -52,6 +52,7 @@ from tests import (  # noqa: E402
     test_judge_provenance,
     test_step_prompts,
     test_run_qc_metrics,
+    test_scientific_bugfixes,
 )
 
 #: Roughly pipeline order. Each module appears once — a repeat costs the time
@@ -97,6 +98,7 @@ MODULES = (
     test_judge,
     test_judge_provenance,
     test_step_prompts,
+    test_scientific_bugfixes,
     test_graph_smoke,
 )
 
