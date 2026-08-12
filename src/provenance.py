@@ -178,6 +178,7 @@ def capture_run_metadata(
     config: dict[str, Any] | None = None,
     command: list[str] | None = None,
     input_bundle: dict[str, Any] | None = None,
+    study_design: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Everything needed to say what produced a run, gathered at run start.
 
@@ -205,6 +206,12 @@ def capture_run_metadata(
         },
         "packages": package_versions(),
         "seeds": {"random_state": resolved.get("random_state", 0)},
+        # Shapes and a digest, never rows. `run_metadata.json` is the file that
+        # travels with a result, and in a study with a handful of subjects a
+        # donor-to-condition listing identifies people however pseudonymous each
+        # code in it is. The digest answers "did the design change", which is
+        # the only question a resume has to ask of it.
+        "study_design": (study_design or {}).get("summary") or {},
     }
 
 

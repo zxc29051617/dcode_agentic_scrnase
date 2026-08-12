@@ -46,7 +46,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from src import matrix_io  # noqa: E402
+from src import manifest, matrix_io  # noqa: E402
 
 TOOL_NAME = "run_integration"
 INPUT_FIELDS = (
@@ -70,7 +70,18 @@ OUTPUT_FIELDS = (
 #: (or, worse, a crash) nobody should trust.
 MIN_CELLS_PER_BATCH = 20
 
-DEFAULT_BATCH_KEY = "sample"
+#: The only obs column Harmony may ever correct on. It exists only when a
+#: validated `--sample-manifest` declared it, which is the point: a batch is
+#: something somebody wrote down, not something inferred from a filename.
+TECHNICAL_BATCH_KEY = "technical_batch"
+
+#: `none` and `harmony` only. There is deliberately no `auto`: choosing for the
+#: operator is what this step used to do, and what it got wrong.
+INTEGRATION_MODES = ("none", "harmony")
+
+#: Kept so the standalone CLI and older callers still resolve the name, but no
+#: longer a default anything falls back to.
+DEFAULT_BATCH_KEY = TECHNICAL_BATCH_KEY
 
 
 def _run_harmony(
@@ -108,6 +119,60 @@ def _run_harmony(
     )
 
 
+def _requested_mode(config: dict[str, Any]) -> tuple[str | None, str, str | None]:
+    """`(mode, where it came from, why it is unusable)`.
+
+    `None` is not a default — it means nobody answered, which is a different
+    state from an operator choosing `none` and has to stay distinguishable in
+    provenance. An unrecognised value is refused rather than coerced.
+    """
+    raw = config.get("integration_mode")
+    if raw is None:
+        return None, "unanswered", None
+    mode = str(raw).strip().lower()
+    if mode not in INTEGRATION_MODES:
+        return None, "unanswered", (
+            f"integration_mode={raw!r} is not one of {', '.join(INTEGRATION_MODES)}"
+        )
+    return mode, "operator", None
+
+
+def _library_names(adata: Any) -> list[str]:
+    """The libraries in the object, by whichever column records them."""
+    for key in ("library_id", "sample"):
+        if key in adata.obs:
+            return sorted(str(v) for v in adata.obs[key].unique())
+    return []
+
+
+def _per_library(adata: Any, column: str) -> dict[str, str | None]:
+    """`{library_id: value}` — the design as the object actually carries it."""
+    key = "library_id" if "library_id" in adata.obs else "sample"
+    mapping: dict[str, str | None] = {}
+    if key not in adata.obs or column not in adata.obs:
+        return mapping
+    frame = adata.obs[[key, column]].astype(str)
+    for library, value in zip(frame[key], frame[column]):
+        text = value.strip()
+        mapping.setdefault(library, None if text in ("", "nan", "None") else text)
+    return mapping
+
+
+def _confounding(adata: Any, batch_key: str) -> dict[str, Any]:
+    """Whether the condition can be told apart from the batch, structurally.
+
+    Asked of the object rather than of the manifest, because the object is what
+    Harmony is about to be run on. Counts of libraries only; no id reaches the
+    result, which is what lets it be reported.
+    """
+    return manifest.confounding_from_columns(
+        _per_library(adata, "condition"),
+        _per_library(adata, batch_key),
+        biological="condition",
+        technical=batch_key,
+    )
+
+
 def _resolve_adata_path(payload: dict[str, Any]) -> str | None:
     artifacts = payload.get("artifacts") or {}
     for step in ("run_pca", "normalize_hvg_prepare"):
@@ -135,25 +200,123 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
     if "X_pca" not in adata.obsm:
         return _result(errors=[f"{source} has no obsm['X_pca']; run_pca must run first"])
 
-    batch_key = str(config.get("batch_key", DEFAULT_BATCH_KEY))
     force = bool(config.get("force_integration", False))
     random_state = int(config.get("random_state", 0))
 
+    mode, mode_source, problem = _requested_mode(config)
+    if problem is not None:
+        return _result(errors=[problem])
+
+    libraries = _library_names(adata)
+    skip = dict(
+        payload=payload, adata=adata, integrated=False, batch_key=None,
+        random_state=random_state, mode=mode, mode_source=mode_source,
+    )
+
+    # ---- nobody has said what the batches are ------------------------------
+    # The old default was `batch_key="sample"`, so this branch used to run
+    # Harmony on the library name. That name comes from a FASTQ filename, and
+    # correcting on it removes whatever the libraries actually differ by —
+    # including the disease being studied. Skipping is the only answer that
+    # cannot be wrong without saying so.
+    if mode is None:
+        if len(libraries) < 2:
+            notes.append(
+                "one library, so there is no between-library difference to correct; "
+                "using X_pca as-is"
+            )
+            return _finish(notes=notes, warnings=warnings, **skip)
+        warnings.append(
+            f"{len(libraries)} libraries are present ({', '.join(libraries)}) but no "
+            f"integration mode was chosen, so X_pca is used uncorrected. A library is "
+            f"not automatically a technical batch: libraries usually differ by donor "
+            f"and condition too, and correcting on the library would remove those "
+            f"along with any batch effect. To integrate, supply --sample-manifest "
+            f"with a {TECHNICAL_BATCH_KEY} column and --integration-mode harmony; to "
+            f"record that no correction is wanted, pass --integration-mode none"
+        )
+        return _finish(notes=notes, warnings=warnings, **skip)
+
+    # ---- the operator said not to ------------------------------------------
+    if mode == "none":
+        notes.append(
+            "integration mode 'none' was chosen, so X_pca is used uncorrected"
+        )
+        return _finish(notes=notes, warnings=warnings, **skip)
+
+    # ---- harmony: only ever on the declared technical batch -----------------
+    requested_key = config.get("batch_key")
+    if requested_key is not None and str(requested_key) != TECHNICAL_BATCH_KEY:
+        return _result(errors=[
+            f"batch_key={str(requested_key)!r} was requested, but Harmony corrects only "
+            f"on {TECHNICAL_BATCH_KEY!r}. Library, sample, donor and condition are "
+            f"differences worth keeping, not batch effects to remove"
+        ])
+
+    batch_key = TECHNICAL_BATCH_KEY
     if batch_key not in adata.obs:
-        if force:
-            return _result(errors=[f"force_integration requested but obs['{batch_key}'] is absent"])
-        notes.append(f"no obs['{batch_key}']; nothing to integrate against, using X_pca as-is")
-        return _finish(payload, adata, integrated=False, batch_key=None, notes=notes, warnings=warnings, random_state=random_state)
+        return _result(errors=[
+            f"integration mode 'harmony' needs obs['{batch_key}'], which comes from a "
+            f"validated --sample-manifest. Without it there is no declared technical "
+            f"batch, and nothing else in the object may stand in for one"
+        ])
 
     batch_counts = adata.obs[batch_key].value_counts()
+    batch_counts = batch_counts[batch_counts > 0]
     n_batches = int(batch_counts.shape[0])
 
-    if n_batches < 2 and not force:
+    if n_batches < 2:
         notes.append(
-            f"only one value in obs['{batch_key}'] ({batch_counts.index[0]!r}); "
-            "nothing to integrate against, using X_pca as-is"
+            f"only one value in obs['{batch_key}'] ({batch_counts.index[0]!r}); there is "
+            "one technical batch, so there is nothing to correct against and X_pca is "
+            "used as-is"
         )
-        return _finish(payload, adata, integrated=False, batch_key=batch_key, notes=notes, warnings=warnings, random_state=random_state)
+        return _finish(
+            notes=notes, warnings=warnings,
+            **{**skip, "batch_key": batch_key, "n_batches": n_batches,
+               "batch_counts": batch_counts},
+        )
+
+    report = _confounding(adata, batch_key)
+    if report.get("fully_confounded"):
+        # Not overridable, by anything. `force_integration` waives checks about
+        # whether a fit would be *reliable* — a batch of twelve cells is a bad
+        # estimate, and an operator may accept a bad estimate. This is not that
+        # kind of check: with every batch holding a single condition the two
+        # effects are the same column of the design matrix, so there is no
+        # separate batch effect to remove and "corrected" would name an
+        # embedding with the biology taken out of it. Waiving arithmetic is not
+        # a decision anyone is in a position to make, so it is not offered.
+        #
+        # It leaves as an unresolved choice rather than a hard error: the run
+        # keeps its QC, clustering and markers, and the gate asks. `accept`
+        # there means "use the uncorrected X_pca", which is the only thing on
+        # offer — there is deliberately no answer that means "integrate anyway".
+        # If that override is ever genuinely wanted it needs its own flag and
+        # its own design, not a second meaning for this one.
+        warnings.append(
+            f"{report['biological_key']} and {batch_key} are fully confounded "
+            f"({report['n_components']} disconnected groups): every batch holds a single "
+            f"condition, so the two differences enter the data identically and removing "
+            f"the batch removes the condition. Harmony cannot separate what the design "
+            f"did not separate, and force_integration does not change that. Using X_pca "
+            f"as-is; a person has to decide what to do about the design. Contingency "
+            f"table (libraries): {report['table']}"
+        )
+        return _finish(
+            notes=notes, warnings=warnings,
+            **{**skip, "batch_key": batch_key, "n_batches": n_batches,
+               "batch_counts": batch_counts, "confounding": report,
+               "integration_state": "needs_review"},
+        )
+    if not report.get("balanced") and report.get("n_conditions", 0) > 1:
+        # Reported, never acted on. There is no defensible cutoff at which an
+        # unbalanced-but-estimable design stops being the operator's call.
+        warnings.append(
+            f"{report['biological_key']} is unevenly spread across {batch_key} but "
+            f"remains separable, so integration proceeds. Contingency table "
+            f"(libraries): {report['table']}"
+        )
 
     small = batch_counts[batch_counts < MIN_CELLS_PER_BATCH]
     if len(small) and not force:
@@ -162,7 +325,11 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
             f"({dict(small)}); Harmony's per-batch fit is not reliable there. Using X_pca "
             "as-is rather than an integration nobody should trust"
         )
-        return _finish(payload, adata, integrated=False, batch_key=batch_key, notes=notes, warnings=warnings, random_state=random_state)
+        return _finish(
+            notes=notes, warnings=warnings,
+            **{**skip, "batch_key": batch_key, "n_batches": n_batches,
+               "batch_counts": batch_counts, "confounding": report},
+        )
 
     try:
         adata.obsm["X_pca_harmony"] = _run_harmony(
@@ -178,7 +345,7 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
     return _finish(
         payload, adata, integrated=True, batch_key=batch_key,
         n_batches=n_batches, batch_counts=batch_counts, notes=notes, warnings=warnings,
-        random_state=random_state,
+        random_state=random_state, mode=mode, mode_source=mode_source, confounding=report,
     )
 
 
@@ -191,6 +358,10 @@ def _finish(
     random_state: int,
     n_batches: int | None = None,
     batch_counts: Any = None,
+    mode: str | None = None,
+    mode_source: str = "unanswered",
+    confounding: dict[str, Any] | None = None,
+    integration_state: str = "resolved",
     notes: list[str],
     warnings: list[str],
 ) -> dict[str, Any]:
@@ -208,7 +379,16 @@ def _finish(
         "embedding_key": "X_pca_harmony" if integrated else "X_pca",
         "random_state": random_state,
         "method": "harmony" if integrated else None,
+        # `integration_mode` is what was asked for; `mode_source` says whether
+        # anyone asked. A run that skipped because nobody chose and a run that
+        # skipped because the operator chose `none` are not the same run.
+        "integration_mode": mode,
+        "mode_source": mode_source,
+        "confounding": confounding or {},
     }
+    # Read by `src/state.unresolved_choices`, so the final gate and the report
+    # agree with this step about whether the run left a decision open.
+    integration_summary["integration_state"] = integration_state
 
     return _result(
         adata_path=adata_path,
@@ -245,12 +425,18 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=TOOL_NAME)
     parser.add_argument("adata_path")
     parser.add_argument("--run-dir", default="runs/manual")
-    parser.add_argument("--batch-key", default=DEFAULT_BATCH_KEY)
-    parser.add_argument("--force", action="store_true", help="run Harmony even with one batch")
+    parser.add_argument("--batch-key", default=DEFAULT_BATCH_KEY,
+                        help=f"only {TECHNICAL_BATCH_KEY!r} is accepted")
+    parser.add_argument("--integration-mode", choices=list(INTEGRATION_MODES), default=None,
+                        help="left unset, nothing is corrected and the reason is stated")
+    parser.add_argument("--force", action="store_true",
+                        help="waive the batch-size and confounding checks")
     parser.add_argument("--max-iter-harmony", type=int)
     args = parser.parse_args(argv)
 
     config: dict[str, Any] = {"batch_key": args.batch_key}
+    if args.integration_mode is not None:
+        config["integration_mode"] = args.integration_mode
     if args.force:
         config["force_integration"] = True
     if args.max_iter_harmony is not None:

@@ -139,7 +139,9 @@ def render_registry_table() -> str:
         f"{judged} of {len(REGISTRY)} steps are judged; `human_review_decision` is a gate,",
         f"not a scored step. {branching} own their outgoing edges in `graph.py` rather than",
         f"having a single successor. {revisable_steps} accept a value from a person at their",
-        "gate — the four that stop rather than guess.",
+        # Counted rather than spelled out: this sentence used to say "the four",
+        # which stopped being true the moment a fifth step started stopping.
+        "gate — the ones that stop rather than guess.",
         "",
         "`judge node` is a **node name in the graph and a label in the audit log**, not a",
         "module: there is one judge implementation in `src/judge.py` and every step hands",

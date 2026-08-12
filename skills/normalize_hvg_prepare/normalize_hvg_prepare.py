@@ -19,11 +19,18 @@ which scanpy recommends over the classic `"seurat"` flavor for UMI data — the
 old flavor was designed for the log-dispersion behaviour of non-UMI protocols
 and is a poorer fit for the sparse, integer-count matrices 10x produces.
 
-## HVG selection is per sample, same instinct as `detect_doublets`
+## HVG selection is per library, same instinct as `detect_doublets`
 A gene that looks variable only because two libraries differ in depth or
-chemistry is a batch artefact, not biology. When a `sample` column is present,
-`batch_key="sample"` asks Scanpy to score variability within each library and
+chemistry is a batch artefact, not biology. When a `library_id` column is
+present, that key asks Scanpy to score variability within each library and
 combine the votes, rather than across all libraries pooled together.
+
+This is **not** the batch key `run_integration` corrects on. The question here
+is "was this gene called variable because of how one library was sequenced",
+which is per library and always answerable. The question there is "which
+differences are technical and may be removed", which only a declared
+`technical_batch` answers. Using the same column for both is what let a study
+design be inferred from a filename.
 
 ## Nothing is subsetted
 HVGs are flagged in `var["highly_variable"]`, not used to drop genes. `run_pca`
@@ -156,7 +163,16 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
             "falling back to flavor='seurat'"
         )
         flavor = "seurat"
-    batch_key = "sample" if "sample" in adata.obs and adata.obs["sample"].nunique() > 1 else None
+    # `library_id` is the column that means library; `sample` is its older alias
+    # and is still read so an object merged before that rename still works.
+    library_key = next(
+        (k for k in ("library_id", "sample") if k in adata.obs), None
+    )
+    batch_key = (
+        library_key
+        if library_key and adata.obs[library_key].nunique() > 1
+        else None
+    )
 
     # ---- normalize + log1p on X first; counts stay untouched in the layer ---
     # seurat_v3 fits variance on raw counts and must run before this. The other
@@ -182,10 +198,10 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
     if n_hvg == 0:
         return _result(errors=["highly_variable_genes selected no genes"])
 
-    if batch_key is None and "sample" in adata.obs and adata.obs["sample"].nunique() > 1:
+    if batch_key is None and library_key and adata.obs[library_key].nunique() > 1:
         # Should not happen given the branch above, but a silent pooled fit on
         # multiple libraries is exactly the failure mode this step exists to avoid.
-        warnings.append("multiple samples present but HVGs were selected without batch_key")
+        warnings.append("multiple libraries present but HVGs were selected without a per-library batch_key")
 
     out_dir = Path(payload.get("run_dir") or ".") / TOOL_NAME
     adata_path = matrix_io.write_h5ad(adata, out_dir / "adata.h5ad")
@@ -208,8 +224,8 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
         "scaled": False,
         "subsetted_to_hvg": False,
     }
-    if batch_key is None and "sample" in adata.obs:
-        notes.append("single sample present; HVG selection ran without batch_key")
+    if batch_key is None and library_key:
+        notes.append("one library present; HVG selection ran without a per-library batch_key")
 
     return _result(
         adata_path=adata_path,

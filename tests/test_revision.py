@@ -51,11 +51,18 @@ def test_every_revisable_name_has_a_declared_type():
 
 
 def test_the_steps_that_stop_for_a_choice_are_the_ones_that_offer_one():
-    """The four steps that refuse to guess are the four a person can answer."""
+    """The steps that refuse to guess are the ones a person can answer.
+
+    `run_integration` joined them when Harmony became opt-in: it now reports
+    "several libraries, and nobody said which differences are technical" and
+    stops rather than correcting on the library name, so the gate it reaches
+    has to be able to take the answer.
+    """
     offering = {name for name, spec in REGISTRY.items() if spec.revisable}
     assert offering == {
         "cell_calling_review",
         "apply_cell_qc_filter",
+        "run_integration",
         "annotate_cells",
         "cross_check_annotation",
     }

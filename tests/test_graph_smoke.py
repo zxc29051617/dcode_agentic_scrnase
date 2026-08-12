@@ -71,6 +71,30 @@ OPERATOR_CHOICES = {"min_genes": 1, "max_pct_mito": 100}
 RECOGNISABLE_READS = {"barcode_whitelist_dir": str(fixtures.SYNTHETIC_WHITELIST_DIR)}
 
 
+class Skip(Exception):
+    """Raised by a test that needs a tool this machine does not have."""
+
+
+def _need_fastqc() -> None:
+    """The FASTQ route stops at a gate without it, so these tests cannot run.
+
+    `fastq_qc` treats a missing FastQC as advisory and returns `ok` with a
+    warning — but under the default `GatePolicy` a warning routes to the human
+    gate, and with nobody there to answer the run halts before
+    `cellranger_count`. So on a machine without FastQC these tests never reach
+    what they are about, and they failed for a reason that had nothing to do
+    with the thing under test.
+
+    `fastqc=0.12.1` is in `environment.yml`, so an environment built from the
+    lockfile has it and runs these in full. This only skips where it is absent.
+    Guarded the same way `tests/test_fastq_qc.py` guards its own.
+    """
+    import shutil
+
+    if shutil.which("fastqc") is None:
+        raise Skip("fastqc is not installed; the FASTQ route halts at the QC gate")
+
+
 def _run(config, *, policy=WALK, judge=None):
     """Run the graph on a fixture bundle with a working reference.
 
@@ -139,6 +163,7 @@ def test_fastq_route_visits_the_upstream_steps_in_order():
 
 def test_fastq_qc_really_runs_inside_the_graph():
     """The fixture carries real reads, so FastQC has something to assess."""
+    _need_fastqc()
     final = _run({"input_type": "fastq"})
     report = next(r for r in final["step_results"] if r["step"] == "fastq_qc")
     assert report["status"] == "ok"
@@ -158,6 +183,7 @@ def test_a_failed_count_never_reaches_the_report():
     it and watched it reject the fixture; on a machine without one it never got
     past `fastq_preflight` and passed for an unrelated reason.
     """
+    _need_fastqc()
     final = _run(
         {"input_type": "fastq", "binary": "/nonexistent/cellranger-never-installed",
          **RECOGNISABLE_READS},
@@ -429,15 +455,19 @@ def test_judge_results_match_the_published_schema():
 
 def main() -> int:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
-    failures = []
+    failures, skipped = [], 0
     for test in tests:
         try:
             test()
             print(f"  ok    {test.__name__}")
+        except Skip as reason:
+            skipped += 1
+            print(f"  skip  {test.__name__}: {reason}")
         except AssertionError as exc:
             failures.append((test.__name__, exc))
             print(f"  FAIL  {test.__name__}: {exc}")
-    print(f"\n{len(tests) - len(failures)}/{len(tests)} passed")
+    passed = len(tests) - len(failures) - skipped
+    print(f"\n{passed}/{len(tests) - skipped} passed" + (f", {skipped} skipped" if skipped else ""))
     return 1 if failures else 0
 
 

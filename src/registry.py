@@ -68,6 +68,20 @@ class StepSpec:
     """
 
 
+def integration_mode(value: Any) -> str:
+    """One of the two documented modes, or a refusal.
+
+    `str` would accept anything, and this is a value that decides whether a
+    correction runs at all — so it is validated where every other revisable
+    parameter is converted, rather than trusted to whoever typed it. An answer
+    at a gate is an instruction, not an exemption from checking.
+    """
+    text = str(value).strip().lower()
+    if text not in ("none", "harmony"):
+        raise ValueError(f"expected 'none' or 'harmony', got {value!r}")
+    return text
+
+
 #: How to read a revisable value that arrived as text, which is what a terminal
 #: — and any HTTP form after it — is going to hand over. A key with no entry
 #: here cannot be revised at all, so this doubles as the master list: adding a
@@ -81,6 +95,7 @@ REVISABLE_PARAMETERS: dict[str, Any] = {
     "min_umi": int,
     "celltypist_model": str,
     "scmayomap_tissue": str,
+    "integration_mode": integration_mode,
 }
 
 
@@ -121,8 +136,13 @@ REGISTRY: dict[str, StepSpec] = {
         # Per-sample work ends here. Everything before this point runs once per
         # library; everything after works on one labelled object, which is what
         # `run_integration` later corrects the batch effect of.
+        # `manifest_sha256` is the digest of the normalized study design, not a
+        # path: moving the same CSV elsewhere is not a change, and editing it in
+        # place is. This is the earliest step that reads it — the manifest first
+        # reaches `obs` here — so a changed design invalidates from here down and
+        # leaves the per-library work above it reusable.
         StepSpec("merge_samples", "analysis", "judge_merge",
-                 config_keys=("adata_paths",)),
+                 config_keys=("adata_paths", "manifest_sha256")),
         # Where the two routes meet. Three steps can produce the matrix, so one
         # node promises the mainline a single shape instead of letting every
         # consumer grow per-route special cases.
@@ -149,9 +169,14 @@ REGISTRY: dict[str, StepSpec] = {
                               "normalize_target_sum")),
         StepSpec("run_pca", "analysis", "judge_pca",
                  config_keys=("n_comps", "random_state", "use_highly_variable")),
+        # Whether to correct at all is now an operator decision, so the gate that
+        # reports "several libraries, nobody said" has to be able to take the
+        # answer. `integration_mode` is validated by `integration_mode()` above,
+        # so no arbitrary string reaches config from a gate.
         StepSpec("run_integration", "analysis", "judge_integration",
-                 config_keys=("batch_key", "force_integration", "max_iter_harmony",
-                              "random_state")),
+                 revisable=("integration_mode",),
+                 config_keys=("batch_key", "force_integration", "integration_mode",
+                              "manifest_sha256", "max_iter_harmony", "random_state")),
         StepSpec("run_clustering", "analysis", "judge_clustering",
                  config_keys=("adata_path", "embedding_key", "n_neighbors",
                               "random_state", "resolution")),

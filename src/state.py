@@ -41,7 +41,18 @@ class WorkflowState(TypedDict, total=False):
     #: A node returning a whole config would have to reconstruct the rest, and
     #: reconstructing it is how a key gets quietly dropped.
     config: Annotated[dict[str, Any], merge_dicts]
+
+    #: Per-library QC numbers for `sample_qc_triage` — median genes, percent
+    #: mito, the spread a threshold would cut into. "How did this library
+    #: perform", which is a different question from the one below.
     sample_metadata: dict[str, Any]
+
+    #: The validated study design: who each library came from and which group it
+    #: belongs to. Deliberately not folded into `sample_metadata`, which asks
+    #: about quality — merging the two would put `exclude_samples` and
+    #: `condition` in one bag, and the whole point of this field is that a
+    #: biological grouping must never be mistaken for a technical property.
+    study_design: dict[str, Any]
     input_bundle: dict[str, Any]
     audit_log_path: str
     run_metadata_path: str
@@ -82,6 +93,7 @@ def new_run_state(
     config: dict[str, Any] | None = None,
     input_bundle: dict[str, Any] | None = None,
     sample_metadata: dict[str, Any] | None = None,
+    study_design: dict[str, Any] | None = None,
     runs_dir: str | Path = "runs",
     run_id: str | None = None,
 ) -> WorkflowState:
@@ -107,9 +119,21 @@ def new_run_state(
     resolved_config = dict(config or {})
     resolved_bundle = dict(input_bundle or {})
     run_dir.mkdir(parents=True, exist_ok=True)
+    resolved_design = dict(study_design or {})
+    if resolved_design.get("snapshot"):
+        # Written once, at run start, and read by `--continue-from` instead of
+        # the original CSV. A paused run that came back to a manifest someone
+        # had edited would be one run describing itself two different ways.
+        snapshot_dir = run_dir / "manifest"
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+        snapshot_path = snapshot_dir / "normalized.csv"
+        if not snapshot_path.exists():
+            snapshot_path.write_text(resolved_design["snapshot"], encoding="utf-8")
+
     if not (resuming and metadata_path.exists()):
         metadata = capture_run_metadata(
-            run_id=run_id, config=resolved_config, input_bundle=resolved_bundle
+            run_id=run_id, config=resolved_config, input_bundle=resolved_bundle,
+            study_design=resolved_design,
         )
         metadata_path.write_text(
             json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -120,6 +144,7 @@ def new_run_state(
         project=project,
         config=resolved_config,
         sample_metadata=dict(sample_metadata or {}),
+        study_design=resolved_design,
         input_bundle=resolved_bundle,
         audit_log_path=str(audit_path),
         run_metadata_path=str(metadata_path),
@@ -148,6 +173,12 @@ def new_run_state(
 UNRESOLVED_STATE_KEYS: dict[str, str] = {
     "cell_calling_review": "cell_calling_state",
     "apply_cell_qc_filter": "filter_state",
+    # Set only when the design cannot be corrected at all — condition and
+    # technical batch fully confounded. Unlike the two above, the run can be
+    # accepted as it stands: there is a usable uncorrected embedding, and
+    # `accept` means taking it. What there is no answer for is "integrate
+    # anyway", which is why this is an open choice rather than a knob.
+    "run_integration": "integration_state",
     "annotate_cells": "annotation_state",
 }
 

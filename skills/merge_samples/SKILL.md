@@ -15,7 +15,27 @@ QC, normalisation, clustering, and `run_integration`, which exists precisely to
 correct the batch effect this step creates.
 
 It runs even for a single sample. Downstream then never has to ask how many
-there were, and the `sample` column is there either way.
+there were, and the `library_id` column is there either way.
+
+## The design is written here, or it is nowhere
+This is where a validated `--sample-manifest` reaches the cells. `sample_id`,
+`donor_id`, `condition` and `technical_batch` are joined onto `obs` by
+`library_id` — exact match, no positional fallback, since `study_design` was
+already checked against the libraries this run found.
+
+`obs["library_id"]` means the library and nothing else. It is **not** the key
+`run_integration` corrects on: that is `technical_batch`, which exists only
+because somebody declared it. Until this change the two were the same column,
+so a study design was read off a FASTQ filename and Harmony removed whatever
+the libraries differed by — see `docs/study_design.md`.
+
+Values are written as categories with real nulls. A blank stays blank rather
+than becoming the string `"unknown"`, which would be a value, and a value can
+become a batch to correct on.
+
+Merging several libraries with no manifest is not an error — the run still
+produces QC, clustering and markers — but it warns, because donor, condition
+and batch are then unknown for every cell and integration cannot run.
 
 ## The two things that go silently wrong
 
@@ -39,8 +59,8 @@ counts and the size of the overlap.
 
 | out | |
 |---|---|
-| `adata_path` | one AnnData, all samples, `obs["sample"]` set |
-| `sample_key` | `"sample"` — the batch key `run_integration` will correct on, named once here so no downstream step has to guess |
+| `adata_path` | one AnnData, all libraries, `obs["library_id"]` set |
+| `sample_key` | `"sample"` — kept as an alias of `library_id` for callers written before the two were told apart |
 | `per_sample` | cells, genes and source for each |
 | `n_samples`, `n_cells`, `n_genes` | |
 

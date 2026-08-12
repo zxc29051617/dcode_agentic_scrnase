@@ -156,7 +156,7 @@ also a valid topological order for both routes, and is what
 | 16 | `detect_doublets` | analysis | `judge_doublets` | — | — |
 | 17 | `normalize_hvg_prepare` | analysis | `judge_preprocess` | — | — |
 | 18 | `run_pca` | analysis | `judge_pca` | — | — |
-| 19 | `run_integration` | analysis | `judge_integration` | — | — |
+| 19 | `run_integration` | analysis | `judge_integration` | — | `integration_mode` |
 | 20 | `run_clustering` | analysis | `judge_clustering` | — | — |
 | 21 | `run_umap` | analysis | `judge_umap` | — | — |
 | 22 | `find_markers` | analysis | `judge_markers` | — | — |
@@ -167,8 +167,8 @@ also a valid topological order for both routes, and is what
 
 25 of 26 steps are judged; `human_review_decision` is a gate,
 not a scored step. 6 own their outgoing edges in `graph.py` rather than
-having a single successor. 4 accept a value from a person at their
-gate — the four that stop rather than guess.
+having a single successor. 5 accept a value from a person at their
+gate — the ones that stop rather than guess.
 
 `judge node` is a **node name in the graph and a label in the audit log**, not a
 module: there is one judge implementation in `src/judge.py` and every step hands

@@ -18,6 +18,7 @@ from .judge import BACKEND_ALIASES, describe_judge, get_judge
 from .policy import GatePolicy
 from .provenance import AuditLog, record_judge_session
 from .registry import REGISTRY
+from . import manifest
 from .state import new_run_state, summarize, unresolved_choices
 
 #: One superstep per node; the mainline plus judges is well over LangGraph's default of 25.
@@ -29,6 +30,7 @@ def run_workflow(
     project: str = "demo",
     config: dict[str, Any] | None = None,
     input_bundle: dict[str, Any] | None = None,
+    study_design: dict[str, Any] | None = None,
     policy: GatePolicy | None = None,
     judge_backend: str | None = None,
     judge_model: str | None = None,
@@ -72,7 +74,7 @@ def run_workflow(
     resolved = dict(config or {})
     state = new_run_state(
         project=project, config=resolved, input_bundle=input_bundle,
-        runs_dir=runs_dir, run_id=resume_run_id,
+        study_design=study_design, runs_dir=runs_dir, run_id=resume_run_id,
     )
     owned = None
     if checkpointer is None and checkpointer_kind:
@@ -451,6 +453,21 @@ def build_parser() -> argparse.ArgumentParser:
     ana.add_argument("--random-state", type=int, metavar="N",
                      help="seed for PCA, Harmony, Leiden, UMAP, t-SNE and Scrublet (default 0)")
 
+    design = parser.add_argument_group("study design (who each library came from)")
+    design.add_argument(
+        "--sample-manifest", metavar="CSV",
+        help="one row per sequencing library, with library_id, sample_id, donor_id, "
+             "condition and technical_batch. Required before Harmony can run: it is "
+             "what tells the pipeline which differences are technical and removable",
+    )
+    design.add_argument(
+        "--integration-mode", choices=["none", "harmony"], default=None,
+        help="whether to batch-correct. Left unset, nothing is corrected and the run "
+             "says so at the gate — a library is not assumed to be a technical batch. "
+             "'none' records that no correction is wanted; 'harmony' corrects on the "
+             "manifest's technical_batch and nothing else",
+    )
+
     parser.add_argument("--sample-qc-triage", action="store_true")
     # `default=None`, not `"stub"`. With a default the CLI always passed an
     # explicit value, so `SCRNA_JUDGE_BACKEND` could never be reached from the
@@ -523,6 +540,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.continue_from:
         if args.input:
             parser.error("--continue-from takes no --input; the checkpoint has it")
+        if args.sample_manifest:
+            # The checkpoint carries the design this run started with, and the
+            # steps before the gate were already computed under it. Reading a
+            # possibly-edited CSV now would leave one run describing itself two
+            # ways, so the only honest way to apply an edited manifest is the
+            # resume that recomputes what depended on it.
+            parser.error(
+                "--continue-from uses the manifest this run started with, which is "
+                "kept at runs/<run_id>/manifest/normalized.csv. To apply an edited "
+                "manifest, use --resume-from so the steps that read it are re-run"
+            )
         return _continue_main(args)
     if not args.input:
         parser.error("--input is required (or --continue-from to pick up a paused run)")
@@ -551,14 +579,32 @@ def main(argv: list[str] | None = None) -> int:
             "scmayomap_tissue": args.scmayomap_tissue,
             "random_state": args.random_state,
             "sample_qc_triage": args.sample_qc_triage,
+            "integration_mode": args.integration_mode,
         }.items()
         if value is not None
     }
+
+    # The manifest is validated here, before the graph is built, because every
+    # failure it can report is one the operator has to fix in a file — there is
+    # nothing to be gained from discovering it eleven steps in.
+    study_design: dict[str, Any] = {}
+    if args.sample_manifest:
+        parsed, problems = manifest.load_manifest(args.sample_manifest)
+        if problems:
+            for problem in problems:
+                print(f"sample manifest: {problem}", file=sys.stderr)
+            return 1
+        study_design = manifest.design_state(parsed)
+        # The digest travels in config so a changed design invalidates the steps
+        # that read it, the same way a changed threshold does. The rows do not:
+        # config is written to run_metadata.json, which is meant to be shareable.
+        config["manifest_sha256"] = parsed.sha256
 
     final = run_workflow(
         project=args.project,
         input_bundle={"paths": args.input},
         config=config,
+        study_design=study_design,
         # An interactive run is one that can stop and wait, so its checkpoint
         # goes in the run directory rather than in memory: the process holding
         # it may be closed before anybody answers, and `--continue-from` picks
