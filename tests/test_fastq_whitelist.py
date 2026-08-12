@@ -54,6 +54,30 @@ def _preflight(bundle: Path, reference: Path, **config):
 # --- the whitelist the repository owns -------------------------------------------------
 
 
+class Skip(Exception):
+    """Raised by a test that needs a tool this machine does not have."""
+
+
+def _need_fastqc() -> None:
+    """The FASTQ route stops at a gate without it, so these tests cannot run.
+
+    `fastq_qc` treats a missing FastQC as advisory and returns `ok` with a
+    warning — but under the default `GatePolicy` a warning routes to the human
+    gate, and with nobody there to answer the run halts before
+    `cellranger_count`. So on a machine without FastQC these tests never reach
+    what they are about, and they failed for a reason that had nothing to do
+    with the thing under test.
+
+    `fastqc=0.12.1` is in `environment.yml`, so an environment built from the
+    lockfile has it and runs these in full. This only skips where it is absent.
+    Guarded the same way `tests/test_fastq_qc.py` guards its own.
+    """
+    import shutil
+
+    if shutil.which("fastqc") is None:
+        raise Skip("fastqc is not installed; the FASTQ route halts at the QC gate")
+
+
 def test_the_synthetic_whitelist_is_committed_and_named_for_a_chemistry():
     """The filename is load-bearing: chemistry is looked up by it."""
     assert fixtures.SYNTHETIC_WHITELIST.exists(), "the fixtures cannot work without it"
@@ -190,6 +214,7 @@ def test_a_binary_that_cannot_exist_halts_without_a_report():
     `headless_decision="accept"` the operator has said to carry on past a failed
     count, and carrying on is then the correct behaviour rather than a bug.
     """
+    _need_fastqc()
     with tempfile.TemporaryDirectory() as tmp:
         final = _run_fastq_route(Path(tmp), policy=GatePolicy(), binary=ABSENT_BINARY)
 
@@ -206,15 +231,19 @@ def test_a_binary_that_cannot_exist_halts_without_a_report():
 
 def main() -> int:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
-    failures = []
+    failures, skipped = [], 0
     for test in tests:
         try:
             test()
             print(f"  ok    {test.__name__}")
+        except Skip as reason:
+            skipped += 1
+            print(f"  skip  {test.__name__}: {reason}")
         except AssertionError as exc:
             failures.append(test.__name__)
             print(f"  FAIL  {test.__name__}: {exc}")
-    print(f"\n{len(tests) - len(failures)}/{len(tests)} passed")
+    passed = len(tests) - len(failures) - skipped
+    print(f"\n{passed}/{len(tests) - skipped} passed" + (f", {skipped} skipped" if skipped else ""))
     return 1 if failures else 0
 
 
