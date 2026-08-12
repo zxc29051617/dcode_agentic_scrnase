@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Any
@@ -63,14 +64,47 @@ OUTPUT_FIELDS = (
     "recommended_next_tool",
 )
 
-#: A cluster labelled this confidently or less is worth mentioning by name at
-#: the final gate. Matches `annotate_cells`' own threshold, so the two cannot
-#: disagree about which clusters are shaky.
+#: A cluster whose median confidence is **strictly below** this is worth
+#: mentioning by name at the final gate. Matches `annotate_cells`' own
+#: comparison — `median_conf < LOW_CONFIDENCE_MEDIAN` — so the two cannot
+#: disagree about which clusters are shaky. Exactly 0.5 is *not* flagged, by
+#: both. The comment here used to say "this confidently or less", which
+#: describes `<=` and was never what either side did.
 LOW_CONFIDENCE_MEDIAN = 0.5
 
 #: Which steps can leave a choice unmade is decided in `src/state.py`, so that
 #: this gate and the code that judges whether a run finished cannot disagree
 #: about what "unresolved" means.
+
+
+def _median_confidence(entry: Any) -> tuple[float | None, str | None]:
+    """The recorded median confidence, or why it cannot be used.
+
+    Returns `(value, None)` or `(None, problem)`. Never substitutes a value.
+
+    `(entry.get("median_conf_score") or 1.0)` is what this replaces, and 0.0 is
+    the bug it hides: a cluster the model was *least* confident about is falsy,
+    so it was read as 1.0 and never mentioned at the gate. The clusters most in
+    need of a person's eye were the ones the gate stayed silent about.
+
+    Absent, `None`, non-numeric, NaN and infinity are all reported rather than
+    scored. Not knowing is not the same as being fine, and the caller raises a
+    named concern for each — the value is never guessed at or repaired.
+    """
+    if not isinstance(entry, dict):
+        return None, "the recorded entry is not an object"
+    if "median_conf_score" not in entry:
+        return None, "median_conf_score was not recorded"
+    raw = entry["median_conf_score"]
+    if raw is None:
+        return None, "median_conf_score is null"
+    # `bool` is an `int`; True would otherwise score as 1.0.
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None, f"median_conf_score is {type(raw).__name__}, not a number"
+    value = float(raw)
+    if not math.isfinite(value):
+        return None, f"median_conf_score is {raw!r}, which is not a finite number"
+    return value, None
 
 
 def _findings(art: dict[str, Any]) -> dict[str, Any]:
@@ -151,14 +185,25 @@ def _open_concerns(art: dict[str, Any]) -> list[str]:
             concerns.append(f"{step}: {message}")
 
     per_cluster = (art.get("annotate_cells") or {}).get("per_cluster") or {}
-    shaky = [
-        name for name, entry in per_cluster.items()
-        if (entry.get("median_conf_score") or 1.0) < LOW_CONFIDENCE_MEDIAN
-    ]
+    shaky: list[str] = []
+    unreadable: list[str] = []
+    for name, entry in per_cluster.items():
+        value, problem = _median_confidence(entry)
+        if problem is not None:
+            unreadable.append(f"{name} ({problem})")
+        elif value < LOW_CONFIDENCE_MEDIAN:
+            shaky.append(str(name))
     if shaky:
         concerns.append(
             f"{len(shaky)} cluster(s) carry a median annotation confidence below "
             f"{LOW_CONFIDENCE_MEDIAN}: {', '.join(sorted(shaky))}"
+        )
+    if unreadable:
+        # Not knowing how confident an annotation was is a reason to look, not a
+        # reason to assume it was fine.
+        concerns.append(
+            f"{len(unreadable)} cluster(s) have no usable median annotation confidence, "
+            f"so whether they are shaky is unknown: {', '.join(sorted(unreadable))}"
         )
     return concerns
 

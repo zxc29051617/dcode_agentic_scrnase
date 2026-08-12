@@ -27,11 +27,22 @@ Requesting `"tsne"` alone works on an object that never went through
 `run_clustering`; requesting `"umap"` or `"both"` does not.
 
 ## Perplexity is bounded before the call, not after
-`sklearn.manifold.TSNE` requires `perplexity < n_samples` and raises
+`sklearn.manifold.TSNE` requires `0 < perplexity < n_samples` and raises
 otherwise. Clamped here to `min(30, (n_obs - 1) // 3)` — scikit-learn's own
 rule-of-thumb bound — with a warning naming both numbers. Below 30 cells, a
 note says t-SNE structure is unreliable at that size regardless of the
 perplexity used.
+
+Two cells is the case the clamp cannot rescue: the floor of 2 is not below
+`n_obs`, so it produced an illegal perplexity that only failed once sklearn
+saw it. t-SNE now needs **at least 3 cells** and refuses below that, before
+anything is embedded — on `method="both"` that matters, since the refusal used
+to arrive after a UMAP had already been computed and stored.
+
+A configured `perplexity` must be a finite number greater than zero. `0`,
+negatives, NaN and infinity are refused rather than clamped: there is no
+defensible value to substitute, and NaN in particular passes every `<`
+comparison a clamp could make.
 
 ## What it reports
 
@@ -47,6 +58,8 @@ perplexity used.
 - `method` is not one of `umap` / `tsne` / `both`
 - UMAP requested but no neighbor graph is present
 - t-SNE requested but `embedding_key` is not in `obsm`
+- t-SNE requested with fewer than 3 cells
+- `perplexity` is configured but is not a finite number above zero
 - fewer than 2 cells
 
 ## Downstream routing

@@ -19,11 +19,22 @@ step requires it to already exist rather than building its own.
 run and a Leiden run never silently look at different representations of the
 data.
 
-## Perplexity is bounded by cell count, checked before the call
-`sklearn.manifold.TSNE` requires `perplexity < n_samples` and raises
+## Perplexity is bounded by cell count, checked before anything is embedded
+`sklearn.manifold.TSNE` requires `0 < perplexity < n_samples` and raises
 otherwise — on a small library the default of 30 can exceed the cell count
 outright. Clamped here to `min(default, (n_obs - 1) // 3)`, the same rule of
-thumb behind scikit-learn's own guidance, with a warning naming both numbers.
+thumb behind scikit-learn's own guidance, with a warning naming both numbers,
+and the result is asserted to be strictly below `n_obs` before the call.
+
+**Fewer than three cells is refused, not clamped.** The clamp has a floor of 2,
+so two cells cannot produce a legal perplexity at all — the old code produced
+`perplexity=2` for `n_obs=2` and let sklearn raise. The check happens before any
+embedding runs, so `method="both"` on a two-cell object fails without first
+computing and storing a UMAP nobody can use.
+
+A perplexity that is not a finite positive number is refused for the same
+reason: `float()` accepts `nan` and `inf`, and every comparison against a NaN is
+False, so it slipped past each bound in turn.
 
 Run standalone:
     python skills/run_umap/run_umap.py <adata.h5ad> --run-dir <out> [--method tsne|both]
@@ -33,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Any
@@ -64,6 +76,11 @@ DEFAULT_METHOD = "umap"
 #: scikit-learn's own default, and the number most tutorials use unchanged.
 DEFAULT_PERPLEXITY = 30
 
+#: sklearn requires `0 < perplexity < n_obs`, and the clamp's floor is 2, so two
+#: cells cannot produce a legal value at all. Refused up front rather than
+#: discovered inside the call.
+MIN_CELLS_FOR_TSNE = 3
+
 #: Below this many cells, t-SNE offers little over a scatter of the raw
 #: embedding; the clamp below already keeps it from erroring, this just
 #: says so.
@@ -78,6 +95,26 @@ DEFAULT_N_NEIGHBORS = 15
 #: and the report depend on are never overwritten.
 UNINTEGRATED_UMAP_KEY = "X_umap_unintegrated"
 UNINTEGRATED_NEIGHBORS_KEY = "neighbors_unintegrated"
+
+
+def _requested_perplexity(config: dict[str, Any]) -> tuple[float, str | None]:
+    """The configured perplexity, or why it cannot be used.
+
+    Returns `(value, None)` or `(default, problem)`. `float(config.get(...))`
+    accepted anything `float()` would, so `nan` and `inf` reached the clamp —
+    and every comparison against a NaN is False, so a NaN passed straight
+    through every guard and into sklearn unchanged.
+    """
+    raw = config.get("perplexity", DEFAULT_PERPLEXITY)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return float(DEFAULT_PERPLEXITY), f"perplexity={raw!r} is not a number"
+    if not math.isfinite(value):
+        return float(DEFAULT_PERPLEXITY), f"perplexity={raw!r} is not a finite number"
+    if value <= 0:
+        return float(DEFAULT_PERPLEXITY), f"perplexity={raw!r} must be greater than 0"
+    return value, None
 
 
 def _should_embed_unintegrated(payload: dict[str, Any], adata: Any, embedding_key: str) -> bool:
@@ -145,6 +182,23 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
     if adata.n_obs < 2:
         return _result(errors=[f"{source} has {adata.n_obs} cell(s); needs at least 2"])
 
+    # ---- t-SNE preconditions, checked before anything is embedded -----------
+    # Both of these used to be discovered inside the t-SNE call, which on
+    # `method="both"` meant a UMAP had already been computed and written into
+    # the object before the run failed — a partial result for a request that
+    # was never satisfiable.
+    if method in ("tsne", "both"):
+        if adata.n_obs < MIN_CELLS_FOR_TSNE:
+            return _result(errors=[
+                f"t-SNE needs at least {MIN_CELLS_FOR_TSNE} cells and {source} has "
+                f"{adata.n_obs}: sklearn requires 0 < perplexity < n_obs, which cannot "
+                f"be satisfied below {MIN_CELLS_FOR_TSNE}. Use --embedding-method umap "
+                f"for an object this small"
+            ])
+        _, problem = _requested_perplexity(config)
+        if problem is not None:
+            return _result(errors=[problem])
+
     import scanpy as sc
 
     computed: list[str] = []
@@ -190,15 +244,26 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
     if method in ("tsne", "both"):
         if embedding_key not in adata.obsm:
             return _result(errors=[f"{source} has no obsm['{embedding_key}']; run_integration must run first"])
-        perplexity = float(config.get("perplexity", DEFAULT_PERPLEXITY))
+        perplexity, _ = _requested_perplexity(config)
         bound = (adata.n_obs - 1) // 3
         if perplexity >= adata.n_obs or perplexity > bound:
-            clamped = max(2, min(bound, adata.n_obs - 1))
+            # `min(bound, n_obs - 1)` can be 0 or 1 on a small object, so the
+            # floor of 2 used to be able to exceed n_obs; capping at n_obs - 1
+            # after the floor is what keeps the result strictly below n_obs.
+            clamped = min(max(2, min(bound, adata.n_obs - 1)), adata.n_obs - 1)
             warnings.append(
                 f"perplexity={perplexity} requested but only {adata.n_obs} cells are present; "
                 f"using {clamped} instead"
             )
-            perplexity = clamped
+            perplexity = float(clamped)
+
+        # The invariant sklearn enforces, asserted here so a future change to the
+        # clamp cannot quietly hand it an illegal value again.
+        if not 0 < perplexity < adata.n_obs:
+            return _result(errors=[
+                f"could not choose a legal t-SNE perplexity for {adata.n_obs} cells "
+                f"(got {perplexity}); sklearn requires 0 < perplexity < n_obs"
+            ])
         try:
             sc.tl.tsne(
                 adata,
