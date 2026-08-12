@@ -56,10 +56,16 @@ That is a count of components, not a coefficient. There is no cutoff to tune —
 a tuned cutoff would be a judgement about somebody's experiment presented as a
 measurement.
 
-- **Fully confounded** → refuse, and report the contingency table. Harmony
-  cannot separate what the design did not separate, and this step does not
-  claim otherwise. `force_integration` will run it, and then says plainly in a
-  warning that the condition difference is gone from the corrected embedding.
+- **Fully confounded** → refuse, report the contingency table, and leave
+  `integration_state="needs_review"` so the existing gate asks a person.
+  **`force_integration` does not waive this one.** It waives judgements about
+  whether a fit would be *reliable* — a twelve-cell batch is a bad estimate, and
+  an operator may accept a bad estimate. This is not that: the condition and the
+  batch are the same column of the design matrix, so there is no separate batch
+  effect to remove and "corrected" would name an embedding with the biology
+  taken out of it. `accept` at the gate means taking the uncorrected `X_pca`,
+  which is the only thing on offer. A genuine override would need its own flag
+  and its own design, not a second meaning for this one.
 - **Uneven but still connected** → run, with a warning carrying the table. An
   unbalanced-but-estimable design is the operator's call, and no arbitrary
   cutoff should make it quietly.

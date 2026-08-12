@@ -118,10 +118,13 @@ This is a count of components, not a coefficient. There is no threshold to
 calibrate — a tuned cutoff would be a judgement about somebody's experiment
 presented as a measurement.
 
-- **Fully confounded** → refuse, report the contingency table, leave it to a
-  person. Harmony cannot separate what the design did not separate, and this
-  pipeline does not claim it can. `force_integration` will still run it, and then
-  states in a warning that the condition difference is gone.
+- **Fully confounded** → refuse, report the contingency table, and leave the
+  choice open for a person (`integration_state="needs_review"`). Harmony cannot
+  separate what the design did not separate, and this pipeline does not claim it
+  can. **`force_integration` does not override this**, unlike the batch-size
+  check: accepting a shaky estimate is a decision someone can make, and waiving
+  arithmetic is not. `accept` at the gate means the uncorrected `X_pca`; there is
+  deliberately no answer meaning "integrate anyway".
 - **Uneven but connected** → run, with a warning carrying the table.
 
 ## Which column each step reads

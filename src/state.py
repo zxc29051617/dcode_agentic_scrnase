@@ -173,6 +173,12 @@ def new_run_state(
 UNRESOLVED_STATE_KEYS: dict[str, str] = {
     "cell_calling_review": "cell_calling_state",
     "apply_cell_qc_filter": "filter_state",
+    # Set only when the design cannot be corrected at all — condition and
+    # technical batch fully confounded. Unlike the two above, the run can be
+    # accepted as it stands: there is a usable uncorrected embedding, and
+    # `accept` means taking it. What there is no answer for is "integrate
+    # anyway", which is why this is an open choice rather than a knob.
+    "run_integration": "integration_state",
     "annotate_cells": "annotation_state",
 }
 

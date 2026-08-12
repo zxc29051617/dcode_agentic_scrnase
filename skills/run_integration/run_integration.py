@@ -279,25 +279,37 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
 
     report = _confounding(adata, batch_key)
     if report.get("fully_confounded"):
-        message = (
+        # Not overridable, by anything. `force_integration` waives checks about
+        # whether a fit would be *reliable* — a batch of twelve cells is a bad
+        # estimate, and an operator may accept a bad estimate. This is not that
+        # kind of check: with every batch holding a single condition the two
+        # effects are the same column of the design matrix, so there is no
+        # separate batch effect to remove and "corrected" would name an
+        # embedding with the biology taken out of it. Waiving arithmetic is not
+        # a decision anyone is in a position to make, so it is not offered.
+        #
+        # It leaves as an unresolved choice rather than a hard error: the run
+        # keeps its QC, clustering and markers, and the gate asks. `accept`
+        # there means "use the uncorrected X_pca", which is the only thing on
+        # offer — there is deliberately no answer that means "integrate anyway".
+        # If that override is ever genuinely wanted it needs its own flag and
+        # its own design, not a second meaning for this one.
+        warnings.append(
             f"{report['biological_key']} and {batch_key} are fully confounded "
             f"({report['n_components']} disconnected groups): every batch holds a single "
             f"condition, so the two differences enter the data identically and removing "
             f"the batch removes the condition. Harmony cannot separate what the design "
-            f"did not separate. Contingency table (libraries): {report['table']}"
+            f"did not separate, and force_integration does not change that. Using X_pca "
+            f"as-is; a person has to decide what to do about the design. Contingency "
+            f"table (libraries): {report['table']}"
         )
-        if not force:
-            warnings.append(message + ". Using X_pca as-is; this needs a person to decide")
-            return _finish(
-                notes=notes, warnings=warnings,
-                **{**skip, "batch_key": batch_key, "n_batches": n_batches,
-                   "batch_counts": batch_counts, "confounding": report},
-            )
-        warnings.append(
-            message + ". force_integration was set, so it ran anyway and the corrected "
-            "embedding no longer carries the condition difference"
+        return _finish(
+            notes=notes, warnings=warnings,
+            **{**skip, "batch_key": batch_key, "n_batches": n_batches,
+               "batch_counts": batch_counts, "confounding": report,
+               "integration_state": "needs_review"},
         )
-    elif not report.get("balanced") and report.get("n_conditions", 0) > 1:
+    if not report.get("balanced") and report.get("n_conditions", 0) > 1:
         # Reported, never acted on. There is no defensible cutoff at which an
         # unbalanced-but-estimable design stops being the operator's call.
         warnings.append(
@@ -349,6 +361,7 @@ def _finish(
     mode: str | None = None,
     mode_source: str = "unanswered",
     confounding: dict[str, Any] | None = None,
+    integration_state: str = "resolved",
     notes: list[str],
     warnings: list[str],
 ) -> dict[str, Any]:
@@ -373,6 +386,9 @@ def _finish(
         "mode_source": mode_source,
         "confounding": confounding or {},
     }
+    # Read by `src/state.unresolved_choices`, so the final gate and the report
+    # agree with this step about whether the run left a decision open.
+    integration_summary["integration_state"] = integration_state
 
     return _result(
         adata_path=adata_path,

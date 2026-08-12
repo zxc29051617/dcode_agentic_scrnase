@@ -262,8 +262,16 @@ def test_the_confounding_refusal_shows_the_table():
     assert table.get("control", {}).get("BATCH_B", 0) == 0, table
 
 
-def test_a_confounded_design_is_not_rescued_by_force():
-    """Nothing in the contract may claim Harmony can fix an unidentifiable design."""
+def test_force_integration_cannot_bypass_the_confounding_check():
+    """The one check `force` does not waive, because there is nothing to waive.
+
+    `force_integration` exists for judgements about whether a fit would be
+    *reliable* — a twelve-cell batch is a bad estimate, and an operator may
+    decide to accept a bad estimate. A fully confounded design is not that: the
+    condition and the batch are the same column of the design matrix, so there
+    is no separate batch effect to remove, and "corrected" would name an
+    embedding with the biology taken out of it.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         path = _adata(root / "a.h5ad", manifest_text=CONFOUNDED)
@@ -271,11 +279,67 @@ def test_a_confounded_design_is_not_rescued_by_force():
             path, root, integration_mode="harmony", force_integration=True,
         )
 
-    if summary.get("integrated"):
-        joined = " ".join(result.get("warnings", []))
-        assert "confounded" in joined.lower(), (
-            "forcing is allowed only if the run says plainly what it destroyed"
+    assert summary["integrated"] is False, "force must not run Harmony here"
+    assert summary["embedding_key"] == "X_pca"
+    assert (summary.get("confounding") or {}).get("fully_confounded") is True
+    joined = " ".join(result["warnings"]).lower()
+    assert "force_integration does not change that" in joined, result["warnings"]
+
+
+def test_no_harmony_output_is_written_for_a_confounded_design_under_force():
+    """Not merely reported as skipped — the corrected embedding must not exist."""
+    import anndata as ad
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        path = _adata(root / "a.h5ad", manifest_text=CONFOUNDED)
+        result, _ = _integrate(
+            path, root, integration_mode="harmony", force_integration=True,
         )
+        written = ad.read_h5ad(result["output"]["adata_path"])
+
+    assert "X_pca_harmony" not in written.obsm, (
+        "a downstream step reading obsm would otherwise pick up a corrected embedding"
+    )
+
+
+def test_a_confounded_design_is_left_as_an_open_choice_for_a_person():
+    """It reaches the existing gate as an unresolved decision, not a hard error."""
+    from src.state import unresolved_choices
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        path = _adata(root / "a.h5ad", manifest_text=CONFOUNDED)
+        result, summary = _integrate(path, root, integration_mode="harmony")
+
+    assert summary["integration_state"] == "needs_review", summary
+    open_choices = unresolved_choices({"run_integration": summary})
+    assert [step for step, _, _ in open_choices] == ["run_integration"], open_choices
+    assert not result["errors"], (
+        "the run keeps its QC, clustering and markers; only the correction is refused"
+    )
+
+
+def test_there_is_no_answer_that_means_integrate_anyway():
+    """`accept` can only mean the uncorrected X_pca, so no override is offered.
+
+    If that override is ever genuinely wanted it needs its own flag and its own
+    design. Reusing `force_integration` would make one word mean both "I accept
+    a shaky estimate" and "I accept arithmetic that does not hold".
+    """
+    from src.registry import REGISTRY, coerce_overrides
+
+    allowed = REGISTRY["run_integration"].revisable
+    assert allowed == ("integration_mode",), allowed
+    for attempt in ("force_integration", "allow_confounded", "ignore_confounding"):
+        accepted, rejected = coerce_overrides({attempt: True}, allowed)
+        assert not accepted, f"{attempt} must not reach config from a gate"
+        assert rejected, attempt
+
+    accepted, rejected = coerce_overrides({"integration_mode": "harmony"}, allowed)
+    assert accepted == {"integration_mode": "harmony"}, (
+        "answering harmony is allowed; it simply still fails the check"
+    )
 
 
 # --- obs semantics ------------------------------------------------------------------------
