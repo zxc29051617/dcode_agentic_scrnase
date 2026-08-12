@@ -158,7 +158,7 @@ def test_a_single_sample_runs_without_a_batch_key():
     with tempfile.TemporaryDirectory() as tmp:
         result = _run(Path(tmp), _adata(200, 200, samples=["A"]))
     assert result["hvg_summary"]["batch_key"] is None
-    assert any("single sample" in n for n in result["notes"])
+    assert any("one library" in n for n in result["notes"])
 
 
 # --- failures ----------------------------------------------------------------

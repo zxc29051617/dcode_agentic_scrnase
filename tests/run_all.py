@@ -53,6 +53,8 @@ from tests import (  # noqa: E402
     test_step_prompts,
     test_run_qc_metrics,
     test_scientific_bugfixes,
+    test_manifest,
+    test_study_design,
 )
 
 #: Roughly pipeline order. Each module appears once — a repeat costs the time
@@ -74,6 +76,8 @@ MODULES = (
     test_detect_doublets,
     test_normalize_hvg_prepare,
     test_run_pca,
+    test_manifest,
+    test_study_design,
     test_run_integration,
     test_run_clustering,
     test_run_umap,

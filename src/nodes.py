@@ -50,6 +50,7 @@ def build_payload(state: WorkflowState, step: str) -> dict[str, Any]:
         "config": {**{k: v for k, v in config.items() if k != "steps"}, **step_config},
         "input_bundle": state.get("input_bundle") or {},
         "sample_metadata": state.get("sample_metadata") or {},
+        "study_design": state.get("study_design") or {},
         "artifacts": state.get("artifacts") or {},
     }
 

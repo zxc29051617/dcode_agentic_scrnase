@@ -102,7 +102,9 @@ def test_run_metadata_is_written_when_the_run_starts():
         assert path.exists(), "metadata must exist before any step has run"
         meta = json.loads(path.read_text(encoding="utf-8"))
     assert meta["run_id"] == state["run_id"]
-    assert set(meta) == {"run_id", "runtime", "source", "packages", "seeds"}
+    assert set(meta) == {"run_id", "runtime", "source", "packages", "seeds",
+                        "study_design"}
+    assert meta["study_design"] == {}, "a run with no manifest declares no design"
     assert meta["runtime"]["python_version"]
     assert meta["source"]["config_sha256"]
 

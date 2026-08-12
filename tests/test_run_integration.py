@@ -1,5 +1,12 @@
 """Tests for `run_integration`.
 
+Harmony is opt-in. These tests used to assert the opposite — that two or more
+values in `obs["sample"]` were corrected automatically — which is the behaviour
+`tests/test_study_design.py` now exists to prevent: `sample` came from a
+filename, so correcting on it removed whatever the libraries differed by. What
+is asserted here is the mechanics once somebody has asked for the correction and
+declared what the batches are.
+
 Run with `python tests/test_run_integration.py` (or `python tests/run_all.py`).
 """
 
@@ -17,8 +24,13 @@ from src.registry import load_skill  # noqa: E402
 integ = load_skill("run_integration")
 
 
-def _adata(n_cells=200, n_genes=50, n_comps=10, *, samples=None):
-    """A fitted-looking PCA embedding, with an optional `sample` column."""
+def _adata(n_cells=200, n_genes=50, n_comps=10, *, samples=None, batches=None):
+    """A fitted-looking PCA embedding, with optional library and batch columns.
+
+    `samples` labels which library each cell came from; `batches` is the
+    declared `technical_batch`, which only a validated manifest can supply and
+    which is the only column Harmony may correct on.
+    """
     import anndata
     import numpy as np
     import scipy.sparse as sp
@@ -34,7 +46,11 @@ def _adata(n_cells=200, n_genes=50, n_comps=10, *, samples=None):
     adata.var_names = [f"GENE{i}" for i in range(n_genes)]
     adata.obsm["X_pca"] = rng.normal(size=(n_cells, n_comps)).astype("float32")
     if samples:
-        adata.obs["sample"] = [samples[i % len(samples)] for i in range(n_cells)]
+        labels = [samples[i % len(samples)] for i in range(n_cells)]
+        adata.obs["sample"] = labels
+        adata.obs["library_id"] = labels
+    if batches:
+        adata.obs["technical_batch"] = [batches[i % len(batches)] for i in range(n_cells)]
     return adata
 
 
@@ -66,7 +82,8 @@ def test_a_single_sample_is_skipped_not_integrated():
     assert result["errors"] == []
     assert result["integration_summary"]["integrated"] is False
     assert result["integration_summary"]["embedding_key"] == "X_pca"
-    assert any("only one value" in n for n in result["notes"])
+    assert any("one library" in n for n in result["notes"])
+    assert result["warnings"] == [], "one library raises no question to answer"
 
 
 def test_no_batch_key_at_all_is_skipped_not_an_error():
@@ -74,17 +91,22 @@ def test_no_batch_key_at_all_is_skipped_not_an_error():
         result = _run(Path(tmp), _adata(200))  # no `sample` column
     assert result["errors"] == []
     assert result["integration_summary"]["integrated"] is False
-    assert any("no obs['sample']" in n for n in result["notes"])
+    assert any("one library" in n for n in result["notes"])
 
 
-def test_multiple_samples_with_enough_cells_are_integrated():
+def test_multiple_batches_with_enough_cells_are_integrated():
+    """Two declared technical batches, and an operator who asked for the correction."""
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        result = _run(root, _adata(200, samples=["A", "B"]))
+        result = _run(
+            root, _adata(200, samples=["A", "B"], batches=["BATCH_A", "BATCH_B"]),
+            integration_mode="harmony",
+        )
         assert result["errors"] == []
         assert result["integration_summary"]["integrated"] is True
         assert result["integration_summary"]["embedding_key"] == "X_pca_harmony"
         assert result["integration_summary"]["n_batches"] == 2
+        assert result["integration_summary"]["batch_key"] == "technical_batch"
 
         import anndata
 
@@ -99,9 +121,10 @@ def test_x_is_never_touched_by_integration():
 
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        raw = _adata(200, samples=["A", "B"])
+        raw = _adata(200, samples=["A", "B"], batches=["BATCH_A", "BATCH_B"])
         raw_x = np.asarray(raw.X.todense())
-        result = _run(root, raw)
+        result = _run(root, raw, integration_mode="harmony")
+        assert result["integration_summary"]["integrated"] is True
         import anndata
 
         written = anndata.read_h5ad(result["adata_path"])
@@ -110,17 +133,32 @@ def test_x_is_never_touched_by_integration():
 
 def test_a_batch_too_small_is_skipped_with_a_warning():
     with tempfile.TemporaryDirectory() as tmp:
-        result = _run(Path(tmp), _adata(200, samples=["A"] * 195 + ["B"] * 5))
+        result = _run(
+            Path(tmp),
+            _adata(200, samples=["A"] * 195 + ["B"] * 5,
+                   batches=["BATCH_A"] * 195 + ["BATCH_B"] * 5),
+            integration_mode="harmony",
+        )
     assert result["errors"] == []
     assert result["integration_summary"]["integrated"] is False
     assert any("fewer than" in w for w in result["warnings"])
 
 
-def test_force_integration_runs_harmony_even_on_one_sample():
+def test_one_technical_batch_is_skipped_even_under_force():
+    """`force_integration` waives the size and confounding checks, not arithmetic.
+
+    Correcting one batch against itself has no meaning, so this is a skip rather
+    than an escape hatch. It used to run under `force`, back when the batch key
+    was the library name and "one batch" meant something else.
+    """
     with tempfile.TemporaryDirectory() as tmp:
-        result = _run(Path(tmp), _adata(200, samples=["A"]), force_integration=True)
+        result = _run(
+            Path(tmp), _adata(200, samples=["A"], batches=["BATCH_A"]),
+            integration_mode="harmony", force_integration=True,
+        )
     assert result["errors"] == []
-    assert result["integration_summary"]["integrated"] is True
+    assert result["integration_summary"]["integrated"] is False
+    assert any("one technical batch" in n for n in result["notes"])
 
 
 # --- failures ----------------------------------------------------------------

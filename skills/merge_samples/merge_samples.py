@@ -52,6 +52,7 @@ OUTPUT_FIELDS = (
     "n_genes",
     "per_sample",
     "sample_key",
+    "library_key",
     "warnings",
     "errors",
     "recommended_next_tool",
@@ -62,9 +63,21 @@ OUTPUT_FIELDS = (
 #: subset of the other.
 PRODUCERS = ("cell_calling_review", "load_filtered_counts", "load_raw_counts")
 
-#: The obs column every downstream step can rely on to know which library a
-#: cell came from — the batch key `run_integration` will correct on.
+#: The obs column that says which library a cell came from. `LIBRARY_KEY` is
+#: the name that means what it says; `SAMPLE_KEY` is kept as an alias written
+#: alongside it, because objects and code from before this rename read it.
+#:
+#: It is emphatically **not** the key `run_integration` corrects on. It used to
+#: be — `batch_key` defaulted to `"sample"` — which meant a study design was
+#: read off a FASTQ filename and Harmony removed whatever the libraries differed
+#: by, including the condition under study. The batch to correct is
+#: `technical_batch`, which exists only when a validated manifest declared it.
+LIBRARY_KEY = "library_id"
 SAMPLE_KEY = "sample"
+
+#: Written to `obs` from the manifest, one value per cell, resolved by library.
+#: `library_id` is excluded: it is the join key and is written separately.
+DESIGN_COLUMNS = ("sample_id", "donor_id", "condition", "technical_batch")
 
 
 def _incoming(payload: dict[str, Any]) -> tuple[dict[str, str], str | None]:
@@ -84,6 +97,39 @@ def _incoming(payload: dict[str, Any]) -> tuple[dict[str, str], str | None]:
     if config_paths:
         return {str(k): str(v) for k, v in config_paths.items()}, "config"
     return {}, None
+
+
+def _apply_design(merged: Any, payload: dict[str, Any], names: list[str]) -> list[str]:
+    """Write the declared study design onto the cells, or say why there is none.
+
+    Joined on `library_id` and nothing else. There is no positional fallback and
+    no near-match: `study_design` has already been validated against the
+    libraries this run found, so a name that is not in it here would be a wiring
+    mistake rather than something to paper over.
+
+    Values are written as `category` with real nulls, never the string
+    "unknown" — a placeholder string is a value, and a value can silently become
+    a batch to correct on.
+    """
+    import pandas as pd
+
+    design = payload.get("study_design") or {}
+    by_library = design.get("by_library") or {}
+    if not by_library:
+        if len(names) > 1:
+            return [
+                f"{len(names)} libraries were merged with no study design attached, so "
+                f"donor, condition and technical batch are unknown for every cell. "
+                f"Integration cannot run without them; pass --sample-manifest to "
+                f"declare them"
+            ]
+        return []
+
+    labels = merged.obs[SAMPLE_KEY].astype(str)
+    for column in DESIGN_COLUMNS:
+        mapping = {lib: (values or {}).get(column) for lib, values in by_library.items()}
+        merged.obs[column] = pd.Categorical(labels.map(mapping))
+    return []
 
 
 def run(payload: dict[str, Any]) -> dict[str, Any]:
@@ -155,6 +201,13 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
         merge="first",
     )
     merged.obs[SAMPLE_KEY] = merged.obs[SAMPLE_KEY].astype("category")
+    # The same values under the name that says what they are. Downstream steps
+    # asking "which library" should read this one; `sample` stays for callers
+    # written before the distinction existed.
+    merged.obs[LIBRARY_KEY] = merged.obs[SAMPLE_KEY]
+
+    design_warnings = _apply_design(merged, payload, names)
+    warnings.extend(design_warnings)
 
     duplicated = int(merged.n_obs - len(set(merged.obs_names)))
     if duplicated:
@@ -218,9 +271,12 @@ def _result(
         "n_cells": n_cells,
         "n_genes": n_genes,
         "per_sample": per_sample or {},
-        # The batch key `run_integration` corrects on, named once here so no
-        # downstream step has to guess it.
+        # Which column says "this cell came from that library", named once here
+        # so no downstream step has to guess it. Not the key `run_integration`
+        # corrects on — that is `technical_batch`, and conflating the two is
+        # what let a study design be inferred from a filename.
         "sample_key": SAMPLE_KEY,
+        "library_key": LIBRARY_KEY,
         "producer": producer,
         "recommended_next_tool": next_tool,
         "metrics": metrics or {},
