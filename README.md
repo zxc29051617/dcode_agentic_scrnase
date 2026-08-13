@@ -68,6 +68,41 @@ Cell Ranger 一個 library 要 20–40 分鐘，讓壞掉的 library 進來比�
 
 ## 怎麼跑
 
+### 第一次：建環境
+
+環境從 `conda-lock.yml` 建，不是從 `environment.yml` 重解——重解出來的是 channel
+今天早上供應的版本，而 lockfile 存在就是為了擋這件事。CI 用的也是這一行。
+
+```bash
+pip install conda-lock==4.0.2
+conda-lock install --micromamba --name dcode-scrna conda-lock.yml
+```
+
+> **不要用 `micromamba -f conda-lock.yml`。** 量測過：它會裝完 257 個 conda 套件、
+> 靜默跳過 55 個 pip 套件，給你一個沒有 `langgraph` 也沒有 `scanpy` 的環境——
+> 看起來裝好了，跑起來才發現不對。細節見 [`docs/environment.md`](docs/environment.md)。
+
+FASTQ 路線會 shell out 到 FastQC 與 MultiQC。**兩者都在 lockfile 裡**
+（`environment.yml` 釘 `fastqc=0.12.1`、`multiqc=1.35`，`openjdk` 隨 FastQC 一起
+進來），所以照上面建出來的環境已經有它們，不用另外裝。CI 也是從同一份 lockfile
+安裝，並用 `fastqc --version` / `multiqc --version` 驗證裝到了。
+
+`fastq_qc` 用 `shutil.which("fastqc")` 找它。**找不到時最常見的原因是環境沒
+activate** —— 這些執行檔在 env 的 `bin/` 裡，不在系統 PATH 上；直接呼叫
+`<env>/bin/python` 而不 activate 也一樣找不到。真的缺了也不會擋住流程
+（`fastq_qc` 記一筆 warning 就往下走到 `cellranger_count`，Cell Ranger 自己的
+web_summary 仍然有 Q30 和 mapping rate），但 `DEFAULT_POLICY` 的
+`autocontinue_on_warn=False` 會讓那個 warning 停在 human gate。
+
+先確認手上的環境沒有和 lockfile 漂移：
+
+```bash
+conda activate dcode-scrna
+fastqc --version && multiqc --version    # 應該是 0.12.1 和 1.35
+```
+
+### 每次
+
 ```bash
 conda activate dcode-scrna
 
@@ -294,8 +329,18 @@ python -m src.run --input <matrix> --resume-from 20260810T065058Z-f34afde0 --min
 python -m src.run --continue-from 20260810T065058Z-f34afde0 --interactive
 ```
 
-`--resume-from` 會算出一個 **cut**:最早不能再信任的 step。改 `--celltypist-model`
-只會從 `annotate_cells` 重跑,PCA 和 clustering 沿用;改輸入資料則整份重跑。
+`--resume-from` 會算出一個 **cut**:最早不能再信任的 step,由
+`registry.earliest_step_reading()` 從改動的 config key 反查得出。cut 從哪裡切,
+決定了什麼能沿用——兩個例子切在很不一樣的地方:
+
+| 改了什麼 | cut(從這裡重跑) | 沿用 | PCA / clustering |
+|---|---|---|---|
+| `--min-genes` | `apply_cell_qc_filter` | 它以前的每一步,含 `cellranger_count` | **都要重跑** |
+| `--celltypist-model` | `annotate_cells` | 它以前的每一步 | 沿用 |
+
+改 QC 閾值省下的是 count 那 20–40 分鐘,**不是** PCA 和 clustering——濾掉的細胞
+不同,後面每一步的輸入就都不同了。只有改 `--celltypist-model` 這種下游的旋鈕才
+沿用得到 embedding。改輸入資料則整份重跑。
 
 `--continue-from` 只有 `--interactive` 跑過的 run 才有 checkpoint 可以接
 (那是唯一會寫 `checkpoint.sqlite` 的模式)。找不到就明確報錯,**絕不從頭重跑**。
