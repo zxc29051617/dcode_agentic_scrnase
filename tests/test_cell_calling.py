@@ -298,9 +298,14 @@ def test_real_selection_reports_what_it_gives_up_against_cell_ranger():
                     "cellranger_count": {
                         "libraries": [
                             {
+                                # `sample1` is the name `load_raw_counts` gives a
+                                # lone matrix, so this matches the library by its
+                                # own id — the path a real run takes — rather than
+                                # falling back on there being only one of each.
+                                "library_id": "sample1",
                                 "filtered_feature_bc_matrix": str(
                                     REAL_OUTS / "filtered_feature_bc_matrix.h5"
-                                )
+                                ),
                             }
                         ]
                     },
