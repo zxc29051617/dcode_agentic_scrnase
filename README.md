@@ -68,6 +68,30 @@ Cell Ranger 一個 library 要 20–40 分鐘，讓壞掉的 library 進來比�
 
 ## 怎麼跑
 
+### 第一次：建環境
+
+環境從 `conda-lock.yml` 建，不是從 `environment.yml` 重解——重解出來的是 channel
+今天早上供應的版本，而 lockfile 存在就是為了擋這件事。CI 用的也是這一行。
+
+```bash
+pip install conda-lock==4.0.2
+conda-lock install --micromamba --name dcode-scrna conda-lock.yml
+```
+
+> **不要用 `micromamba -f conda-lock.yml`。** 量測過：它會裝完 257 個 conda 套件、
+> 靜默跳過 55 個 pip 套件，給你一個沒有 `langgraph` 也沒有 `scanpy` 的環境——
+> 看起來裝好了，跑起來才發現不對。細節見 [`docs/environment.md`](docs/environment.md)。
+
+FastQC 與 MultiQC 不在 lockfile 裡，它們是 FASTQ 路線的選用外部工具。沒裝不會
+擋住流程（`fastq_qc` 記一筆 warning 就往下走），但那個 warning 會讓 judge 停在
+human gate：
+
+```bash
+conda install -c bioconda fastqc multiqc
+```
+
+### 每次
+
 ```bash
 conda activate dcode-scrna
 
