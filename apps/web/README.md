@@ -28,15 +28,39 @@ cp .env.local.example .env.local
 # set GATEWAY_URL to a running services/gateway instance
 ```
 
-`ASSISTANT_MODEL_BASE_URL` / `ASSISTANT_MODEL_API_KEY` are left unset in
-Phase 1: no local model endpoint or API key was available to wire in when this
-was built (no Ollama running, no project `.env`, nothing provided). Unset,
-`app/api/copilotkit/route.ts` falls back to `@copilotkit/runtime`'s own
-`ExperimentalEmptyAdapter`, so every page and every read-only action still
-runs against real gateway data — there is simply no model in the loop yet to
-carry on a conversation about it. Setting those two variables points the
-assistant at a real OpenAI-compatible endpoint once one is approved, per
-`docs/copilotkit_product_architecture.md`'s "model-egress policy" item.
+## The assistant model
+
+Three server-side variables, parsed in `lib/assistantModel.ts`:
+
+| variable | required | notes |
+|---|---|---|
+| `ASSISTANT_MODEL_BASE_URL` | yes | any OpenAI-compatible endpoint; the `/v1` suffix matters for Ollama |
+| `ASSISTANT_MODEL_NAME` | yes | never defaulted; must support tool calling |
+| `ASSISTANT_MODEL_API_KEY` | no | blank becomes `not-needed`, as the judge's key does |
+
+Verified working against the lab DGX (`gpt-oss:120b`), which is the same
+endpoint and model `.env.example` documents for the judge.
+
+**Unset, the assistant page says "Assistant model is not configured" and
+renders no chat box at all.** The runtime still falls back to
+`@copilotkit/runtime`'s `ExperimentalEmptyAdapter` so nothing crashes, but the
+page never presents an empty adapter as a working assistant. Every other page
+— status, timeline, report, provenance — needs no model and works either way.
+
+## Tests
+
+```bash
+npm run test:unit          # config parsing, redaction, read-only action shape
+npm run build              # type-check and produce a bundle
+npm run test:bundle        # assert no secret reached .next/static (run after build,
+                           # in the same environment the build used)
+npm run test:conversation  # real model + real actions + real gateway, end to end
+bash tests/live_assistant.sh configured|unconfigured|invalid-endpoint
+```
+
+`test:conversation` needs a running gateway and a configured model. It drives
+the same `READ_ONLY_ACTIONS` the runtime registers, so a passing test cannot
+be testing an action the product does not expose.
 
 ## Run it
 
