@@ -20,6 +20,15 @@ where must that layer be forbidden from reaching?
 Section 15 lists what is not built, in one place, so this file cannot be read as
 a description of working code.
 
+`docs/copilotkit_product_architecture.md` is the companion Phase 0 document for
+the surrounding product boundary: Current CLI behaviour, the Near-term
+read-only FastAPI / AG-UI / CopilotKit surface, and the Production target for
+workers, external web gates and this review layer. This document remains the
+narrow Deep Agents design. Where the documents overlap, the scientific worker is
+the only writer of artifacts, checkpoints, audit, metadata and reports; Deep
+Agents remain completely read-only and never answer `accept`, `revise` or
+`stop`.
+
 ---
 
 ## 1. What exists today
@@ -456,8 +465,8 @@ Three constraints, each enforced by the type rather than by an instruction:
 
 | thing | where | owner | source of truth for |
 |---|---|---|---|
-| Deep Agents conversation / task state | v1: in memory only. Later: `runs/<run_id>/review/agent_checkpoint.sqlite` | agent layer | the review conversation, and nothing else |
-| reviewer output | `runs/<run_id>/review/<reviewer>.json` | agent layer | what a model said |
+| Deep Agents conversation / task state | v1: in memory only. Later: a separate product review store, never `runs/<id>/` | agent layer | the review conversation, and nothing else |
+| reviewer output | a separate product review store keyed by run id and evidence snapshot, never the scientific run directory | agent layer | what a model said |
 | LangGraph graph state | in memory; when paused, `runs/<id>/checkpoint.sqlite` | LangGraph | **where the graph stopped** |
 | step output | `runs/<id>/<step>/output.json` and the artifacts it names | skills | **which results are still valid**, together with the audit log and metadata |
 | events | `runs/<id>/audit.jsonl`, append-only | `provenance.AuditLog` | **what happened** |
@@ -489,41 +498,38 @@ moved.
 
 ---
 
-## 9. Adding human approval, later
+## 9. External human gates, later
 
-The MVP has nothing to approve, because it has no tool that does anything. When
-control tools are proposed, these rules apply, and they are recorded now so that
-the phase that writes them is not also the phase that decides them.
+The MVP has no control tool, and the product target does not give one to Deep
+Agents. A reviewer may explain the pending question or make a cited proposal;
+it may never start a run, resume a run, alter a setting, or answer
+`accept`/`revise`/`stop`.
 
-**Approval mechanism.** Any tool that starts a run, resumes one, or changes a
-setting is gated by the harness's interrupt/approval mechanism, and a
-checkpointer is required for that to work. The approval is on the tool call, and
-the decision types are approve / edit / reject / respond.
+**External human-gate contract.** A future web gate is a product boundary, not a
+model approval mechanism:
 
-**Subprocess rules.** If a control tool shells out:
+1. LangGraph writes and checkpoints the pending question before it suspends.
+2. The Scientific Worker emits a durable external gate record and stops. It never
+   calls `input()`, reads terminal stdin or waits on a terminal session.
+3. Only an authenticated person may submit one decision for the exact pending
+   gate. The service derives the operator identity, validates the gate version
+   and applies existing `coerce_overrides` validation for `revise`.
+4. One accepted external decision resumes one LangGraph interrupt. A later gate
+   needs a later human decision; no callback or agent answer is reused.
+5. Artifact resume and checkpoint continuation remain separate operations. The
+   external gate path only continues an existing checkpoint and never calls
+   `plan_resume`.
 
-- **No shell command string is ever assembled.** Not by concatenation, not by
-  template, not by `shlex.join`.
-- The command is an **argv list**, and it is run with **`shell=False`**.
-- Every argument is validated *before* the call, by the code that already owns
-  that question: the CLI's own `argparse` (including its `choices`), the
-  registry allowlists (`REVISABLE_PARAMETERS`, `StepSpec.revisable`), and
-  `src/manifest.py`'s validation. Nothing gets a second, parallel validator.
-- The run id, paths and parameter values are checked against the same rules a
-  person typing the command would meet. A value an operator could not type is a
-  value the adapter may not pass.
-- Every control operation still requires human approval, per AD-7.
+**The CLI is a semantic reference, not the future web contract.** Its validation
+and two-resume behaviour remain the reference for a future
+`ScientificWorkflowService`, but a Web Worker must not invoke CLI
+`--interactive`, call `ask_on_terminal()`, or read terminal stdin. The external
+human-gate design is specified in `docs/copilotkit_product_architecture.md`.
+Re-implementing scientific validation in a web adapter would create a second
+copy that can drift.
 
-**Why the CLI rather than an in-process call.** Going through
-`python -m src.run` means the agent layer uses the same entry point a person
-uses, so every guard the CLI already has applies automatically —
-`--continue-from` refusing `--input` and `--sample-manifest`, the manifest being
-validated before the graph is built, the `--judge` choices being built from
-`BACKEND_ALIASES`. Re-implementing those in an adapter would be a second copy
-that can drift.
-
-**Phase 0 implements none of this.** There is no `executor_adapter.py`, no
-`tools/control.py`, and no approval configuration in this commit.
+**Phase 0 implements none of this.** There is no `ScientificWorkflowService`,
+external gate API, worker, web frontend or control tool in this commit.
 
 ---
 
@@ -647,7 +653,7 @@ gate stays worth reading.
 | stability | same input, ≥3 **separate sessions**, 2 runs each; report agreement across sessions | reported, not thresholded |
 | wall clock | per review, and as a fraction of the run | reported |
 | model cost | total calls and tokens, **including subagent calls** | reported |
-| unauthorised modification | file hashes over `runs/<id>/**` excluding `review/`, plus audit line count and checkpoint mtime, before and after | **must be zero**; this is a test, not a measurement |
+| unauthorised modification | file hashes over all of `runs/<id>/**`, plus audit line count and checkpoint mtime, before and after | **must be zero**; this is a test, not a measurement |
 
 Stability is measured **across** sessions, never within one: the judge
 measurement found that repeats inside a session are correlated and overstate
@@ -671,11 +677,12 @@ Each phase is one revertible step, and none of them changes graph topology.
 
 | phase | produces | done when | revert |
 |---|---|---|---|
-| **0 design** | this file, `prompts/agents/README.md` | open decisions in section 16 are settled | delete two files |
-| **1 FASTQ baseline** | a public FASTQ golden run, and the cleaned fixture of section 10 | `python tests/run_all.py` has no failures; the fixture regenerates from its documented procedure | delete the fixture |
+| **-1 FASTQ baseline** | a public FASTQ golden run and the cleaned fixture of section 10 | `python tests/run_all.py` has no failures; the fixture regenerates from its documented procedure | delete the fixture |
+| **0 design** | this file, `prompts/agents/README.md`, and `docs/copilotkit_product_architecture.md` | the product boundaries and open decisions are settled | delete the design files only |
+| **1 product read-only foundation** | `ScientificWorkflowService`, read-only FastAPI, AG-UI observation and CopilotKit run views | existing executor tests pass unedited; the product has no mutation endpoint and no terminal-stdin dependency | revert the dedicated product layer; scientific executor semantics remain unchanged |
 | **2 MVP** | contracts, read-only inspect tools, redaction, the two reviewers, the coordinator | unauthorised modification is zero; every existing test passes unedited | revert the PR; nothing else in `src/` was touched |
 | **3 evaluation** | the case set, the runner, and the measured result written back into this file | both control arms have run and the false-alarm rate has a number | additive only |
-| **4 human-approved control** | control tools under approval, following section 9 | the audit trail shows the person in the loop; both resume semantics still tested and unchanged | revert the control tools |
+| **4 human-approved control** | external web human-gate mode and any control tools under approval, following section 9 | the audit trail shows the person in the loop; both resume semantics still tested and unchanged | revert the control tools |
 | **5 remaining reviewers** | the other four domains, **one at a time, each measured** | each new reviewer meets its own false-alarm threshold before it stays | revert individually |
 | **6 optional** | literature / ontology tools, de-identified questions only | — | not doing it costs nothing |
 
