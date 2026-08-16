@@ -30,6 +30,7 @@ export default function QCTabs({
   cellranger,
   fastqDetail,
   cellrangerDetail,
+  otherArtifactCount,
 }: {
   runId: string;
   fastqc: ArtifactEntry[];
@@ -37,6 +38,8 @@ export default function QCTabs({
   cellranger: ArtifactEntry[];
   fastqDetail?: UpstreamDetail;
   cellrangerDetail?: UpstreamDetail;
+  /** Artifacts this run does have, so an empty tab can say where to look. */
+  otherArtifactCount: number;
 }) {
   const tabs: Tab[] = [
     {
@@ -92,7 +95,23 @@ export default function QCTabs({
         {empty ? (
           <div className="panel">
             <h2 style={{ marginTop: 0 }}>Not recorded</h2>
-            <p style={{ margin: 0 }}>{current.absent}</p>
+            <p>{current.absent}</p>
+            {/* Saying only "nothing here" leaves a reader unsure whether the
+                run has no QC or the page is broken. Name what this run does
+                have, and where. */}
+            {otherArtifactCount > 0 ? (
+              <p className="subtle" style={{ margin: 0 }}>
+                This run did publish {otherArtifactCount} other artifact
+                {otherArtifactCount === 1 ? "" : "s"} — its report figures and rendered report.
+                See the QC figures below, the{" "}
+                <a href={`/runs/${encodeURIComponent(runId)}/report`}>report</a>, or the full{" "}
+                <a href={`/runs/${encodeURIComponent(runId)}/artifacts`}>artifact list</a>.
+              </p>
+            ) : (
+              <p className="subtle" style={{ margin: 0 }}>
+                This run published no artifact of any kind.
+              </p>
+            )}
           </div>
         ) : (
           <>
