@@ -129,6 +129,60 @@ def test_report_available_for_completed_run(client):
     assert "Synthetic fixture" in body["content"]
 
 
+@pytest.fixture
+def build_report_client(tmp_path, monkeypatch):
+    """A run laid out the way the executor actually writes one.
+
+    `build_report` writes `report.md` into its own step directory, not into
+    the run root — so a real kept run has `<run>/build_report/report.md`. The
+    checked-in fixture uses the run root, so without this the executor's own
+    layout would be untested.
+    """
+    root = tmp_path / "runs"
+    run = root / "real-layout-0001"
+    (run / "build_report").mkdir(parents=True)
+    (run / "run_metadata.json").write_text(
+        json.dumps({"runtime": {"started_at": "2026-01-01T00:00:00Z"}, "source": {}}),
+        encoding="utf-8",
+    )
+    (run / "audit.jsonl").write_text(
+        json.dumps({"ts": "2026-01-01T00:00:00Z", "event": "step_start",
+                    "step": "build_report", "run_id": "real-layout-0001"}) + "\n",
+        encoding="utf-8",
+    )
+    (run / "build_report" / "report.md").write_text("# Real layout report\n", encoding="utf-8")
+
+    monkeypatch.setenv("GATEWAY_RUNS_ROOT", str(root))
+    from app.config import get_settings
+    get_settings.cache_clear()
+    from app.main import app
+    with TestClient(app) as c:
+        yield c
+    get_settings.cache_clear()
+
+
+def test_report_is_found_in_the_build_report_step_directory(build_report_client):
+    r = build_report_client.get("/v1/scientific-runs/real-layout-0001/report")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["available"] is True
+    assert "Real layout report" in body["content"]
+    assert body["source_path"] == "build_report/report.md"
+
+
+def test_a_run_whose_report_is_in_build_report_is_not_reported_as_still_running(
+    build_report_client,
+):
+    # The status is derived from whether a report exists, so missing the
+    # executor's own layout made a finished run read as `running`.
+    detail = build_report_client.get("/v1/scientific-runs/real-layout-0001").json()
+    assert detail["has_report"] is True
+    assert detail["status"] == "completed"
+
+    listed = build_report_client.get("/v1/scientific-runs").json()
+    assert listed[0]["status"] == "completed"
+
+
 def test_report_unavailable_for_halted_run_states_a_reason(client):
     r = client.get("/v1/scientific-runs/demo-2026-0002/report")
     assert r.status_code == 200

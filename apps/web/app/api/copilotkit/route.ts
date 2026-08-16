@@ -30,6 +30,9 @@ import { getAssistantModelConfig, scrubSecrets } from "@/lib/assistantModel";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const runtime = new CopilotRuntime({ actions: (): any[] => READ_ONLY_ACTIONS });
 
+/** Upper bound on one model turn. See the note where the client is built. */
+const MODEL_TIMEOUT_MS = 120_000;
+
 /**
  * A real model when one is configured, `ExperimentalEmptyAdapter` when not.
  *
@@ -44,7 +47,17 @@ function serviceAdapter() {
   if (!config.configured) {
     return new ExperimentalEmptyAdapter();
   }
-  const openai = new OpenAI({ baseURL: config.baseURL, apiKey: config.apiKey });
+  // A large model on a shared GPU is legitimately slow — gpt-oss:120b takes
+  // tens of seconds for a tool-calling turn — so this is generous. What it
+  // must not be is absent: without a bound, an endpoint that accepts the
+  // connection and then stalls leaves the chat spinning with no error and
+  // nothing in the log to say why.
+  const openai = new OpenAI({
+    baseURL: config.baseURL,
+    apiKey: config.apiKey,
+    timeout: MODEL_TIMEOUT_MS,
+    maxRetries: 1,
+  });
   return new OpenAIAdapter({ openai, model: config.model });
 }
 

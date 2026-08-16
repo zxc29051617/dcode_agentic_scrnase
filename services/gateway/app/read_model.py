@@ -133,6 +133,42 @@ def _step_status(events: list[dict[str, Any]]) -> dict[str, str]:
     return statuses
 
 
+#: Where a report may sit inside a run directory, in the order searched.
+#:
+#: `build_report/` is where the executor's own step writes it — a real run has
+#: `build_report/report.md` and `build_report/report.html`, recorded in that
+#: step's `output.json` as `markdown_path` and `html_path`. Those recorded
+#: values are *not* used to locate the file: they are paths relative to the
+#: project root of the machine that produced the run, and they carry that
+#: run's original id, so a run kept by copying it into `results/` under a new
+#: name records a path that no longer resolves. What the record does tell us
+#: is the layout *within* a run, which is what these constants encode.
+#:
+#: The run root is searched too, because that is where a simplified or
+#: hand-assembled run directory puts it.
+#:
+#: Both entries are literals joined onto the resolved run directory, so
+#: neither can point outside it — the traversal guarantee in
+#: `resolve_run_dir` is not weakened by looking in a second place.
+REPORT_LOCATIONS = ("build_report", ".")
+
+
+def _find_report(run_dir: Path, filename: str) -> Path | None:
+    """The report file inside `run_dir`, or None if it was never produced."""
+    for location in REPORT_LOCATIONS:
+        candidate = (run_dir / location / filename) if location != "." else (run_dir / filename)
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _has_report(run_dir: Path) -> bool:
+    return (
+        _find_report(run_dir, "report.md") is not None
+        or _find_report(run_dir, "report.html") is not None
+    )
+
+
 def list_runs(runs_root: Path) -> list[dict[str, Any]]:
     """One summary row per subdirectory of `runs_root` that looks like a run."""
     rows: list[dict[str, Any]] = []
@@ -143,7 +179,7 @@ def list_runs(runs_root: Path) -> list[dict[str, Any]]:
         if metadata is None:
             continue  # not a run directory this service recognises
         events = _read_audit(child)
-        has_report = (child / "report.md").exists() or (child / "report.html").exists()
+        has_report = _has_report(child)
         rows.append({
             "scientific_run_id": child.name,
             "status": _derive_status(events, has_report=has_report),
@@ -161,7 +197,7 @@ def get_run_snapshot(runs_root: Path, run_id: str) -> dict[str, Any] | None:
     if metadata is None:
         return None
     events = _read_audit(run_dir)
-    has_report = (run_dir / "report.md").exists() or (run_dir / "report.html").exists()
+    has_report = _has_report(run_dir)
     step_order = _step_order(events)
     step_status = _step_status(events)
     verdicts = _judge_verdicts(events)
@@ -211,12 +247,20 @@ def get_report(runs_root: Path, run_id: str) -> dict[str, Any] | None:
     run_dir = resolve_run_dir(runs_root, run_id)
     if run_dir is None:
         return None
-    md_path = run_dir / "report.md"
-    if not md_path.exists():
+    md_path = _find_report(run_dir, "report.md")
+    if md_path is None:
         return {"available": False, "reason": "no report has been produced for this run yet",
-                "format": None, "content": None}
-    return {"available": True, "reason": None, "format": "markdown",
-            "content": md_path.read_text(encoding="utf-8")}
+                "format": None, "content": None, "source_path": None}
+    return {
+        "available": True,
+        "reason": None,
+        "format": "markdown",
+        "content": md_path.read_text(encoding="utf-8"),
+        # Where it was actually found, relative to the run directory. Two
+        # layouts exist in practice, and a reader comparing this projection
+        # against a run on disk should not have to guess which one produced it.
+        "source_path": md_path.relative_to(run_dir).as_posix(),
+    }
 
 
 #: `run_metadata.json` keys the gateway will project. Everything else in the

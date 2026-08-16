@@ -16,8 +16,33 @@ function gatewayUrl(): string {
   return url;
 }
 
+/**
+ * How long a page will wait for the gateway before giving up.
+ *
+ * The gateway only reads JSON files off local disk, so a slow answer means
+ * something is wrong rather than something is big. Without a bound, a
+ * gateway that accepts a connection and then stalls hangs the page render
+ * forever, and the browser shows a blank screen with nothing to explain it.
+ */
+const GATEWAY_TIMEOUT_MS = 10_000;
+
 async function getJson<T>(path: string): Promise<T | null> {
-  const res = await fetch(`${gatewayUrl()}${path}`, { cache: "no-store" });
+  let res: Response;
+  try {
+    res = await fetch(`${gatewayUrl()}${path}`, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(GATEWAY_TIMEOUT_MS),
+    });
+  } catch (error) {
+    // A timeout and a refused connection both arrive here. Say which, and
+    // say where, because "failed to fetch" on a blank page tells nobody
+    // whether the gateway is down or simply not running yet.
+    const reason =
+      error instanceof Error && error.name === "TimeoutError"
+        ? `did not respond within ${GATEWAY_TIMEOUT_MS / 1000}s`
+        : `could not be reached (${error instanceof Error ? error.message : String(error)})`;
+    throw new Error(`gateway ${path} ${reason}. Is services/gateway running on ${gatewayUrl()}?`);
+  }
   if (res.status === 404) return null;
   if (!res.ok) {
     throw new Error(`gateway ${path} returned ${res.status}`);
