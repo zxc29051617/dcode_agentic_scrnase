@@ -162,6 +162,55 @@ def _find_report(run_dir: Path, filename: str) -> Path | None:
     return None
 
 
+#: The run-level headline numbers, and which recorded metric each is read from.
+#:
+#: Every `(step, key)` pair below was taken from the skill that writes it, not
+#: guessed: `run_clustering` puts `n_clusters` in its metrics,
+#: `annotate_cells` puts `n_cells` and `n_cell_types`,
+#: `apply_cell_qc_filter` puts `n_cells`, and `cross_check_annotation` puts
+#: `clusters_scored`. Pairs are tried in order and the first one present wins,
+#: which is why the later-running step comes first: a cell count after
+#: annotation describes the object the report is about, and a count from
+#: `post_load_validate` describes the object before anything was filtered.
+#:
+#: A number that no step recorded stays `None` and is rendered as "not
+#: recorded" rather than reconstructed. That is the rule
+#: `docs/report_contract.md` already imposes on the report, and it matters
+#: here: a run kept by copying it into `results/` may have had most of its
+#: per-step `output.json` files dropped, and inventing a plausible cell count
+#: for one of those is exactly the failure the rule exists to prevent.
+HEADLINE_METRICS: dict[str, tuple[tuple[str, str], ...]] = {
+    "cells": (
+        ("annotate_cells", "n_cells"),
+        ("apply_cell_qc_filter", "n_cells"),
+        ("post_load_validate", "n_obs"),
+    ),
+    "clusters": (
+        ("run_clustering", "n_clusters"),
+        ("cross_check_annotation", "clusters_scored"),
+    ),
+    "cell_types": (
+        ("annotate_cells", "n_cell_types"),
+    ),
+}
+
+
+def _headline(run_dir: Path) -> dict[str, int | None]:
+    """Run-level summary numbers, or None per field where nothing recorded one."""
+    cache: dict[str, dict[str, Any]] = {}
+    summary: dict[str, int | None] = {}
+    for field, sources in HEADLINE_METRICS.items():
+        summary[field] = None
+        for step, key in sources:
+            if step not in cache:
+                cache[step] = (_read_json(run_dir / step / "output.json") or {}).get("metrics") or {}
+            value = cache[step].get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                summary[field] = int(value)
+                break
+    return summary
+
+
 def _has_report(run_dir: Path) -> bool:
     return (
         _find_report(run_dir, "report.md") is not None
@@ -185,6 +234,7 @@ def list_runs(runs_root: Path) -> list[dict[str, Any]]:
             "status": _derive_status(events, has_report=has_report),
             "started_at": (metadata.get("runtime") or {}).get("started_at"),
             "steps_recorded": len(_step_order(events)),
+            **_headline(child),
         })
     return rows
 
@@ -213,6 +263,14 @@ def get_run_snapshot(runs_root: Path, run_id: str) -> dict[str, Any] | None:
         ],
         "pending_gate": _pending_gate(events),
         "has_report": has_report,
+        # Counted from the audit log, so a run whose per-step output.json
+        # files were not kept still reports its verdict tally correctly.
+        "warn_count": sum(1 for v in verdicts.values() if v.get("verdict") == "warn"),
+        "fail_count": sum(1 for v in verdicts.values() if v.get("verdict") == "fail"),
+        "reused_steps": sorted(
+            {str(e.get("step")) for e in events if e.get("event") == "step_skipped"}
+        ),
+        **_headline(run_dir),
     }
 
 

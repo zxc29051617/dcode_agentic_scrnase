@@ -26,16 +26,25 @@ check() {
   fi
 }
 
-page="$(curl -s "$WEB/runs/$RUN/assistant")"
+# The run overview: the assistant is a panel in the shell now, so the shell
+# is what carries its state. /runs/<id>/assistant only redirects here.
+page="$(curl -sL "$WEB/runs/$RUN")"
 
 case "$MODE" in
   configured)
     echo "== assistant page with a model configured =="
-    check "names the model" "$(grep -qE '<code>[^<]+</code>' <<<"$page" && echo 1 || echo 0)"
+    # The model name is rendered in the shell's top bar, server-side, so it
+    # is knowable without opening the chat. The action list now lives inside
+    # the lazily-mounted panel and is deliberately not in this HTML — that is
+    # what keeps the 755 kB chat bundle off every page.
+    check "names the model in the shell" \
+      "$(grep -qE 'model.*<code>' <<<"$page" && echo 1 || echo 0)"
     check "does not show the unconfigured notice" \
       "$(grep -q 'Assistant model is not configured' <<<"$page" && echo 0 || echo 1)"
-    check "lists the five read-only actions" \
-      "$(grep -q 'get_provenance' <<<"$page" && echo 1 || echo 0)"
+    check "offers a way to open the assistant" \
+      "$(grep -q '>Assistant<' <<<"$page" && echo 1 || echo 0)"
+    check "does not ship the chat bundle into this page" \
+      "$(grep -qE 'copilotKitInput|CopilotChat' <<<"$page" && echo 0 || echo 1)"
     # The key must not reach the HTML either, not just the JS bundle.
     if [ -n "${SENTINEL:-}" ]; then
       check "no API key in the served HTML" \
@@ -51,8 +60,6 @@ case "$MODE" in
     echo "== assistant page with no model configured =="
     check "says the model is not configured" \
       "$(grep -q 'Assistant model is not configured' <<<"$page" && echo 1 || echo 0)"
-    check "says chat is unavailable" \
-      "$(grep -q 'Chat is unavailable' <<<"$page" && echo 1 || echo 0)"
     check "names which variable is missing" \
       "$(grep -q 'ASSISTANT_MODEL_BASE_URL' <<<"$page" && echo 1 || echo 0)"
     # The point of the whole branch: an empty adapter must not be dressed up

@@ -1,27 +1,26 @@
-import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getReport } from "@/lib/gateway";
+import RunShell from "@/components/RunShell";
+import ReportReader from "@/components/ReportReader";
+import { getReport, getRunSnapshot } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
 export default async function ReportPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const report = await getReport(id);
-  if (!report) notFound();
+  const [snapshot, report] = await Promise.all([getRunSnapshot(id), getReport(id)]);
+  if (!snapshot || !report) notFound();
 
   return (
-    <main>
-      <p>
-        <Link href={`/runs/${encodeURIComponent(id)}`}>&larr; {id}</Link>
-      </p>
-      <h1>Report — {id}</h1>
-      {report.available ? (
-        <pre style={{ whiteSpace: "pre-wrap", border: "1px solid #ddd", padding: "1rem" }}>
-          {report.content}
-        </pre>
+    <RunShell run={{ id, status: snapshot.status, hasReport: snapshot.has_report }}>
+      <h1>Report</h1>
+      {report.available && report.content ? (
+        <ReportReader content={report.content} sourcePath={report.source_path} />
       ) : (
-        <p>Not available: {report.reason}</p>
+        <div className="panel">
+          <h2 style={{ marginTop: 0 }}>No report</h2>
+          <p style={{ margin: 0 }}>{report.reason}</p>
+        </div>
       )}
-    </main>
+    </RunShell>
   );
 }

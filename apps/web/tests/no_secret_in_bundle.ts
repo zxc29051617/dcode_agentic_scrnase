@@ -59,11 +59,22 @@ for (const file of files) {
   const content = readFileSync(file, "utf8");
   for (const name of present) {
     const value = process.env[name]!.trim();
-    // Also flag the variable *name*, which is how an accidental
-    // NEXT_PUBLIC_-style inline would show up even if the value were empty.
-    for (const needle of [value, name]) {
-      if (content.includes(needle)) {
-        console.error(`LEAK: ${needle === value ? `value of ${name}` : name} found in ${file}`);
+
+    // The value itself must never appear. This is the check that matters.
+    if (content.includes(value)) {
+      console.error(`LEAK: value of ${name} found in ${file}`);
+      leaks++;
+    }
+
+    // A bare variable *name* is not a leak: the assistant panel deliberately
+    // renders `ASSISTANT_MODEL_BASE_URL` as help text when no model is
+    // configured, telling the reader which variable to set. What would be a
+    // leak is a `process.env.NAME` reference surviving into client code,
+    // which is what an accidental inline actually looks like — so that is
+    // what is matched, rather than the name on its own.
+    for (const pattern of [`process.env.${name}`, `process.env["${name}"]`, `process.env['${name}']`]) {
+      if (content.includes(pattern)) {
+        console.error(`LEAK: ${pattern} reached client code in ${file}`);
         leaks++;
       }
     }

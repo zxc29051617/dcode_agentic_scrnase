@@ -1,42 +1,39 @@
-import Link from "next/link";
+import RunShell from "@/components/RunShell";
+import RunsTable from "@/components/RunsTable";
 import { listRuns } from "@/lib/gateway";
+import type { RunSummary } from "@/lib/gatewayTypes";
 
 export const dynamic = "force-dynamic";
 
 export default async function RunsPage() {
-  const runs = await listRuns();
+  let runs: RunSummary[];
+  let error: string | null = null;
+  try {
+    runs = await listRuns();
+  } catch (e) {
+    // The gateway being down is the single most likely reason this page is
+    // empty, and a blank table would say nothing about it. `lib/gateway.ts`
+    // puts the URL and a "is it running?" prompt in the message.
+    runs = [];
+    error = e instanceof Error ? e.message : String(e);
+  }
 
   return (
-    <main>
+    <RunShell run={null}>
       <h1>Scientific runs</h1>
-      {runs.length === 0 ? (
-        <p>No runs found under the configured gateway runs root.</p>
+      <p className="subtle">
+        Everything on this site is read from recorded run directories. Nothing here starts a run,
+        resumes one, or answers a human gate.
+      </p>
+
+      {error ? (
+        <div className="panel" data-tone="warn">
+          <h2 style={{ marginTop: 0 }}>Cannot reach the gateway</h2>
+          <p style={{ margin: 0 }}>{error}</p>
+        </div>
       ) : (
-        <table cellPadding={8} style={{ borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ textAlign: "left", borderBottom: "1px solid #ccc" }}>
-              <th>Run</th>
-              <th>Status</th>
-              <th>Started</th>
-              <th>Steps recorded</th>
-            </tr>
-          </thead>
-          <tbody>
-            {runs.map((r) => (
-              <tr key={r.scientific_run_id} style={{ borderBottom: "1px solid #eee" }}>
-                <td>
-                  <Link href={`/runs/${encodeURIComponent(r.scientific_run_id)}`}>
-                    {r.scientific_run_id}
-                  </Link>
-                </td>
-                <td>{r.status}</td>
-                <td>{r.started_at ?? "—"}</td>
-                <td>{r.steps_recorded}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <RunsTable runs={runs} />
       )}
-    </main>
+    </RunShell>
   );
 }

@@ -1,19 +1,15 @@
 import type { ReactNode } from "react";
+import "./globals.css";
 
 export const metadata = {
-  title: "scRNA-seq scientific runs — read-only",
+  title: "DeepAgents-scRNA — scientific runs",
+  description: "Read-only observation UI over recorded scRNA-seq runs.",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
-      <body style={{ fontFamily: "system-ui, sans-serif", margin: "2rem" }}>
-        <p style={{ color: "#666", fontSize: "0.85rem" }}>
-          Read-only observation UI. Nothing on this site starts a run, resumes a
-          run, or answers a human gate.
-        </p>
-        {children}
-      </body>
+      <body>{children}</body>
     </html>
   );
 }
