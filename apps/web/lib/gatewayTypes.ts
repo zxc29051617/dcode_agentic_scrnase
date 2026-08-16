@@ -53,6 +53,55 @@ export type RunSnapshot = {
   cell_types: number | null;
 };
 
+/**
+ * The upstream QC numbers FastQC and Cell Ranger recorded, as the gateway
+ * projects them. Present only on `fastq_qc` and `cellranger_count`; every
+ * other step omits the key entirely.
+ *
+ * No field here is a filesystem path. The gateway drops `outs`, `bam`,
+ * `web_summary`, `report_dir` and `multiqc_report`, keeping only whether a
+ * report exists — serving the files themselves needs an artifact endpoint
+ * that does not exist yet.
+ */
+export type UpstreamDetail = {
+  // fastq_qc
+  per_read_role?: Record<
+    string,
+    {
+      n_files: number;
+      q30_fraction: number | null;
+      duplicate_fraction: number | null;
+      total_sequences: number;
+    }
+  >;
+  files?: {
+    file: string;
+    read_role: string | null;
+    total_sequences: number | null;
+    sequence_length: string | null;
+    pct_gc: string | null;
+    q30_fraction: number | null;
+    duplicate_fraction: number | null;
+    max_adapter_pct: number | null;
+    modules_failed: string[];
+    modules_warned: string[];
+  }[];
+  files_total?: number;
+  files_shown?: number;
+  module_failures?: Record<string, string[]>;
+  expected_module_flags?: string[];
+  notes?: string[];
+  has_multiqc_report?: boolean;
+
+  // cellranger_count
+  libraries?: {
+    library_id: string | null;
+    chemistry: string | null;
+    metrics_summary: Record<string, string>;
+    has_web_summary: boolean;
+  }[];
+};
+
 export type StepRecord = {
   step: string;
   status: string;
@@ -62,6 +111,7 @@ export type StepRecord = {
     errors: string[];
     metrics: Record<string, unknown>;
   };
+  upstream_detail?: UpstreamDetail;
 };
 
 export type ReportView = {

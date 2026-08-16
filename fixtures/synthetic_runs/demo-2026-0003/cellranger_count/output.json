@@ -1,0 +1,31 @@
+{
+  "status": "ok",
+  "libraries": [
+    {
+      "library_id": "SAMPLE",
+      "chemistry": "SC3Pv3",
+      "outs": "/synthetic/runs/demo/cellranger_count/SAMPLE/outs",
+      "raw_feature_bc_matrix": "/synthetic/.../raw_feature_bc_matrix.h5",
+      "filtered_feature_bc_matrix": "/synthetic/.../filtered_feature_bc_matrix.h5",
+      "bam": "/synthetic/.../possorted_genome_bam.bam",
+      "web_summary": "/synthetic/.../web_summary.html",
+      "metrics_summary": {
+        "Estimated Number of Cells": "1,206",
+        "Mean Reads per Cell": "41,458",
+        "Median Genes per Cell": "3,201",
+        "Number of Reads": "50,000,000",
+        "Valid Barcodes": "97.4%",
+        "Sequencing Saturation": "62.1%",
+        "Q30 Bases in RNA Read": "92.2%",
+        "Reads Mapped Confidently to Transcriptome": "78.9%",
+        "Fraction Reads in Cells": "91.3%",
+        "Total Genes Detected": "21,004"
+      }
+    }
+  ],
+  "metrics": {
+    "n_libraries": 1
+  },
+  "warnings": [],
+  "errors": []
+}

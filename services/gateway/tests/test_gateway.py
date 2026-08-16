@@ -68,11 +68,11 @@ def test_healthz(client):
 
 # --- list runs -----------------------------------------------------------------
 
-def test_list_runs_returns_both_fixture_runs(client):
+def test_list_runs_returns_every_fixture_run(client):
     r = client.get("/v1/scientific-runs")
     assert r.status_code == 200
     ids = {row["scientific_run_id"] for row in r.json()}
-    assert ids == {"demo-2026-0001", "demo-2026-0002"}
+    assert ids == {"demo-2026-0001", "demo-2026-0002", "demo-2026-0003"}
 
 
 def test_list_runs_reports_correct_status(client):
@@ -127,6 +127,55 @@ def test_report_available_for_completed_run(client):
     body = r.json()
     assert body["available"] is True
     assert "Synthetic fixture" in body["content"]
+
+
+# --- upstream QC detail (FastQC / Cell Ranger) --------------------------------
+
+def _upstream(client, step):
+    steps = client.get("/v1/scientific-runs/demo-2026-0003/steps").json()
+    return next(s for s in steps if s["step"] == step)
+
+
+def test_fastq_qc_detail_carries_the_per_read_role_numbers(client):
+    detail = _upstream(client, "fastq_qc")["upstream_detail"]
+    assert detail["per_read_role"]["R2"]["q30_fraction"] == 0.9218
+    assert detail["files_total"] == 2
+    assert detail["files_shown"] == 2
+    assert detail["has_multiqc_report"] is True
+
+
+def test_fastq_qc_detail_reports_module_failures(client):
+    detail = _upstream(client, "fastq_qc")["upstream_detail"]
+    assert detail["module_failures"] == {
+        "SAMPLE_S1_L001_R2_001.fastq.gz": ["Overrepresented sequences"]
+    }
+
+
+def test_cellranger_detail_passes_the_metrics_summary_through_unrenamed(client):
+    # Cell Ranger's own column names are what a person compares against its
+    # web summary, so they are passed through as recorded.
+    libraries = _upstream(client, "cellranger_count")["upstream_detail"]["libraries"]
+    assert libraries[0]["library_id"] == "SAMPLE"
+    assert libraries[0]["metrics_summary"]["Estimated Number of Cells"] == "1,206"
+    assert libraries[0]["metrics_summary"]["Q30 Bases in RNA Read"] == "92.2%"
+    assert libraries[0]["has_web_summary"] is True
+
+
+def test_upstream_detail_never_leaks_a_host_path(client):
+    # The fixture deliberately records absolute paths (`outs`, `bam`,
+    # `web_summary`, `report_dir`, `multiqc_report`). None may reach a browser
+    # — see docs/copilotkit_product_architecture.md §3.2 on opaque ids.
+    body = json.dumps(client.get("/v1/scientific-runs/demo-2026-0003/steps").json())
+    for leaked in ("/synthetic/", "possorted_genome_bam", "web_summary.html",
+                   "multiqc_report.html", "raw_feature_bc_matrix.h5"):
+        assert leaked not in body, f"{leaked} reached the API response"
+
+
+def test_steps_without_upstream_detail_omit_the_key_entirely(client):
+    # Absent, not empty: "this step has no such detail" and "this step
+    # recorded none" are different facts.
+    steps = client.get("/v1/scientific-runs/demo-2026-0001/steps").json()
+    assert all("upstream_detail" not in s for s in steps)
 
 
 @pytest.fixture

@@ -1,0 +1,61 @@
+{
+  "run_id": "demo-2026-0003",
+  "runtime": {
+    "started_at": "2026-01-01T00:00:00+00:00",
+    "python_version": "3.11.15",
+    "platform": "synthetic-fixture",
+    "hostname": "synthetic-fixture"
+  },
+  "source": {
+    "commit": "0000000000000000000000000000000000000000",
+    "branch": "synthetic",
+    "dirty": false,
+    "command": [
+      "python",
+      "-m",
+      "src.run",
+      "--input",
+      "SYNTHETIC",
+      "--species",
+      "human"
+    ],
+    "config": {
+      "species": "human",
+      "min_genes": 200,
+      "max_pct_mito": 15
+    },
+    "config_sha256": "be28a168225ae5f2803bf942aa66d6dc2713018c7cec6e6146fb0d5d022360c8",
+    "input_digest": "0b6560f67713409bff4af1c39729aae65b73e8c5665f757a0974d2082c5748ff"
+  },
+  "packages": {
+    "scanpy": "1.11.5",
+    "anndata": "0.12.19",
+    "langgraph": "1.2.10"
+  },
+  "seeds": {
+    "random_state": 0
+  },
+  "study_design": {
+    "n_libraries": 2,
+    "n_conditions": 2,
+    "note": "resting vs stimulated, synthetic"
+  },
+  "judge_sessions": [
+    {
+      "session_id": "js-01-synthetic00",
+      "recorded_at": "2026-01-01T00:00:01+00:00",
+      "mode": "new",
+      "hash_algorithm": "sha256",
+      "backend": "stub",
+      "default_model": null,
+      "step_models": {},
+      "base_prompt_sha256": null,
+      "step_prompts": {},
+      "temperature": null,
+      "structured_output": null,
+      "endpoint": null,
+      "note": "synthetic fixture: no model was called"
+    }
+  ],
+  "revisions": []
+}

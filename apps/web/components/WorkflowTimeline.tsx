@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Badge from "@/components/Badge";
+import UpstreamQC from "@/components/UpstreamQC";
 import { stepTone, stepToneLabel } from "@/lib/verdict";
 import type { StepRecord } from "@/lib/gatewayTypes";
 
@@ -98,6 +99,11 @@ export default function WorkflowTimeline({ steps }: { steps: StepRecord[] }) {
                     </ul>
                   </>
                 )}
+
+                {/* FastQC / Cell Ranger publish their own HTML reports; the
+                    numbers out of them are already recorded, so they are
+                    shown here rather than sent to another page. */}
+                {step.upstream_detail && <UpstreamQC detail={step.upstream_detail} />}
 
                 <Metrics metrics={step.output_summary.metrics} />
               </div>

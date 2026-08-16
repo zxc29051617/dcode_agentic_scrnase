@@ -274,6 +274,92 @@ def get_run_snapshot(runs_root: Path, run_id: str) -> dict[str, Any] | None:
     }
 
 
+#: How many per-file FastQC rows a step detail may carry before it is cut.
+#: A 10x run is three reads per lane per sample, so this is generous for a
+#: handful of libraries and bounded for a large one. A cut is declared in the
+#: response rather than silently applied — the same rule `src/nodes.py` uses
+#: when it abridges a step's output for the judge.
+MAX_FASTQC_FILES = 24
+
+
+def _project_fastq_qc(output: dict[str, Any]) -> dict[str, Any]:
+    """`fastq_qc`'s own numbers, as a browser may see them.
+
+    `report_dir` and `multiqc_report` are absolute paths on the machine that
+    ran the analysis and are deliberately not projected — only whether a
+    MultiQC report exists. Serving the file itself needs an artifact endpoint
+    that does not exist yet; announcing its filesystem location in the
+    meantime would put a host path in a browser response for no gain.
+
+    `module_status` is dropped from each file: it repeats every FastQC module
+    name for every file, and `modules_failed` / `modules_warned` already carry
+    the part a reader acts on.
+    """
+    reports = output.get("reports")
+    files: list[dict[str, Any]] = []
+    if isinstance(reports, list):
+        for report in reports[:MAX_FASTQC_FILES]:
+            if not isinstance(report, dict):
+                continue
+            files.append({
+                key: report.get(key)
+                for key in (
+                    "file", "read_role", "total_sequences", "sequence_length",
+                    "pct_gc", "q30_fraction", "duplicate_fraction",
+                    "max_adapter_pct", "modules_failed", "modules_warned",
+                )
+            })
+    total_files = len(reports) if isinstance(reports, list) else 0
+    return {
+        "per_read_role": output.get("per_read_role") or {},
+        "files": files,
+        "files_total": total_files,
+        "files_shown": len(files),
+        "module_failures": output.get("module_failures") or {},
+        "expected_module_flags": output.get("expected_module_flags") or [],
+        "notes": output.get("notes") or [],
+        "has_multiqc_report": bool(output.get("multiqc_report")),
+    }
+
+
+def _project_cellranger(output: dict[str, Any]) -> dict[str, Any]:
+    """`cellranger_count`'s per-library top-line numbers.
+
+    `metrics_summary` is Cell Ranger's own `metrics_summary.csv`, already
+    parsed by the skill, so this passes it through as recorded rather than
+    renaming or reformatting anything — the column names in a Cell Ranger
+    report are what a person will be comparing against.
+
+    Every path the step records — `outs`, `bam`, the two matrices and
+    `web_summary` — is an absolute local path and is dropped. Only whether a
+    web summary exists is reported.
+    """
+    libraries = output.get("libraries")
+    rows: list[dict[str, Any]] = []
+    if isinstance(libraries, list):
+        for library in libraries:
+            if not isinstance(library, dict):
+                continue
+            rows.append({
+                "library_id": library.get("library_id"),
+                "chemistry": library.get("chemistry"),
+                "metrics_summary": library.get("metrics_summary") or {},
+                "has_web_summary": bool(library.get("web_summary")),
+            })
+    return {"libraries": rows}
+
+
+#: Steps whose own output carries numbers worth showing beside the judge's
+#: verdict, and the projection that decides what a browser sees of each. A
+#: named projection of known structure, not a byte cap: a cap would cut
+#: wherever the budget ran out, which could be the very field somebody is
+#: looking at, and nothing would say so.
+UPSTREAM_DETAIL: dict[str, Any] = {
+    "fastq_qc": _project_fastq_qc,
+    "cellranger_count": _project_cellranger,
+}
+
+
 def get_steps(runs_root: Path, run_id: str) -> list[dict[str, Any]] | None:
     run_dir = resolve_run_dir(runs_root, run_id)
     if run_dir is None:
@@ -297,6 +383,15 @@ def get_steps(runs_root: Path, run_id: str) -> list[dict[str, Any]] | None:
                 "errors": output.get("errors") or [],
                 "metrics": output.get("metrics") or {},
             },
+            # Present only for the upstream steps that carry their own QC
+            # numbers (FastQC per file, Cell Ranger per library). Absent —
+            # not empty — for every other step, so a reader can tell "this
+            # step has no such detail" from "this step recorded none".
+            **(
+                {"upstream_detail": UPSTREAM_DETAIL[step](output)}
+                if step in UPSTREAM_DETAIL and output
+                else {}
+            ),
         })
     return rows
 
