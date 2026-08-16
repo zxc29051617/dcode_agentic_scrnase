@@ -54,7 +54,9 @@ export default function AppShell({
     ? [
         { href: base, label: "Overview", enabled: true },
         { href: `${base}/workflow`, label: "Workflow", enabled: true },
+        { href: `${base}/qc`, label: "QC", enabled: true },
         { href: `${base}/report`, label: "Report", enabled: run!.hasReport },
+        { href: `${base}/artifacts`, label: "Artifacts", enabled: true },
         { href: `${base}/provenance`, label: "Provenance", enabled: true },
       ]
     : [];

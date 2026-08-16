@@ -102,6 +102,32 @@ export type UpstreamDetail = {
   }[];
 };
 
+/**
+ * One servable file inside a run, as the gateway's manifest lists it.
+ *
+ * `artifact_id` is an opaque token the manifest produced — not an encoded
+ * path — and it is the only thing the content endpoint accepts.
+ * `relative_path` is inside the run and safe to display; no absolute host
+ * path appears anywhere in this shape.
+ */
+export type ArtifactEntry = {
+  artifact_id: string;
+  kind:
+    | "fastqc_html"
+    | "multiqc_html"
+    | "cellranger_web_summary"
+    | "report_html"
+    | "report_pdf"
+    | "figure";
+  label: string;
+  name: string;
+  relative_path: string;
+  media_type: string;
+  size_bytes: number;
+  too_large: boolean;
+  is_html: boolean;
+};
+
 export type StepRecord = {
   step: string;
   status: string;

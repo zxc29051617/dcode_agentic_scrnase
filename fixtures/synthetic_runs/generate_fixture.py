@@ -194,6 +194,84 @@ def _cellranger_output() -> dict:
     }
 
 
+# --- servable artifacts -------------------------------------------------------
+#
+# Tiny stand-ins for the HTML each upstream tool publishes and for the figures
+# `build_report` writes. Real ones are megabytes; these exist so the artifact
+# manifest, the content endpoint and the sandboxed iframe can be exercised
+# without a FASTQ run. Each carries a marker string so a test can prove the
+# right bytes came back, and the HTML carries an inline <script> so the
+# sandbox is being asked to contain something real rather than inert markup.
+
+_FASTQC_HTML = """<!DOCTYPE html><html><head><title>FastQC Report</title></head>
+<body><h1>SYNTHETIC-FASTQC-MARKER</h1>
+<p>Per base sequence quality: pass</p>
+<script>document.title = "fastqc";</script></body></html>
+"""
+
+_MULTIQC_HTML = """<!DOCTYPE html><html><head><title>MultiQC Report</title></head>
+<body><h1>SYNTHETIC-MULTIQC-MARKER</h1>
+<p>General statistics for 2 samples.</p>
+<script>document.title = "multiqc";</script></body></html>
+"""
+
+_WEB_SUMMARY_HTML = """<!DOCTYPE html><html><head><title>SAMPLE Summary</title></head>
+<body><h1>SYNTHETIC-CELLRANGER-MARKER</h1>
+<p>Estimated Number of Cells: 1,206</p>
+<script>document.title = "web_summary";</script></body></html>
+"""
+
+_REPORT_HTML = """<!DOCTYPE html><html><head><title>Run report</title></head>
+<body><h1>SYNTHETIC-REPORT-HTML-MARKER</h1></body></html>
+"""
+
+#: The smallest valid PNG: a 1x1 transparent pixel. Bytes rather than a
+#: drawing, because what is being tested is the content type and the path
+#: rules, not an image.
+_PNG_1X1 = bytes.fromhex(
+    "89504e470d0a1a0a0000000d494844520000000100000001080600000"
+    "01f15c4890000000a49444154789c6360000002000100fffe5cd80000"
+    "000049454e44ae426082"
+)
+
+_SVG = """<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16">
+<title>SYNTHETIC-SVG-MARKER</title><rect width="16" height="16" fill="#2f6feb"/></svg>
+"""
+
+FIGURE_NAMES = ("m1_funnel.png", "m2_qc.png", "a2_qc_per_sample.png")
+
+
+def write_artifacts(run_dir: Path, *, fastq_route: bool) -> None:
+    """The files the artifact manifest is allowed to list, plus some it is not."""
+    report_dir = run_dir / "build_report"
+    (report_dir / "figures").mkdir(parents=True, exist_ok=True)
+    (report_dir / "report.html").write_text(_REPORT_HTML, encoding="utf-8")
+    for name in FIGURE_NAMES:
+        (report_dir / "figures" / name).write_bytes(_PNG_1X1)
+    (report_dir / "figures" / "m3_umap.svg").write_text(_SVG, encoding="utf-8")
+
+    # Not on the whitelist: same directories, must never be listed or served.
+    (report_dir / "report_model.json").write_text('{"internal": true}', encoding="utf-8")
+    (report_dir / "figures" / "notes.txt").write_text("not a figure", encoding="utf-8")
+
+    if not fastq_route:
+        return
+
+    qc_dir = run_dir / "fastq_qc"
+    qc_dir.mkdir(parents=True, exist_ok=True)
+    (qc_dir / "SAMPLE_S1_L001_R1_001_fastqc.html").write_text(_FASTQC_HTML, encoding="utf-8")
+    (qc_dir / "SAMPLE_S1_L001_R2_001_fastqc.html").write_text(_FASTQC_HTML, encoding="utf-8")
+    (qc_dir / "multiqc_report.html").write_text(_MULTIQC_HTML, encoding="utf-8")
+    # Only `*_fastqc.html` is whitelisted here; a stray log must not be picked up.
+    (qc_dir / "fastqc.log").write_text("synthetic log", encoding="utf-8")
+
+    outs = run_dir / "cellranger_count" / "SAMPLE" / "outs"
+    outs.mkdir(parents=True, exist_ok=True)
+    (outs / "web_summary.html").write_text(_WEB_SUMMARY_HTML, encoding="utf-8")
+    # A large binary the manifest must not offer.
+    (outs / "possorted_genome_bam.bam").write_bytes(b"not really a bam")
+
+
 def _audit_events(run_id: str, steps: list[str], *, halt_at: str | None) -> list[dict]:
     events: list[dict] = []
     for step in steps:
@@ -221,13 +299,40 @@ def _audit_events(run_id: str, steps: list[str], *, halt_at: str | None) -> list
 
 
 def _report_md(run_id: str) -> str:
+    """A report that references figures, including one that was never written.
+
+    Both branches of the report reader need exercising: a figure the manifest
+    lists renders as an image served through the artifact route, and one it
+    does not list renders as a stated absence rather than a broken image.
+    """
     return f"""# Report — {run_id}
 
 _Synthetic fixture. No real sample or patient data._
 
 ## Tier 1 — main results
 
-M1. Cell-retention funnel: available (synthetic counts only).
+M1. Cell-retention funnel.
+
+![Cells retained](figures/m1_funnel.png)
+
+M2. Quality control.
+
+![Quality control](figures/m2_qc.png)
+
+M3. Embedding.
+
+![Embedding](figures/m3_umap.svg)
+
+## Tier 2 — technical appendix
+
+A1. Barcode rank. This figure was never written, because the input was a
+filtered matrix and there is no raw barcode distribution to plot.
+
+![Barcode rank](figures/a1_barcode_rank.png)
+
+A2. QC per library.
+
+![QC per library](figures/a2_qc_per_sample.png)
 
 ## Tier 3 — audit
 
@@ -253,6 +358,7 @@ def build_run(run_id: str, *, halted_at: str | None, fastq_route: bool = False) 
             _write_json(run_dir / step / "output.json", _step_output(step))
     if not halted_at:
         (run_dir / "report.md").write_text(_report_md(run_id), encoding="utf-8")
+        write_artifacts(run_dir, fastq_route=fastq_route)
 
 
 def sha256_manifest() -> None:

@@ -13,9 +13,10 @@ Run it:
 
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse, JSONResponse
 
+from . import artifacts as artifact_store
 from . import read_model
 from .config import get_settings
 
@@ -78,6 +79,74 @@ def get_provenance(run_id: str) -> dict:
     if provenance is None:
         raise _not_found(run_id)
     return provenance
+
+
+@app.get("/v1/scientific-runs/{run_id}/artifacts")
+def list_artifacts(run_id: str) -> list[dict]:
+    """Every file in this run the gateway will serve, and nothing else.
+
+    The list is the whole access-control surface: an `artifact_id` that does
+    not appear here cannot be fetched, because the content endpoint finds a
+    file by rebuilding this list and matching the id against it.
+    """
+    settings = get_settings()
+    run_dir = read_model.resolve_run_dir(settings.runs_root, run_id)
+    if run_dir is None:
+        raise _not_found(run_id)
+    return artifact_store.list_artifacts(run_dir)
+
+
+@app.get("/v1/scientific-runs/{run_id}/artifacts/{artifact_id}")
+def get_artifact(
+    run_id: str,
+    artifact_id: str,
+    download: bool = Query(False, description="send as an attachment instead of inline"),
+) -> FileResponse:
+    """One artifact's bytes.
+
+    `artifact_id` is an opaque token, never a path — see `app/artifacts.py`.
+    HTML artifacts are third-party documents (FastQC, MultiQC, Cell Ranger),
+    so they leave here with a sandboxing CSP and `nosniff`: the app renders
+    them in a `sandbox="allow-scripts"` iframe, and these headers mean a
+    report opened directly in a tab is isolated too rather than running with
+    the gateway's origin.
+    """
+    settings = get_settings()
+    run_dir = read_model.resolve_run_dir(settings.runs_root, run_id)
+    if run_dir is None:
+        raise _not_found(run_id)
+
+    resolved = artifact_store.resolve_artifact(run_dir, artifact_id)
+    if resolved is None:
+        # Unknown id, rejected symlink and vanished file are one answer on
+        # purpose: telling them apart would let a caller probe the filesystem.
+        raise HTTPException(status_code=404, detail=f"no artifact {artifact_id!r} in run {run_id!r}")
+
+    if resolved.entry["size_bytes"] > artifact_store.MAX_ARTIFACT_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"{resolved.entry['name']} is {resolved.entry['size_bytes']} bytes, over the "
+                f"{artifact_store.MAX_ARTIFACT_BYTES} byte limit this gateway will serve"
+            ),
+        )
+
+    headers = {
+        "X-Content-Type-Options": "nosniff",
+        "Content-Disposition": (
+            f'{"attachment" if download else "inline"}; filename="{resolved.entry["name"]}"'
+        ),
+        # Not cached by shared caches: a run directory is not public data.
+        "Cache-Control": "private, max-age=60",
+    }
+    if resolved.entry["is_html"]:
+        headers["Content-Security-Policy"] = "sandbox allow-scripts; frame-ancestors 'self'"
+
+    return FileResponse(
+        resolved.path,
+        media_type=resolved.entry["media_type"],
+        headers=headers,
+    )
 
 
 @app.exception_handler(404)

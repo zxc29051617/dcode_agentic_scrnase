@@ -61,6 +61,7 @@ export type {
   StepRecord,
   ReportView,
   Provenance,
+  ArtifactEntry,
 } from "./gatewayTypes.ts";
 import type {
   RunSummary,
@@ -68,7 +69,24 @@ import type {
   StepRecord,
   ReportView,
   Provenance,
+  ArtifactEntry,
 } from "./gatewayTypes.ts";
+
+/**
+ * The gateway URL for one artifact's bytes.
+ *
+ * Server-side only — this module is `server-only`, so a browser can never
+ * call this and never learns the address it builds. Pages and the proxy route
+ * hand the browser `/api/artifacts/...` instead.
+ */
+export function artifactUrl(runId: string, artifactId: string, download = false): string {
+  const base = `${gatewayUrl()}/v1/scientific-runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(artifactId)}`;
+  return download ? `${base}?download=true` : base;
+}
+
+export async function listArtifacts(runId: string): Promise<ArtifactEntry[] | null> {
+  return getJson<ArtifactEntry[]>(`/v1/scientific-runs/${encodeURIComponent(runId)}/artifacts`);
+}
 
 export async function listRuns(): Promise<RunSummary[]> {
   return (await getJson<RunSummary[]>("/v1/scientific-runs")) ?? [];

@@ -30,9 +30,14 @@ function slug(text: string): string {
 export default function ReportReader({
   content,
   sourcePath,
+  runId,
+  figures,
 }: {
   content: string;
   sourcePath: string | null;
+  runId: string;
+  /** Figure artifacts this run published, keyed by file name. */
+  figures: Record<string, string>;
 }) {
   const headings = useMemo<Heading[]>(() => {
     const found: Heading[] = [];
@@ -68,12 +73,32 @@ export default function ReportReader({
           components={{
             h2: ({ children }) => <h2 id={slug(String(children))}>{children}</h2>,
             h3: ({ children }) => <h3 id={slug(String(children))}>{children}</h3>,
-            img: ({ alt, src }) => (
-              <span className="figure-missing">
-                Figure not available in this view: <strong>{alt || String(src)}</strong> — the
-                gateway serves no artifact files yet.
-              </span>
-            ),
+            img: ({ alt, src }) => {
+              // The report writes figures as paths relative to itself
+              // (`figures/m1_funnel.png`). Only the file name is used to look
+              // one up, and only against the artifacts this run actually
+              // published — a src the manifest does not know resolves to
+              // nothing, so a report cannot make this app fetch an arbitrary
+              // URL by naming one.
+              const name = String(src ?? "").split("/").pop() ?? "";
+              const id = figures[name];
+              if (!id) {
+                return (
+                  <span className="figure-missing">
+                    Figure not available: <strong>{alt || name || "unnamed"}</strong> — this run
+                    published no artifact by that name.
+                  </span>
+                );
+              }
+              return (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={`/api/artifacts/${encodeURIComponent(runId)}/${encodeURIComponent(id)}`}
+                  alt={alt || name}
+                  loading="lazy"
+                />
+              );
+            },
           }}
         >
           {content}
