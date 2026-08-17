@@ -1,0 +1,33 @@
+{
+  "name": "scrna-copilotkit-web",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Read-only observation UI over the scientific run gateway. Isolated from the scientific environment on purpose — see README.md.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "test:unit": "node --test --experimental-strip-types --conditions=react-server tests/assistant_model.test.ts tests/assistant_session.test.ts",
+    "test:conversation": "node --experimental-strip-types --conditions=react-server tests/assistant_conversation.ts",
+    "test:bundle": "node --experimental-strip-types tests/no_secret_in_bundle.ts"
+  },
+  "dependencies": {
+    "@copilotkit/react-core": "^1.68.1",
+    "@copilotkit/react-ui": "^1.68.1",
+    "@copilotkit/runtime": "^1.68.1",
+    "next": "^15.1.0",
+    "openai": "^4.77.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "server-only": "^0.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.7.0"
+  }
+}

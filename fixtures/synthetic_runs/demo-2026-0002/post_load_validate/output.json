@@ -1,0 +1,9 @@
+{
+  "status": "ok",
+  "warnings": [],
+  "errors": [],
+  "metrics": {
+    "n_obs": 1200,
+    "n_vars": 20000
+  }
+}
