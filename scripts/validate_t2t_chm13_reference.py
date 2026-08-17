@@ -228,18 +228,34 @@ def check_fasta_is_official_maskedy(ref_dir: Path) -> CheckResult:
         for chunk in iter(lambda: handle.read(1 << 20), b""):
             digest.update(chunk)
     got = digest.hexdigest()
-    recorded_decompressed = step.get("decompressed_sha256")
+    # The decompressed sha256 is recorded by the `decompress_fasta` step, not
+    # by the download step: the download verifies the .gz against the official
+    # published MD5, and only later — when the FASTA is decompressed for mkref
+    # — does a sha256 of the *uncompressed* bytes exist to record. Reading it
+    # off the download step (as this check first did) always found None and
+    # reported a correct reference as tampered with.
+    decompress_steps = [
+        s for s in provenance.get("steps", [])
+        if s.get("step") == "decompress_fasta" and s.get("decompressed_sha256")
+    ]
+    if not decompress_steps:
+        return CheckResult(
+            "FASTA matches the official maskedY MD5", False,
+            "no decompress_fasta step recorded a decompressed_sha256, so the FASTA in this "
+            "reference cannot be tied back to the download that was MD5-verified",
+        )
+    recorded_decompressed = decompress_steps[-1]["decompressed_sha256"]
     if got != recorded_decompressed:
         return CheckResult(
             "FASTA matches the official maskedY MD5", False,
             f"fasta/genome.fa sha256 {got[:16]}... does not match the sha256 "
-            f"{str(recorded_decompressed)[:16]}... recorded at download time — "
+            f"{str(recorded_decompressed)[:16]}... recorded when it was decompressed — "
             "the bytes in this reference are not the ones that were verified",
         )
     return CheckResult(
         "FASTA matches the official maskedY MD5", True,
         f"MD5 {OFFICIAL_MASKEDY_MD5} verified at download, and fasta/genome.fa's sha256 "
-        "matches what was recorded then",
+        f"{got[:16]}... matches what was recorded when it was decompressed",
     )
 
 
@@ -373,8 +389,15 @@ def check_mitochondrial_genes_present(ref_dir: Path) -> CheckResult:
 
 
 def check_mkref_succeeded(ref_dir: Path) -> CheckResult:
-    required = ["reference.json", "fasta/genome.fa", "genes/genes.gtf", "star"]
+    # `genes/` is accepted under either spelling. cellranger 10.1.0 writes the
+    # filtered annotation gzipped (genes.gtf.gz); older releases wrote it
+    # plain. `find_gtf` above has always read both, so requiring only the
+    # uncompressed name here made this file disagree with itself and fail a
+    # complete, correct reference.
+    required = ["reference.json", "fasta/genome.fa", "star"]
     missing = [r for r in required if not (ref_dir / r).exists()]
+    if find_gtf(ref_dir) is None:
+        missing.append("genes/genes.gtf(.gz)")
     if missing:
         return CheckResult("cellranger mkref produced a complete reference", False, f"missing: {missing}")
     return CheckResult(

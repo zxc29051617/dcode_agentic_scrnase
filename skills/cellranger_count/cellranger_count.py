@@ -28,6 +28,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
 TOOL_NAME = "cellranger_count"
 INPUT_FIELDS = (
     "input_bundle",
@@ -57,8 +59,13 @@ DEFAULTS: dict[str, Any] = {
 
 #: Where a tarball install usually lands. Cell Ranger is not installed with a
 #: package manager and rarely ends up on PATH, so looking for it beats making
-#: everyone remember the version number in the path.
+#: everyone remember the version number in the path. `tools/` is this
+#: project's own documented unpack location (see `tools/README.md`) and is
+#: checked first — it is the one place a rebuild of this environment is
+#: guaranteed to still have it, unlike a path under `~/projects` that lives
+#: outside the repo and can be deleted independently of it.
 BINARY_SEARCH_GLOBS = (
+    str(PROJECT_ROOT / "tools" / "cellranger-*" / "bin" / "cellranger"),
     "~/projects/cellranger-*/bin/cellranger",
     "~/cellranger-*/bin/cellranger",
     "/opt/cellranger-*/bin/cellranger",

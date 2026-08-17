@@ -14,6 +14,7 @@ Run with `python tests/test_t2t_reference_builder.py` (or `python tests/run_all.
 
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -667,6 +668,99 @@ def test_mkgtf_attribute_list_keeps_the_mitochondrial_biotypes():
     # And it must still be RefSeq's vocabulary, not GENCODE's, for the bulk.
     assert "gene_biotype:V_segment" in attrs and "gene_biotype:C_region" in attrs
     assert not any(a.endswith(":IG_V_gene") or a.endswith(":TR_V_gene") for a in attrs)
+
+
+# --- the two checks that failed a correct reference -------------------------
+#
+# Both of these fired on the first real build, and neither was a defect in the
+# reference: cellranger 10.1.0 gzips the filtered annotation, and the
+# decompressed FASTA's sha256 is recorded by decompress_fasta rather than by
+# the download step. A validator that rejects correct output is worse than no
+# validator, because the next person learns to ignore it.
+
+
+def _minimal_reference(root: Path, *, gzip_the_gtf: bool) -> Path:
+    import gzip as _gzip
+
+    ref = root / "T2T_CHM13v2_RefSeqLiftoff_v5_3"
+    (ref / "fasta").mkdir(parents=True)
+    (ref / "genes").mkdir(parents=True)
+    (ref / "star").mkdir(parents=True)
+    _write(ref / "reference.json", '{"genomes": ["T2T_CHM13v2_RefSeqLiftoff_v5_3"]}')
+    _write(ref / "fasta" / "genome.fa", _fasta({"chr1": 500, "chrM": 16569}))
+    gtf_text = "\n".join(
+        _gff3_row("chrM", "exon", 10, f'gene_id "G{i}"; transcript_id "T{i}"; gene_name "{name}";')
+        for i, name in enumerate(builder.CANONICAL_MT_GENES)
+    ) + "\n"
+    if gzip_the_gtf:
+        with _gzip.open(ref / "genes" / "genes.gtf.gz", "wt", encoding="utf-8") as fh:
+            fh.write(gtf_text)
+    else:
+        _write(ref / "genes" / "genes.gtf", gtf_text)
+    return ref
+
+
+def test_a_gzipped_genes_gtf_is_a_complete_reference():
+    # cellranger 10.1.0's actual output shape. Must not be reported as missing.
+    with tempfile.TemporaryDirectory() as tmp:
+        ref = _minimal_reference(Path(tmp), gzip_the_gtf=True)
+        result = validator.check_mkref_succeeded(ref)
+        assert result.ok, result.detail
+        assert "genes" not in result.detail or "missing" not in result.detail
+
+
+def test_an_uncompressed_genes_gtf_is_also_accepted():
+    # Older releases wrote it plain; both spellings must pass.
+    with tempfile.TemporaryDirectory() as tmp:
+        ref = _minimal_reference(Path(tmp), gzip_the_gtf=False)
+        assert validator.check_mkref_succeeded(ref).ok
+
+
+def test_a_reference_with_no_annotation_at_all_still_fails():
+    # The relaxation above must not turn the check into one that passes anything.
+    with tempfile.TemporaryDirectory() as tmp:
+        ref = _minimal_reference(Path(tmp), gzip_the_gtf=True)
+        (ref / "genes" / "genes.gtf.gz").unlink()
+        result = validator.check_mkref_succeeded(ref)
+        assert not result.ok
+        assert "genes/genes.gtf(.gz)" in result.detail, result.detail
+
+
+def test_fasta_check_reads_the_sha_from_the_decompress_step():
+    # The sha256 of the *uncompressed* FASTA only exists once it is
+    # decompressed, so it is recorded by decompress_fasta — not by the
+    # download step, which verifies the .gz against the published MD5.
+    import hashlib
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ref = _minimal_reference(Path(tmp), gzip_the_gtf=True)
+        digest = hashlib.sha256((ref / "fasta" / "genome.fa").read_bytes()).hexdigest()
+        _write(ref / "BUILD_PROVENANCE.json", json.dumps({
+            "steps": [
+                {"step": "download:chm13v2.0_maskedY", "status": "ok",
+                 "md5": validator.OFFICIAL_MASKEDY_MD5, "md5_verified_against_published": True},
+                {"step": "decompress_fasta", "status": "ok", "decompressed_sha256": digest},
+            ]
+        }))
+        result = validator.check_fasta_is_official_maskedy(ref)
+        assert result.ok, result.detail
+
+
+def test_fasta_check_still_catches_swapped_bytes():
+    # The fix must not make the check unable to fail.
+    import hashlib
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ref = _minimal_reference(Path(tmp), gzip_the_gtf=True)
+        _write(ref / "BUILD_PROVENANCE.json", json.dumps({
+            "steps": [
+                {"step": "download:chm13v2.0_maskedY", "status": "ok",
+                 "md5": validator.OFFICIAL_MASKEDY_MD5, "md5_verified_against_published": True},
+                {"step": "decompress_fasta", "status": "ok",
+                 "decompressed_sha256": hashlib.sha256(b"different bytes entirely").hexdigest()},
+            ]
+        }))
+        assert not validator.check_fasta_is_official_maskedy(ref).ok
 
 
 def test_placeholder_pattern_is_anchored_not_a_substring_match():

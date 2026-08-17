@@ -86,6 +86,16 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BUILD_DIR = Path.home() / "data" / "references" / "_build_T2T_CHM13v2_v5_3"
 OUTPUT_DIR = Path.home() / "data" / "references" / "T2T_CHM13v2_RefSeqLiftoff_v5_3"
 
+# Read-only import of the project's own cellranger discovery, so this script's
+# idea of "where is cellranger" can never drift from cellranger_count's — one
+# definition, not two that quietly disagree. A bare shutil.which("cellranger")
+# only checks PATH, which is exactly what stopped finding the install the day
+# its directory was deleted out from under a running build; this project's own
+# tools/cellranger-*/bin/cellranger location is checked first and does not
+# depend on PATH at all.
+sys.path.insert(0, str(PROJECT_ROOT))
+from skills.cellranger_count.cellranger_count import find_binary as find_cellranger  # noqa: E402
+
 #: `MB` and `GB` are used only in printed estimates, never in a comparison —
 #: comparisons against a downloaded file always use bytes, so a rounding
 #: difference in a printed estimate can never make a size check pass or fail.
@@ -1373,14 +1383,94 @@ def cmd_gff3_to_gtf(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_validate_gtf(args: argparse.Namespace) -> int:
+    """Check the converted GTF against everything a Cell Ranger reference needs,
+    before spending an hour on a STAR index that would only fail afterwards.
+
+    This runs the same structural audit the candidate annotations went
+    through, plus the two checks that only become meaningful once a GTF
+    exists: that its contigs are all present in the FASTA, and that the
+    mitochondrial contig actually carries the 13 canonical genes.
+    """
+    which = getattr(args, "which", "merged")
+    gtf = BUILD_DIR / (FILTERED_GTF if which == "filtered" else MERGED_GTF)
+    if not gtf.exists():
+        raise SystemExit(f"{gtf.name} not found — run "
+                         + ("mkgtf" if which == "filtered" else "gff3-to-gtf") + " first.")
+    fasta_gz = BUILD_DIR / "chm13v2.0_maskedY.fa.gz"
+    if not fasta_gz.exists():
+        raise SystemExit("run fetch-fasta first.")
+    provenance = Provenance.load_or_create(BUILD_DIR)
+
+    print(f"validating {gtf.name}")
+    audit = audit_annotation_schema(gtf, f"{which}_gtf")
+    failures: list[str] = []
+
+    print(f"  rows: {audit.total_rows:,}  {audit.feature_counts}")
+    print(f"  genes {audit.gene_count:,}, transcripts {audit.transcript_count:,}, "
+          f"exons {audit.exon_count:,}")
+    if audit.exon_gene_id_missing:
+        failures.append(f"{audit.exon_gene_id_missing} exons missing gene_id")
+    if audit.exon_gene_name_missing:
+        failures.append(f"{audit.exon_gene_name_missing} exons missing gene_name")
+    if audit.exon_transcript_id_missing:
+        failures.append(f"{audit.exon_transcript_id_missing} exons missing transcript_id")
+    if audit.gene_id_conflict_count:
+        failures.append(f"{audit.gene_id_conflict_count} gene_id(s) map to multiple gene_names "
+                        f"(sample {audit.gene_id_conflicts})")
+    print(f"  exons missing gene_id/gene_name/transcript_id: "
+          f"{audit.exon_gene_id_missing}/{audit.exon_gene_name_missing}/"
+          f"{audit.exon_transcript_id_missing}")
+    print(f"  gene_id -> multiple gene_name conflicts: {audit.gene_id_conflict_count}")
+
+    # Contigs must all exist in the FASTA: a GTF naming a sequence the FASTA
+    # does not have is one mkref rejects, but only after building everything else.
+    fasta_contigs = {name for name, _ in iter_fasta_lengths(fasta_gz)}
+    unknown = sorted(set(audit.contigs) - fasta_contigs)
+    if unknown:
+        failures.append(f"{len(unknown)} GTF contig(s) absent from the FASTA: {unknown[:10]}")
+    print(f"  contigs: {len(audit.contigs)} in GTF, all present in FASTA: {not unknown}")
+
+    mt_contig = detect_mitochondrial_contig(fasta_gz)
+    mt_names = gene_names_on_contig(gtf, mt_contig)
+    n_found, missing = count_canonical_mt_genes(mt_names)
+    if missing:
+        failures.append(f"contig {mt_contig!r} is missing canonical MT genes: {missing}")
+    print(f"  mitochondrial contig {mt_contig!r}: {n_found}/{len(CANONICAL_MT_GENES)} "
+          f"canonical genes{'' if not missing else f', missing {missing}'}")
+
+    provenance.record_step(
+        "validate_gtf", which=which, file=gtf.name,
+        status="ok" if not failures else "failed", failures=failures,
+        feature_counts=audit.feature_counts, gene_count=audit.gene_count,
+        transcript_count=audit.transcript_count, exon_count=audit.exon_count,
+        exon_gene_id_missing=audit.exon_gene_id_missing,
+        exon_gene_name_missing=audit.exon_gene_name_missing,
+        exon_transcript_id_missing=audit.exon_transcript_id_missing,
+        gene_id_conflict_count=audit.gene_id_conflict_count,
+        contigs=audit.contigs, mitochondrial_contig=mt_contig,
+        canonical_mt_genes_found=n_found, canonical_mt_genes_missing=missing,
+        biotype_distribution=audit.biotype_distribution,
+    )
+
+    if failures:
+        print("\nFAIL: " + "; ".join(failures), file=sys.stderr)
+        return 1
+    print("\nall GTF checks passed")
+    return 0
+
+
 def cmd_mkgtf(args: argparse.Namespace) -> int:
     """Filter the GTF with `cellranger mkgtf`, using RefSeq's biotype vocabulary."""
     source = BUILD_DIR / MERGED_GTF
     if not source.exists():
         raise SystemExit(f"{source.name} not found — run gff3-to-gtf first.")
-    binary = shutil.which("cellranger")
+    binary = find_cellranger()
     if binary is None:
-        raise SystemExit("cellranger is not on PATH.")
+        raise SystemExit(
+            "cellranger executable not found (checked PATH and the usual unpack "
+            f"locations, including {PROJECT_ROOT / 'tools'}). See tools/README.md."
+        )
     provenance = Provenance.load_or_create(BUILD_DIR)
 
     dest = BUILD_DIR / FILTERED_GTF
@@ -1441,9 +1531,12 @@ def cmd_mkref(args: argparse.Namespace) -> int:
     produced here, validated here, and only then is anything pointed at it.
     """
     _require(args.i_confirm_build, "pass --i-confirm-build to run cellranger mkref")
-    binary = shutil.which("cellranger")
+    binary = find_cellranger()
     if binary is None:
-        raise SystemExit("cellranger is not on PATH.")
+        raise SystemExit(
+            "cellranger executable not found (checked PATH and the usual unpack "
+            f"locations, including {PROJECT_ROOT / 'tools'}). See tools/README.md."
+        )
     provenance = Provenance.load_or_create(BUILD_DIR)
 
     genes_gtf = BUILD_DIR / FILTERED_GTF
@@ -1501,8 +1594,16 @@ def cmd_mkref(args: argparse.Namespace) -> int:
         print(f"FAIL: cellranger mkref exited {completed.returncode}", file=sys.stderr)
         return completed.returncode
 
-    required = ["reference.json", "fasta/genome.fa", "genes/genes.gtf", "star"]
+    # `genes/` is checked by either spelling: cellranger 10.1.0 writes the
+    # filtered annotation gzipped (genes.gtf.gz) while older releases wrote it
+    # plain. Requiring the uncompressed name alone reported a complete, correct
+    # reference as a failure — the validator has always accepted both (see
+    # find_gtf there), and this check now agrees with it rather than being a
+    # second, stricter opinion about the same file.
+    required = ["reference.json", "fasta/genome.fa", "star"]
     missing = [r for r in required if not (staging / r).exists()]
+    if not any((staging / name).exists() for name in ("genes/genes.gtf", "genes/genes.gtf.gz")):
+        missing.append("genes/genes.gtf(.gz)")
     if missing:
         provenance.record_step(
             "mkref", status="failed", reason="incomplete output", missing=missing,
@@ -1590,6 +1691,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("merge-chrm", help="merge the winning candidate's chrM rows into the primary annotation").set_defaults(func=cmd_merge_chrm)
     sub.add_parser("gff3-to-gtf", help="convert the merged GFF3 to GTF, propagating gene_id/gene_name to every exon").set_defaults(func=cmd_gff3_to_gtf)
+    p = sub.add_parser("validate-gtf", help="check the converted GTF before spending an hour on mkref")
+    p.add_argument("--which", choices=["merged", "filtered"], default="merged")
+    p.set_defaults(func=cmd_validate_gtf)
+
     sub.add_parser("mkgtf", help="filter the GTF with cellranger mkgtf, using RefSeq's biotype vocabulary").set_defaults(func=cmd_mkgtf)
 
     p = sub.add_parser("mkref", help="run cellranger mkref")
