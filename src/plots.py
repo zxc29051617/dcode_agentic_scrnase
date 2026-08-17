@@ -359,6 +359,65 @@ def pca_and_hvg(adata: Any, path: Path) -> str | None:
 # --- M3 / A6: embeddings ---------------------------------------------------------
 
 
+DEFAULT_EMBEDDING_MAX_CELLS_2D = 50_000
+DEFAULT_EMBEDDING_MAX_CELLS_3D = 30_000
+
+
+def _embedding_limit(dimensions: int, max_cells: int | None) -> int:
+    try:
+        configured = int(max_cells) if max_cells is not None else 0
+    except (TypeError, ValueError):
+        configured = 0
+    if configured > 0:
+        return configured
+    return DEFAULT_EMBEDDING_MAX_CELLS_3D if dimensions == 3 else DEFAULT_EMBEDDING_MAX_CELLS_2D
+
+
+def _embedding_indices(adata: Any, n_cells: int, dimensions: int,
+                       colours: Sequence[str], max_cells: int | None) -> Any:
+    import numpy as np
+    import pandas as pd
+
+    limit = _embedding_limit(dimensions, max_cells)
+    if n_cells <= limit:
+        return np.arange(n_cells, dtype=int)
+
+    categorical = next(
+        (column for column in colours
+         if column in adata.obs and not pd.api.types.is_numeric_dtype(adata.obs[column])),
+        None,
+    )
+    if categorical is None:
+        return np.linspace(0, n_cells - 1, limit, dtype=int)
+
+    groups: dict[str, list[int]] = {}
+    for index, value in enumerate(adata.obs[categorical]):
+        key = "__missing__" if pd.isna(value) else str(value)
+        groups.setdefault(key, []).append(index)
+    if len(groups) > limit:
+        return np.linspace(0, n_cells - 1, limit, dtype=int)
+
+    quotas = {
+        key: max(1, int(limit * len(indices) / n_cells))
+        for key, indices in groups.items()
+    }
+    if sum(quotas.values()) > limit:
+        return np.linspace(0, n_cells - 1, limit, dtype=int)
+    while sum(quotas.values()) < limit:
+        candidates = [key for key, indices in groups.items() if quotas[key] < len(indices)]
+        if not candidates:
+            break
+        key = max(candidates, key=lambda item: len(groups[item]) - quotas[item])
+        quotas[key] += 1
+
+    selected = []
+    for key in sorted(groups):
+        indices = groups[key]
+        positions = np.linspace(0, len(indices) - 1, quotas[key], dtype=int)
+        selected.extend(indices[position] for position in positions)
+    return np.asarray(sorted(selected), dtype=int)
+
+
 @_safe
 def embedding_panels(adata: Any, basis: str, colours: Sequence[str], path: Path,
                      title: str | None = None) -> str | None:
@@ -377,6 +436,110 @@ def embedding_panels(adata: Any, basis: str, colours: Sequence[str], path: Path,
     if title:
         figure.suptitle(title, fontsize=12)
     return _save(figure, path)
+
+
+@_safe
+def embedding_plotly(adata: Any, basis: str, colours: Sequence[str], path: Path,
+                     max_cells: int | None = None) -> str | None:
+    """Write one self-contained Plotly figure for a recorded embedding."""
+    import numpy as np
+    import pandas as pd
+    import plotly.express as px
+
+    if basis not in adata.obsm:
+        return None
+    coordinates = np.asarray(adata.obsm[basis])
+    if getattr(coordinates, "shape", (0, 0))[1] not in (2, 3):
+        return None
+    indices = _embedding_indices(adata, coordinates.shape[0], coordinates.shape[1], colours, max_cells)
+    coordinates = coordinates[indices]
+
+    colour = next((column for column in colours if column in adata.obs), None)
+    frame = pd.DataFrame(coordinates, columns=["x", "y", "z"][: coordinates.shape[1]])
+    frame["cell"] = [str(value) for value in adata.obs_names[indices]]
+    if colour is not None:
+        frame[colour] = adata.obs[colour].to_numpy()[indices]
+
+    title = basis.removeprefix("X_").replace("_3d", " (3D)").upper()
+    if coordinates.shape[1] == 3:
+        figure = px.scatter_3d(
+            frame,
+            x="x",
+            y="y",
+            z="z",
+            color=colour,
+            hover_name="cell",
+            title=title,
+        )
+    else:
+        figure = px.scatter(
+            frame,
+            x="x",
+            y="y",
+            color=colour,
+            hover_name="cell",
+            title=title,
+            render_mode="webgl",
+        )
+    figure.update_traces(marker={"size": 5})
+    path.parent.mkdir(parents=True, exist_ok=True)
+    figure.write_html(path, full_html=True, include_plotlyjs=True, auto_play=False)
+    return str(path)
+
+
+@_safe
+def embedding_data(adata: Any, basis: str, colours: Sequence[str], path: Path,
+                   max_cells: int | None = None) -> str | None:
+    """Write recorded coordinates and selected observation columns for a web viewer."""
+    import json
+    import math
+
+    import numpy as np
+    import pandas as pd
+
+    if basis not in adata.obsm:
+        return None
+    coordinates = np.asarray(adata.obsm[basis])
+    if coordinates.ndim != 2 or coordinates.shape[1] not in (2, 3):
+        return None
+    total_cells = coordinates.shape[0]
+    indices = _embedding_indices(adata, total_cells, coordinates.shape[1], colours, max_cells)
+    coordinates = coordinates[indices]
+
+    def safe(value: Any) -> Any:
+        if value is None or pd.isna(value):
+            return None
+        if isinstance(value, (np.integer, int)):
+            return int(value)
+        if isinstance(value, (np.floating, float)):
+            number = float(value)
+            return number if math.isfinite(number) else None
+        return str(value)
+
+    metadata = {}
+    for column in colours:
+        if column not in adata.obs:
+            continue
+        series = adata.obs[column]
+        metadata[column] = {
+            "kind": "numeric" if pd.api.types.is_numeric_dtype(series) else "categorical",
+            "values": [safe(value) for value in series.iloc[indices]],
+        }
+
+    payload = {
+        "basis": basis,
+        "method": basis.removeprefix("X_").removesuffix("_3d"),
+        "dimensions": int(coordinates.shape[1]),
+        "total_cells": int(total_cells),
+        "displayed_cells": int(len(indices)),
+        "downsampled": len(indices) < total_cells,
+        "cells": [str(value) for value in adata.obs_names[indices]],
+        "coordinates": [[safe(value) for value in row] for row in coordinates],
+        "colors": metadata,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, allow_nan=False), encoding="utf-8")
+    return str(path)
 
 
 @_safe

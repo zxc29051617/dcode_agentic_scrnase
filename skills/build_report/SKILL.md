@@ -13,11 +13,13 @@ Build the final HTML, PDF, and JSON summary from the verified workflow state and
 - final state
 - artifacts
 - report config
+- optional `embedding_max_cells` display limit; the full AnnData remains the scientific artifact
 
 ## Output
 - html_report
 - pdf_snapshot
 - json_summary
+- `embedding_data_paths` for the app-native 2D/3D viewer
 - warnings
 - errors
 - recommended_next_tool

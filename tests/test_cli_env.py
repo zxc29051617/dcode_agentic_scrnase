@@ -128,6 +128,22 @@ def test_a_url_with_a_fragment_is_not_cut_at_the_hash_when_quoted():
 # --- backend names ------------------------------------------------------------------------
 
 
+def test_cli_exposes_embedding_dimensions_for_the_full_pipeline():
+    parser = build_parser()
+    args = parser.parse_args([
+        "--input", "x", "--embedding-dimensions", "2", "3", "--embedding-max-cells", "100",
+    ])
+    assert args.dimensions == [2, 3]
+    assert args.embedding_max_cells == 100
+    assert parser.parse_args(["--input", "x"]).dimensions is None
+    try:
+        parser.parse_args(["--input", "x", "--embedding-dimensions", "4"])
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("the CLI must reject unsupported embedding dimensions")
+
+
 def test_the_cli_accepts_every_backend_get_judge_accepts():
     """These drifted apart: `--judge ollama` was documented and rejected."""
     parser = build_parser()

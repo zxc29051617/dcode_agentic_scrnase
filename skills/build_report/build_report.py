@@ -50,12 +50,14 @@ INPUT_FIELDS = (
     "artifacts",
     "run_dir",
     "config.inline_figures",
+    "config.embedding_max_cells",
 )
 OUTPUT_FIELDS = (
     "markdown_path",
     "html_path",
     "model_path",
     "figure_paths",
+    "embedding_data_paths",
     "sections",
     "warnings",
     "errors",
@@ -201,27 +203,68 @@ def _section_qc(art: dict[str, Any], figures: Path) -> Section:
     )
 
 
-def _section_embedding(final: Any, art: dict[str, Any], figures: Path) -> Section:
+def _clear_embedding_outputs(figures: Path) -> list[str]:
+    failures = []
+    for pattern in ("m3_*.png", "m3_*.html", "m3_*.json"):
+        for path in figures.glob(pattern):
+            try:
+                path.unlink()
+            except OSError:
+                failures.append(path.name)
+    return failures
+
+
+def _section_embedding(final: Any, art: dict[str, Any], figures: Path,
+                       max_cells: int | None = None) -> Section:
+    cleanup_failures = _clear_embedding_outputs(figures)
     if final is None:
         return Section("M3", "Embedding", "main", False, "no annotated object was produced")
-    bases = [key for key in ("X_umap", "X_tsne") if key in final.obsm]
+    bases = [key for key in ("X_umap", "X_umap_3d", "X_tsne", "X_tsne_3d")
+             if key in final.obsm]
     if not bases:
         return Section("M3", "Embedding", "main", False, "run_umap did not run")
     colours = [c for c in ("cell_type", "leiden", "sample", "conf_score") if c in final.obs]
     paths = []
+    missing = [f"could not remove stale files: {', '.join(cleanup_failures)}"] if cleanup_failures else []
     for basis in bases:
-        path = plots.embedding_panels(final, basis, colours,
-                                      figures / f"m3_{basis.removeprefix('X_')}.png",
-                                      title=basis.removeprefix("X_").upper())
-        if path:
-            paths.append(path)
+        if basis in ("X_umap", "X_tsne"):
+            path = plots.embedding_panels(
+                final,
+                basis,
+                colours,
+                figures / f"m3_{basis.removeprefix('X_')}.png",
+                title=basis.removeprefix("X_").upper(),
+            )
+            if path:
+                paths.append(path)
+        data_path = plots.embedding_data(
+            final,
+            basis,
+            colours,
+            figures / f"m3_{basis.removeprefix('X_')}.json",
+            max_cells=max_cells,
+        )
+        if data_path is None:
+            missing.append(f"{basis}: interactive JSON unavailable")
+        interactive = plots.embedding_plotly(
+            final,
+            basis,
+            colours,
+            figures / f"m3_{basis.removeprefix('X_')}.html",
+            max_cells=max_cells,
+        )
+        if interactive:
+            paths.append(interactive)
+        else:
+            missing.append(f"{basis}: standalone Plotly HTML unavailable")
     summary = (art.get("run_umap") or {}).get("embedding_summary") or {}
-    return Section(
-        "M3", "Embedding", "main", True,
-        body=[f"Computed from `{summary.get('embedding_key', 'X_pca')}`, "
-              f"seed {_fmt(summary.get('random_state'))}."],
-        figures=paths,
-    )
+    body = [f"Computed from `{summary.get('embedding_key', 'X_pca')}`, "
+            f"seed {_fmt(summary.get('random_state'))}."]
+    if missing:
+        body.append("Some embedding views were unavailable: " + "; ".join(missing))
+    else:
+        body.append("Interactive Plotly figures and viewer data are included.")
+    return Section("M3", "Embedding", "main", True, body=body, figures=paths)
 
 
 def _section_markers(final: Any, art: dict[str, Any], figures: Path) -> Section:
@@ -1112,7 +1155,12 @@ def collect(payload: dict[str, Any]) -> tuple[ReportModel, Path]:
     sections = [
         _section_funnel(art, figures),
         _section_qc(art, figures),
-        _section_embedding(final, art, figures),
+        _section_embedding(
+            final,
+            art,
+            figures,
+            max_cells=(payload.get("config") or {}).get("embedding_max_cells"),
+        ),
         _section_markers(final, art, figures),
         _section_composition(final, figures),
         _section_confidence(art, figures),
@@ -1177,7 +1225,10 @@ def render_markdown(model: ReportModel, out_dir: Path) -> str:
             for figure in section.figures:
                 rel = Path(figure).relative_to(out_dir) if str(figure).startswith(str(out_dir)) \
                     else Path(figure).name
-                lines += [f"![{section.title}]({rel})", ""]
+                if _is_interactive_figure(figure):
+                    lines += [f"[Open interactive Plotly figure]({rel})", ""]
+                else:
+                    lines += [f"![{section.title}]({rel})", ""]
             for table in section.tables:
                 lines += _markdown_table(table) + [""]
     path = out_dir / "report.md"
@@ -1212,6 +1263,7 @@ table{border-collapse:collapse;margin:1rem 0;font-size:13px;width:100%}
 th,td{border:1px solid #ddd;padding:.35rem .6rem;text-align:left;vertical-align:top}
 th{background:#f4f6f8}
 img{max-width:100%;height:auto;margin:1rem 0;border:1px solid #eee;border-radius:4px}
+.interactive-artifact{background:#f7f7f7;border-left:3px solid #4C78A8;padding:.6rem 1rem}
 caption{caption-side:top;text-align:left;font-weight:600;padding-bottom:.3rem}
 code{background:#f4f6f8;padding:.1rem .3rem;border-radius:3px;font-size:90%}
 """
@@ -1242,7 +1294,10 @@ def render_html(model: ReportModel, out_dir: Path, *, inline: bool = True) -> st
             for line in section.body:
                 parts.append(f"<p>{esc(line)}</p>")
             for figure in section.figures:
-                parts.append(f"<img alt='{esc(section.title)}' src='{_img_src(figure, out_dir, inline)}'>")
+                if _is_interactive_figure(figure):
+                    parts.append(_interactive_figure_notice(figure, out_dir))
+                else:
+                    parts.append(f"<img alt='{esc(section.title)}' src='{_img_src(figure, out_dir, inline)}'>")
             for table in section.tables:
                 parts.append(f"<table><caption>{esc(table.caption)}</caption><tr>"
                              + "".join(f"<th>{esc(c)}</th>" for c in table.columns) + "</tr>")
@@ -1255,6 +1310,20 @@ def render_html(model: ReportModel, out_dir: Path, *, inline: bool = True) -> st
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(parts), encoding="utf-8")
     return str(path)
+
+
+def _is_interactive_figure(figure: str) -> bool:
+    return Path(figure).suffix.lower() == ".html"
+
+
+def _interactive_figure_notice(figure: str, out_dir: Path) -> str:
+    try:
+        source = str(Path(figure).relative_to(out_dir))
+    except ValueError:
+        source = str(figure)
+    return ("<p class='interactive-artifact'>Interactive Plotly figure published separately: "
+            f"<code>{html.escape(source)}</code>. Use the application viewer or open this "
+            "artifact directly.</p>")
 
 
 def _img_src(figure: str, out_dir: Path, inline: bool) -> str:
@@ -1302,12 +1371,14 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
     figures = [f for s in model.sections for f in s.figures]
+    embedding_data_paths = sorted(str(path) for path in (out_dir / "figures").glob("m3_*.json"))
     missing = [f"{s.key}: {s.reason}" for s in model.sections if not s.available]
     return _result(
         markdown_path=markdown_path,
         html_path=html_path,
         model_path=str(model_path),
         figure_paths=figures,
+        embedding_data_paths=embedding_data_paths,
         sections={s.key: s.available for s in model.sections},
         notes=[f"{len(missing)} section(s) not available: " + "; ".join(missing)] if missing else [],
         metrics={
@@ -1324,6 +1395,7 @@ def _result(
     html_path: str | None = None,
     model_path: str | None = None,
     figure_paths: list[str] | None = None,
+    embedding_data_paths: list[str] | None = None,
     sections: dict[str, bool] | None = None,
     warnings: list[str] | None = None,
     notes: list[str] | None = None,
@@ -1335,6 +1407,7 @@ def _result(
         "html_path": html_path,
         "model_path": model_path,
         "figure_paths": figure_paths or [],
+        "embedding_data_paths": embedding_data_paths or [],
         "sections": sections or {},
         "recommended_next_tool": None,
         "metrics": metrics or {},

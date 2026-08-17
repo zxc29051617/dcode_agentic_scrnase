@@ -50,6 +50,86 @@ def _run(root: Path, artifacts: dict, **config):
     return report.run({"artifacts": artifacts, "run_dir": str(root), "config": config})
 
 
+def test_embedding_plotly_writes_self_contained_two_and_three_dimensional_figures():
+    import numpy as np
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        adata = _adata()
+        adata.obsm["X_umap_3d"] = np.column_stack([
+            adata.obsm["X_umap"], np.zeros(adata.n_obs),
+        ])
+        path_2d = plots.embedding_plotly(adata, "X_umap", ["leiden"], root / "umap.html")
+        path_3d = plots.embedding_plotly(adata, "X_umap_3d", ["leiden"], root / "umap_3d.html")
+        assert path_2d and path_3d
+        html_2d = Path(path_2d).read_text(encoding="utf-8")
+        html_3d = Path(path_3d).read_text(encoding="utf-8")
+
+    assert "plotly" in html_2d.lower() and "BC0000-1" in html_2d
+    assert "plotly" in html_3d.lower() and "BC0000-1" in html_3d
+    assert "plotly-" in html_2d and "plotly-" in html_3d
+
+
+def test_embedding_data_writes_coordinates_and_metadata_for_the_web_viewer():
+    import json
+    import numpy as np
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        adata = _adata()
+        adata.obsm["X_umap_3d"] = np.column_stack([
+            adata.obsm["X_umap"], np.zeros(adata.n_obs),
+        ])
+        path = plots.embedding_data(
+            adata,
+            "X_umap_3d",
+            ["leiden", "total_counts"],
+            root / "umap.json",
+            max_cells=5,
+        )
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+
+    assert payload["basis"] == "X_umap_3d"
+    assert payload["dimensions"] == 3
+    assert payload["total_cells"] == adata.n_obs
+    assert payload["displayed_cells"] == 5
+    assert payload["downsampled"] is True
+    assert payload["cells"][0] == "BC0000-1"
+    assert len(payload["coordinates"]) == 5
+    assert len(payload["colors"]["leiden"]["values"]) == 5
+    assert payload["colors"]["leiden"]["kind"] == "categorical"
+    assert payload["colors"]["total_counts"]["kind"] == "numeric"
+
+
+def test_embedding_report_removes_stale_managed_outputs_before_rebuilding():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        figures = root / "build_report" / "figures"
+        figures.mkdir(parents=True)
+        for suffix in (".json", ".html", ".png"):
+            (figures / f"m3_umap_3d{suffix}").write_text("stale", encoding="utf-8")
+        path = matrix_io.write_h5ad(_adata(), root / "final.h5ad")
+        result = _run(root, {"annotate_cells": {"adata_path": str(path)}})
+
+        assert not (figures / "m3_umap_3d.json").exists()
+        assert not (figures / "m3_umap_3d.html").exists()
+        assert not (figures / "m3_umap_3d.png").exists()
+        assert all("m3_umap_3d" not in path for path in result["embedding_data_paths"])
+
+
+def test_embedding_section_includes_plotly_in_the_html_report():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        path = matrix_io.write_h5ad(_adata(), root / "final.h5ad")
+        result = _run(root, {"annotate_cells": {"adata_path": str(path)}})
+        page = Path(result["html_path"]).read_text(encoding="utf-8")
+
+    assert any(Path(path).name == "m3_umap.html" for path in result["figure_paths"])
+    assert any(Path(path).name == "m3_umap.json" for path in result["embedding_data_paths"])
+    assert "Interactive Plotly figure published separately" in page
+    assert "plotly-figure" not in page
+
+
 def _cross_check_artifact(root: Path, *, tissue="blood") -> dict:
     """A `cross_check_annotation` output shaped like the real one, plus its CSV."""
     import csv
@@ -180,6 +260,32 @@ def test_an_empty_run_still_produces_a_report():
         assert Path(result["markdown_path"]).exists()
         assert Path(result["html_path"]).exists()
     assert result["metrics"]["n_available"] < result["metrics"]["n_sections"]
+
+
+def test_embedding_report_writes_plotly_html_and_references_it_in_both_renderings():
+    import numpy as np
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        adata = _adata()
+        adata.obsm["X_umap_3d"] = np.random.default_rng(1).normal(size=(adata.n_obs, 3))
+        path = matrix_io.write_h5ad(adata, root / "final.h5ad")
+        result = _run(root, {
+            "annotate_cells": {"adata_path": str(path)},
+            "run_umap": {"embedding_summary": {"embedding_key": "X_pca", "random_state": 0}},
+        })
+        markdown = Path(result["markdown_path"]).read_text(encoding="utf-8")
+        page = Path(result["html_path"]).read_text(encoding="utf-8")
+        umap_html = root / "build_report" / "figures" / "m3_umap.html"
+        umap_3d_html = root / "build_report" / "figures" / "m3_umap_3d.html"
+        umap_html_text = umap_html.read_text(encoding="utf-8")
+
+        assert umap_html.exists() and umap_html.stat().st_size > 0
+        assert umap_3d_html.exists() and umap_3d_html.stat().st_size > 0
+        assert "[Open interactive Plotly figure](figures/m3_umap.html)" in markdown
+        assert "Interactive Plotly figure published separately" in page
+        assert "src='figures/m3_umap.html'" not in page
+        assert "plotly" in umap_html_text.lower()
 
 
 def test_every_unavailable_section_states_a_reason():
