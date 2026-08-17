@@ -15,6 +15,8 @@ const KIND_ORDER = [
   "multiqc_html",
   "fastqc_html",
   "cellranger_web_summary",
+  "embedding_html",
+  "embedding_json",
   "report_html",
   "report_pdf",
   "figure",

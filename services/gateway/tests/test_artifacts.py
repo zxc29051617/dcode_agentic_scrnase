@@ -54,6 +54,7 @@ def test_manifest_lists_each_whitelisted_kind(client):
         "multiqc_html",
         "cellranger_web_summary",
         "report_html",
+        "embedding_json",
         "figure",
     }
 
@@ -103,6 +104,34 @@ def test_html_artifact_is_served_with_sandbox_headers(client):
     assert "sandbox" in r.headers["content-security-policy"]
     assert "allow-same-origin" not in r.headers["content-security-policy"]
     assert r.headers["x-content-type-options"] == "nosniff"
+
+
+def test_plotly_embedding_is_served_as_sandboxed_html(escape_client):
+    entry = by_kind(
+        escape_client.get("/v1/scientific-runs/escape-run-0001/artifacts").json(),
+        "embedding_html",
+    )[0]
+    response = escape_client.get(
+        f"/v1/scientific-runs/escape-run-0001/artifacts/{entry['artifact_id']}"
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "plotly embedding" in response.text
+    assert "sandbox" in response.headers["content-security-policy"]
+    assert "allow-same-origin" not in response.headers["content-security-policy"]
+
+
+def test_embedding_data_is_served_as_json(escape_client):
+    entry = by_kind(
+        escape_client.get("/v1/scientific-runs/escape-run-0001/artifacts").json(),
+        "embedding_json",
+    )[0]
+    response = escape_client.get(
+        f"/v1/scientific-runs/escape-run-0001/artifacts/{entry['artifact_id']}"
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json() == {"basis": "X_umap", "dimensions": 2}
 
 
 def test_png_figure_has_the_right_content_type(client):
@@ -202,6 +231,12 @@ def escape_client(tmp_path, monkeypatch):
     # A real figure, so the test can tell "nothing is served" from "the run
     # is broken".
     (run / "build_report" / "figures" / "real.png").write_bytes(b"\x89PNG\r\n real")
+    (run / "build_report" / "figures" / "m3_umap.html").write_text(
+        "<html>plotly embedding</html>", encoding="utf-8"
+    )
+    (run / "build_report" / "figures" / "m3_umap.json").write_text(
+        json.dumps({"basis": "X_umap", "dimensions": 2}), encoding="utf-8"
+    )
 
     monkeypatch.setenv("GATEWAY_RUNS_ROOT", str(root))
     from app.config import get_settings

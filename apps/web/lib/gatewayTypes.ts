@@ -117,6 +117,8 @@ export type ArtifactEntry = {
     | "multiqc_html"
     | "cellranger_web_summary"
     | "report_html"
+    | "embedding_html"
+    | "embedding_json"
     | "report_pdf"
     | "figure";
   label: string;

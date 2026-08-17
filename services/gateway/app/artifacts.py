@@ -67,15 +67,29 @@ ARTIFACT_RULES: tuple[ArtifactRule, ...] = (
         "Cell Ranger web summary",
     ),
     ArtifactRule("report_html", "build_report/report.html", "text/html", "Run report (HTML)"),
+    ArtifactRule(
+        "embedding_html",
+        "build_report/figures/m3_*.html",
+        "text/html",
+        "Interactive embedding (standalone Plotly)",
+    ),
+    ArtifactRule(
+        "embedding_json",
+        "build_report/figures/m3_*.json",
+        "application/json",
+        "Interactive embedding data",
+    ),
     ArtifactRule("report_pdf", "build_report/*.pdf", "application/pdf", "Run report (PDF)"),
     ArtifactRule("figure", "build_report/figures/*.png", "image/png", "Report figure"),
     ArtifactRule("figure", "build_report/figures/*.svg", "image/svg+xml", "Report figure"),
 )
 
-#: Kinds whose bytes are third-party HTML. The content endpoint sends these
-#: with a sandboxing Content-Security-Policy as well, so a report opened
-#: directly — not only one inside the app's iframe — is still isolated.
-HTML_KINDS = frozenset({"fastqc_html", "multiqc_html", "cellranger_web_summary", "report_html"})
+#: Kinds whose bytes are HTML. The content endpoint sends these with a
+#: sandboxing Content-Security-Policy as well, so a document opened directly —
+#: not only one inside the app's iframe — is still isolated.
+HTML_KINDS = frozenset({
+    "fastqc_html", "multiqc_html", "cellranger_web_summary", "report_html", "embedding_html",
+})
 
 
 def artifact_id(relative_path: str) -> str:

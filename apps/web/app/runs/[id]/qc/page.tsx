@@ -84,7 +84,9 @@ export default async function QCPage({ params }: { params: Promise<{ id: string 
           },
           {
             label: "QC reports available",
-            value: entries.filter((e) => e.is_html && e.kind !== "report_html").length,
+            value: entries.filter(
+              (e) => e.is_html && e.kind !== "report_html" && e.kind !== "embedding_html",
+            ).length,
           },
         ]}
       />
