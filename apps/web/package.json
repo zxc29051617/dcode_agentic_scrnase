@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test:unit": "node --test --experimental-strip-types --conditions=react-server tests/assistant_model.test.ts",
+    "test:unit": "node --test --experimental-strip-types --conditions=react-server tests/assistant_model.test.ts tests/assistant_session.test.ts",
     "test:conversation": "node --experimental-strip-types --conditions=react-server tests/assistant_conversation.ts",
     "test:bundle": "node --experimental-strip-types tests/no_secret_in_bundle.ts"
   },

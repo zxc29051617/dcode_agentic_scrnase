@@ -4,6 +4,7 @@ import { CopilotKit, useCopilotChat } from "@copilotkit/react-core";
 import { CopilotChat } from "@copilotkit/react-ui";
 import { Role, TextMessage } from "@copilotkit/runtime-client-gql";
 import "@copilotkit/react-ui/styles.css";
+import AssistantSettings from "@/components/AssistantSettings";
 
 /**
  * The read-only assistant, scoped to whichever run the page is showing.
@@ -66,6 +67,12 @@ export default function AssistantPanel({
 
   return (
     <CopilotKit runtimeUrl="/api/copilotkit">
+      {/* Reads and writes this browser's own session — see
+          lib/assistantSession.ts. Nothing here needs to force the chat
+          below to remount: each chat turn is its own POST to
+          /api/copilotkit, which reads the session cookie fresh every time,
+          so a setting saved here takes effect on the very next message. */}
+      <AssistantSettings />
       <Suggestions runId={runId} />
       <div style={{ flex: 1, minHeight: 0 }}>
         <CopilotChat
