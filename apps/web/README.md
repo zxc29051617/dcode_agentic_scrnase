@@ -47,6 +47,40 @@ renders no chat box at all.** The runtime still falls back to
 page never presents an empty adapter as a working assistant. Every other page
 — status, timeline, report, provenance — needs no model and works either way.
 
+### Per-visitor model choice, and bringing your own key
+
+Those three variables are the *default*. A visitor can override them for
+themselves from the "Assistant settings" panel: pick a different model from
+the lab endpoint (listed live by `GET /api/assistant-models`, which asks the
+endpoint's own `/v1/models`), or supply their own OpenAI key and model.
+
+`app/api/copilotkit/route.ts` resolves this per request, in strict priority:
+a session's OpenAI key, then a session's local-model override on the server's
+own endpoint, then the environment default.
+
+The part worth understanding before changing any of it is where the key
+lives. Each visitor's config is held in a `Map` keyed by a random session id
+(`lib/assistantSession.ts`), and the session id travels in a cookie that is
+`httpOnly`, `sameSite=strict`, and `Secure` whenever the request arrived over
+HTTPS (`lib/cookieSecurity.ts` — conditional, because a hardcoded `Secure`
+silently breaks every session on a plain-HTTP lab deployment).
+
+A single module-level variable would have been much less code and is the
+obvious way to write this. It is also wrong on a shared machine: one value
+for every concurrent request means the last visitor to type a key spends
+*everyone's* budget on it, and no test that runs one request at a time would
+ever show that. Nothing here is keyed that way.
+
+Two consequences follow from the design and are not oversights:
+
+- **The key is never persisted.** The store is in memory, so a restart
+  empties it. Sessions also expire after 12 idle hours, so a key typed into
+  a tab left open for days is not still usable a week later.
+- **The key is never returned.** `GET /api/assistant-session` reports only
+  *whether* one is set. There is nothing for the settings panel to redisplay,
+  which is why changing even the model name requires retyping the key — a
+  consequence of the key genuinely not being retrievable, not a UI shortcut.
+
 ## Tests
 
 ```bash
@@ -77,6 +111,15 @@ npm run dev
 /runs/[id]                   status, pending gate (view-only), workflow timeline
 /runs/[id]/report             saved report, or a stated reason it is absent
 /runs/[id]/assistant          CopilotKit chat scoped to read-only actions
+```
+
+Route handlers:
+
+```text
+/api/copilotkit               the chat runtime; resolves the model per request
+/api/assistant-session        GET status (never the key), POST to set, DELETE to clear
+/api/assistant-models         models offered by the configured local endpoint
+/api/artifacts/[runId]/[id]   run artifacts, served by opaque id
 ```
 
 ## Where the API key would live
