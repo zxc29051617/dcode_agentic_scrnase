@@ -34,7 +34,10 @@ own QC gene lists in config — see "another species" below.
 
 ## The human reference
 
-T2T-CHM13v2.0 with the JHU RefSeq/Liftoff v5.3 annotation, 39,048 genes.
+T2T-CHM13v2.0 with the JHU RefSeq/Liftoff v5.3 annotation plus a merged chrM,
+43,258 genes after `mkgtf` filtering. (The reference this project shipped with
+before the rebuild had 39,048; the difference is chrM, the two mitochondrial
+biotypes named below, and a filter list that no longer drops them.)
 Four things had to be fixed before Cell Ranger would take it, and all four
 matter:
 
@@ -74,7 +77,7 @@ python scripts/build_t2t_chm13_reference.py fetch-primary-annotation --i-confirm
 python scripts/build_t2t_chm13_reference.py compare-chrm-candidates --i-confirm-download
 
 # after a built reference exists:
-python scripts/validate_t2t_chm13_reference.py ~/data/references/T2T_CHM13v2_RefSeqLiftoff_v5_3
+python scripts/validate_t2t_chm13_reference.py reference/T2T_CHM13v2_RefSeqLiftoff_v5_3
 ```
 
 **Where chrM comes from is not hardcoded.** Two CAT/Liftoff candidates exist
@@ -87,10 +90,37 @@ closed** — exits non-zero and prints the comparison — unless exactly one
 candidate is the unambiguous answer. The rest of the build will not proceed
 past that point until a person has looked at the comparison.
 
-As of this writing, the merge, GFF3→GTF conversion, `mkgtf` and `mkref`
-subcommands are authored and reviewable but not yet exercised against a real
-download — see the script's own `--help` and module docstring for exactly
-what runs where.
+Every subcommand has now been run against the real sources, end to end, and
+the reference in this directory is what came out. What the build actually
+found, recorded in `_build_T2T_CHM13v2_v5_3/BUILD_PROVENANCE.json`:
+
+- **The FASTA already carries chrM.** `compare-chrm-candidates` detected the
+  mitochondrial contig from the sequence itself and found it named `chrM`.
+  What v5.3 is missing is the chrM *annotation*, not the sequence — a
+  different problem, with a different fix, than splicing in a sequence.
+- **Both chrM candidates tied**, each annotating all 13 canonical genes, so
+  the comparison failed closed rather than picking one. The whole-genome
+  CAT+Liftoff candidate was then chosen by hand and recorded with
+  `select-chrm-candidate`, which refuses to record a choice the schema audit
+  has not cleared.
+- **1,384 `gene_id`s carried two `gene_name`s**, identically in both
+  candidates — StringTie's `MSTRG.<n>` placeholder surviving on
+  novel-isoform transcripts merged into an existing locus. Classified as
+  1,384 resolvable (one real symbol beside a placeholder), 0 unresolvable,
+  and 48 placeholder-only; `normalize-annotations` rewrote 1,384 gene_ids
+  across 99,963 rows and kept each displaced name as `original_gene_name`.
+- **The RefSeq primary annotates 24 contigs and none is chrM**, checked
+  before merging rather than assumed, so appending the candidate's 156 chrM
+  rows could not duplicate anything.
+- **`mkgtf` needed `Mt_rRNA` and `Mt_tRNA` on top of RefSeq's vocabulary.**
+  The chrM rows come from CAT/Liftoff, which spells them that way; without
+  those two, the 13 protein-coding genes would survive the filter and
+  MT-RNR1/MT-RNR2 would not — understating `pct_counts_mt` rather than
+  erroring, since `src/species.py` derives it from the `MT-` name prefix.
+
+The resulting reference: 43,258 genes, 179,065 transcripts, 2,079,240 exons,
+25 contigs, chrM 13/13. Built by `cellranger mkref` 10.1.0 in 37.8 minutes.
+`validate_t2t_chm13_reference.py` passes 8/8 against it.
 
 ## Another species
 

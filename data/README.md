@@ -25,6 +25,19 @@ data/
   10x_public/*.h5                    optional third-party matrices
 ```
 
+Study data lives here too, beside the test sets rather than somewhere else on
+the machine — the same reasoning as `tools/`: a path outside the project is a
+path something else can delete.
+
+```
+data/
+  PRJNA940428/<GSM*>/fastqs/         GSE226488, 6 libraries, 177 GB
+  GSE222703/raw/                     count matrices (MTX triplets), 746 MB
+```
+
+Each `PRJNA940428/<GSM*>/` carries a `SOURCE.txt` naming the library and its
+condition, and `FASTQ_SHA256SUMS.txt` where the download recorded one.
+
 `counted/` is what a real run produces. It is kept because the matrix-route
 tests need a raw and a filtered matrix from the same library, and generating
 them takes twenty minutes:
