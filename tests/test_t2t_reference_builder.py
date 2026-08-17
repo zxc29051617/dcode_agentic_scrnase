@@ -521,6 +521,154 @@ def test_selection_refuses_when_a_normalized_audit_has_no_matching_normalize_ste
             builder.BUILD_DIR = original_build_dir
 
 
+# --- merge-chrm and gff3-to-gtf ---------------------------------------------
+#
+# The RefSeq primary annotation writes exon rows as `Parent=<transcript>;gene=...`
+# with no gene_id and no gene_name; the CAT/Liftoff chrM rows carry both
+# explicitly. Both have to survive the conversion, which is why these fixtures
+# use both spellings rather than one.
+
+
+def _fake_build_dir(tmp: Path):
+    """Point the module's BUILD_DIR at a temp dir for the duration of a test."""
+    import contextlib
+
+    @contextlib.contextmanager
+    def _ctx():
+        original = builder.BUILD_DIR
+        builder.BUILD_DIR = tmp
+        try:
+            yield tmp
+        finally:
+            builder.BUILD_DIR = original
+
+    return _ctx()
+
+
+def test_gff3_to_gtf_resolves_refseq_exons_that_carry_no_gene_id():
+    import argparse
+
+    with tempfile.TemporaryDirectory() as tmp:
+        build = Path(tmp)
+        rows = [
+            # RefSeq shape: gene names itself with ID=, exon only has Parent=.
+            _gff3_row("chr1", "gene", 100, "ID=GENE1;gene_name=REAL1;gene_biotype=protein_coding"),
+            _gff3_row("chr1", "transcript", 100, "ID=TX1;Parent=GENE1;transcript_biotype=mRNA"),
+            _gff3_row("chr1", "exon", 100, "Parent=TX1;gene=REAL1;exon_number=1"),
+            _gff3_row("chr1", "exon", 300, "Parent=TX1;gene=REAL1;exon_number=2"),
+            # CAT shape: everything explicit, plus a normalization record.
+            _gff3_row("chrM", "gene", 10, "gene_id=G2;gene_name=MT-ND1;gene_biotype=protein_coding"),
+            _gff3_row("chrM", "transcript", 10, "gene_id=G2;transcript_id=T2;gene_name=MT-ND1"),
+            _gff3_row("chrM", "exon", 10,
+                      "gene_id=G2;transcript_id=T2;gene_name=MT-ND1;original_gene_name=MSTRG.5"),
+        ]
+        _write(build / builder.MERGED_GFF3, _annotation(rows))
+        with _fake_build_dir(build):
+            assert builder.cmd_gff3_to_gtf(argparse.Namespace()) == 0
+
+        gtf = build / builder.MERGED_GTF
+        exons = [f for f in builder.iter_gff_rows(gtf) if f[2] == "exon"]
+        assert len(exons) == 3, exons
+        for fields in exons:
+            attrs = builder.parse_attributes(fields[8])
+            assert attrs.get("gene_id"), fields
+            assert attrs.get("gene_name"), fields
+            assert attrs.get("transcript_id"), fields
+        # The RefSeq exon, which had no gene_id at all, got one from the chain.
+        chr1_exon = builder.parse_attributes(exons[0][8])
+        assert chr1_exon["gene_id"] == "GENE1"
+        assert chr1_exon["gene_name"] == "REAL1"
+        assert chr1_exon["transcript_id"] == "TX1"
+        # original_gene_name survives into the GTF where normalization set it.
+        assert "original_gene_name" in gtf.read_text(encoding="utf-8")
+
+
+def test_gff3_to_gtf_fails_closed_on_an_exon_it_cannot_resolve():
+    import argparse
+
+    with tempfile.TemporaryDirectory() as tmp:
+        build = Path(tmp)
+        rows = [
+            _gff3_row("chr1", "gene", 100, "ID=GENE1;gene_name=REAL1;gene_biotype=protein_coding"),
+            # Parent names a transcript that no transcript row declares.
+            _gff3_row("chr1", "exon", 100, "Parent=TX_MISSING;gene=REAL1"),
+        ]
+        _write(build / builder.MERGED_GFF3, _annotation(rows))
+        with _fake_build_dir(build):
+            assert builder.cmd_gff3_to_gtf(argparse.Namespace()) != 0, (
+                "an exon that cannot be attributed to a gene must fail the step, "
+                "not be dropped silently"
+            )
+
+
+def test_merge_chrm_refuses_when_the_primary_already_annotates_chrm():
+    # Appending would duplicate every mitochondrial gene. The guarantee of no
+    # duplicates is checked, not assumed.
+    import argparse
+
+    with tempfile.TemporaryDirectory() as tmp:
+        build = Path(tmp)
+        _write(build / "chm13v2.0_maskedY.fa.gz.tmp", "")  # placeholder, replaced below
+        import gzip as _gzip
+
+        with _gzip.open(build / "chm13v2.0_maskedY.fa.gz", "wt", encoding="utf-8") as fh:
+            fh.write(_fasta({"chr1": 500, "chrM": 16569}))
+        with _gzip.open(build / "chm13v2.0_RefSeq_Liftoff_v5.3.gff.gz", "wt", encoding="utf-8") as fh:
+            fh.write(_annotation([
+                _gff3_row("chr1", "gene", 100, "ID=GENE1;gene_name=REAL1"),
+                _gff3_row("chrM", "gene", 10, "ID=GENEM;gene_name=MT-ND1"),  # <- the problem
+            ]))
+        _write(build / "normalized.cand.gff3",
+               _annotation([_gff3_row("chrM", "gene", 10, "gene_id=G2;gene_name=MT-ND1")]))
+
+        provenance = builder.Provenance.load_or_create(build)
+        provenance.record_step("chrm_candidate_selected", label="cand", file="cand.gff3",
+                               contig_name_used="chrM", canonical_genes_found=13)
+
+        with _fake_build_dir(build):
+            assert builder.cmd_merge_chrm(argparse.Namespace()) != 0
+        assert not (build / builder.MERGED_GFF3).exists(), "must not write a merged file"
+
+
+def test_merge_chrm_uses_the_normalized_candidate_not_the_raw_download():
+    import argparse
+    import gzip as _gzip
+
+    with tempfile.TemporaryDirectory() as tmp:
+        build = Path(tmp)
+        with _gzip.open(build / "chm13v2.0_maskedY.fa.gz", "wt", encoding="utf-8") as fh:
+            fh.write(_fasta({"chr1": 500, "chrM": 16569}))
+        with _gzip.open(build / "chm13v2.0_RefSeq_Liftoff_v5.3.gff.gz", "wt", encoding="utf-8") as fh:
+            fh.write(_annotation([_gff3_row("chr1", "gene", 100, "ID=GENE1;gene_name=REAL1")]))
+        # Only the RAW candidate exists — normalization was never run.
+        _write(build / "cand.gff3",
+               _annotation([_gff3_row("chrM", "gene", 10, "gene_id=G2;gene_name=MSTRG.5")]))
+
+        provenance = builder.Provenance.load_or_create(build)
+        provenance.record_step("chrm_candidate_selected", label="cand", file="cand.gff3",
+                               contig_name_used="chrM", canonical_genes_found=13)
+
+        with _fake_build_dir(build):
+            try:
+                builder.cmd_merge_chrm(argparse.Namespace())
+            except SystemExit:
+                pass
+            else:
+                raise AssertionError("must refuse to merge from the un-normalized candidate")
+
+
+def test_mkgtf_attribute_list_keeps_the_mitochondrial_biotypes():
+    # The chrM rows come from CAT/Liftoff, which spells the rRNAs and tRNAs
+    # Mt_rRNA / Mt_tRNA. Leaving them out of the filter would drop MT-RNR1 and
+    # MT-RNR2 and quietly understate pct_counts_mt.
+    attrs = set(builder.REFSEQ_MKGTF_ATTRIBUTES)
+    assert "gene_biotype:Mt_rRNA" in attrs
+    assert "gene_biotype:Mt_tRNA" in attrs
+    # And it must still be RefSeq's vocabulary, not GENCODE's, for the bulk.
+    assert "gene_biotype:V_segment" in attrs and "gene_biotype:C_region" in attrs
+    assert not any(a.endswith(":IG_V_gene") or a.endswith(":TR_V_gene") for a in attrs)
+
+
 def test_placeholder_pattern_is_anchored_not_a_substring_match():
     # A real symbol that merely contains the letters MSTRG must never be
     # treated as a placeholder and silently overwritten.

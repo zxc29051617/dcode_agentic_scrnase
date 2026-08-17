@@ -225,6 +225,18 @@ REFSEQ_MKGTF_ATTRIBUTES: tuple[str, ...] = (
     "gene_biotype:snRNA",
     "gene_biotype:snoRNA",
     "gene_biotype:rRNA",
+    # The mitochondrial contig is the one part of this reference that does not
+    # come from RefSeq, so it does not use RefSeq's vocabulary either: the
+    # chrM rows are merged in from the CAT/Liftoff annotation, where the two
+    # rRNAs are `Mt_rRNA` and the 22 tRNAs are `Mt_tRNA`. Measured on the
+    # selected candidate: chrM carries 13 `protein_coding`, 2 `Mt_rRNA` and
+    # 22 `Mt_tRNA` genes. Without these two lines the 13 protein-coding genes
+    # would survive the filter and MT-RNR1/MT-RNR2 would not — and since
+    # `src/species.py` computes human `pct_counts_mt` from the `MT-` name
+    # prefix rather than from a biotype, dropping them would quietly
+    # understate mitochondrial fraction on every run instead of erroring.
+    "gene_biotype:Mt_rRNA",
+    "gene_biotype:Mt_tRNA",
 )
 
 
@@ -1104,61 +1116,418 @@ def cmd_select_chrm_candidate(args: argparse.Namespace) -> int:
     return 0
 
 
+#: Filenames produced by the build steps, in the order they are produced.
+MERGED_GFF3 = "merged.primary_plus_chrm.gff3"
+MERGED_GTF = "merged.primary_plus_chrm.gtf"
+FILTERED_GTF = "filtered.gtf"
+GENOME_FASTA = "chm13v2.0_maskedY.fa"
+REFERENCE_NAME = "T2T_CHM13v2_RefSeqLiftoff_v5_3"
+
+
 def cmd_merge_chrm(args: argparse.Namespace) -> int:
+    """Append the selected candidate's chrM rows to the RefSeq primary annotation.
+
+    The duplicate-free guarantee is not asserted, it is checked: the primary
+    annotation is scanned for any row on the mitochondrial contig first, and
+    the merge refuses if it finds one. RefSeq/Liftoff v5.3 annotates 24
+    contigs and chrM is not among them (that is the whole reason this step
+    exists), so a single row there would mean the inputs are not what this
+    build believes they are — which is exactly when appending would silently
+    double every mitochondrial gene.
+    """
     provenance = Provenance.load_or_create(BUILD_DIR)
     selected = [s for s in provenance.data["steps"] if s["step"] == "chrm_candidate_selected"]
     if not selected:
         raise SystemExit(
             "no chrm_candidate_selected step in BUILD_PROVENANCE.json — run "
-            "compare-chrm-candidates first, and only proceed here if it exited 0."
+            "compare-chrm-candidates (and, if it tied, select-chrm-candidate) first."
         )
     winner = selected[-1]
-    print(f"merging chrM annotation from {winner['file']} "
-          f"(contig {winner['contig_name_used']!r}) into the primary annotation")
-    print("NOT IMPLEMENTED in this dry-run-only revision — the comparison and the fail-closed "
-          "gate above are complete and tested; the merge itself is intentionally left for the "
-          "build turn, once a human has reviewed which candidate compare-chrm-candidates picked.")
-    return 1
+
+    fasta_gz = BUILD_DIR / "chm13v2.0_maskedY.fa.gz"
+    if not fasta_gz.exists():
+        raise SystemExit("run fetch-fasta first — the mitochondrial contig is detected from the FASTA.")
+    mt_contig = detect_mitochondrial_contig(fasta_gz)
+
+    primary = BUILD_DIR / "chm13v2.0_RefSeq_Liftoff_v5.3.gff.gz"
+    if not primary.exists():
+        raise SystemExit("run fetch-primary-annotation first.")
+
+    # The chrM rows come from the *normalized* copy of the winner, never the
+    # raw download: the raw file is what carried the MSTRG.x placeholder
+    # collisions, and a merged annotation built from it would reintroduce
+    # them into a reference that was just verified not to have any.
+    raw_chrm = BUILD_DIR / winner["file"]
+    normalized_chrm = BUILD_DIR / f"normalized.{winner['file']}"
+    if not normalized_chrm.exists():
+        raise SystemExit(
+            f"{normalized_chrm.name} not found — run normalize-annotations first. The raw "
+            f"{raw_chrm.name} must not be used as the chrM source: it still carries the "
+            "gene_name collisions normalization removes."
+        )
+
+    print(f"primary:  {primary.name}")
+    print(f"chrM src: {normalized_chrm.name} (contig {mt_contig!r}, selected candidate "
+          f"{winner['label']})")
+
+    print(f"  checking the primary annotation carries no {mt_contig!r} rows...")
+    primary_mt_rows = sum(1 for _ in iter_gff_rows(primary, contig=mt_contig))
+    if primary_mt_rows:
+        provenance.record_step(
+            "merge_chrm", status="fail_closed", mitochondrial_contig=mt_contig,
+            primary_rows_on_mt_contig=primary_mt_rows,
+        )
+        print(
+            f"FAIL CLOSED: the primary annotation already has {primary_mt_rows:,} rows on "
+            f"{mt_contig!r}. Appending the candidate's chrM rows would duplicate every "
+            "mitochondrial gene. Not merging.",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"  confirmed: 0 rows on {mt_contig!r} in the primary annotation")
+
+    dest = BUILD_DIR / MERGED_GFF3
+    primary_rows = 0
+    chrm_rows = 0
+    with dest.open("wt", encoding="utf-8") as out:
+        out.write("##gff-version 3\n")
+        out.write(f"# merged by scripts/build_t2t_chm13_reference.py\n")
+        out.write(f"# primary: {primary.name}\n")
+        out.write(f"# chrM:    {normalized_chrm.name} (contig {mt_contig}, {winner['label']})\n")
+        for fields in iter_gff_rows(primary):
+            out.write("\t".join(fields) + "\n")
+            primary_rows += 1
+        for fields in iter_gff_rows(normalized_chrm, contig=mt_contig):
+            out.write("\t".join(fields) + "\n")
+            chrm_rows += 1
+
+    print(f"  wrote {dest.name}: {primary_rows:,} primary rows + {chrm_rows:,} chrM rows")
+    if chrm_rows == 0:
+        provenance.record_step("merge_chrm", status="fail_closed", reason="no chrM rows found")
+        print(f"FAIL CLOSED: no rows on {mt_contig!r} in {normalized_chrm.name}.", file=sys.stderr)
+        return 1
+
+    provenance.record_step(
+        "merge_chrm", status="ok", mitochondrial_contig=mt_contig,
+        primary_file=primary.name, chrm_file=normalized_chrm.name,
+        chrm_candidate=winner["label"], merged_file=dest.name,
+        primary_rows=primary_rows, chrm_rows=chrm_rows,
+        rule=("the primary RefSeq/Liftoff annotation is copied verbatim, then every row on the "
+              "mitochondrial contig (detected from the FASTA by length+name, never assumed) is "
+              "appended from the normalized selected candidate. The primary is verified to carry "
+              "zero rows on that contig first, so no gene, transcript or exon can be duplicated."),
+    )
+    return 0
+
+
+@dataclass
+class _GeneInfo:
+    gene_id: str
+    gene_name: str
+    gene_biotype: str
+    original_gene_name: str | None
+
+
+def _gtf_attributes(pairs: list[tuple[str, str]]) -> str:
+    return " ".join(f'{key} "{value}";' for key, value in pairs)
 
 
 def cmd_gff3_to_gtf(args: argparse.Namespace) -> int:
-    print("NOT IMPLEMENTED in this dry-run-only revision. Design, for review:")
-    print(
-        "  Two passes over the merged GFF3. Pass 1 walks gene and transcript features and "
-        "builds id -> (gene_id, gene_name, transcript_id) from the GFF3 ID/Parent chain. "
-        "Pass 2 walks every exon (and other feature) row, resolves its Parent to that table, "
-        "and writes a GTF line carrying gene_id, gene_name and transcript_id explicitly — "
-        "which is problem 3 from the module docstring, solved rather than deferred to mkref, "
-        "which does not do this propagation itself."
+    """Convert the merged GFF3 to GTF, propagating gene_id/gene_name to exons.
+
+    This is problem 3 from the module docstring, and it is not optional:
+    RefSeq's exon rows carry only `Parent=<transcript_id>` and `gene=<symbol>`
+    — no `gene_id`, no `gene_name`, no `ID`. Cell Ranger builds gene models
+    from exon rows, so an exon that cannot name its gene is an exon that
+    silently does not count. The two source annotations spell their
+    identifiers differently (RefSeq uses ID/Parent, CAT/Liftoff carries
+    gene_id/transcript_id on every row), so both conventions are resolved
+    rather than one being assumed.
+    """
+    source = BUILD_DIR / MERGED_GFF3
+    if not source.exists():
+        raise SystemExit(f"{source.name} not found — run merge-chrm first.")
+    provenance = Provenance.load_or_create(BUILD_DIR)
+
+    # --- pass 1: the ID/Parent chain, and what each gene is called ---------
+    genes: dict[str, _GeneInfo] = {}
+    transcript_to_gene: dict[str, str] = {}
+    print(f"  pass 1/2: reading gene and transcript features from {source.name}")
+    for fields in iter_gff_rows(source):
+        ftype = fields[2]
+        attrs = parse_attributes(fields[8])
+        if ftype == "gene":
+            gene_id = attrs.get("gene_id") or attrs.get("ID")
+            if not gene_id:
+                continue
+            genes[gene_id] = _GeneInfo(
+                gene_id=gene_id,
+                # `gene` is RefSeq's symbol attribute; `Name` is CAT's. Falling
+                # back to the id keeps every gene nameable rather than emitting
+                # an empty gene_name that mkref would accept and a person could
+                # not interpret.
+                gene_name=(attrs.get("gene_name") or attrs.get("Name")
+                           or attrs.get("gene") or gene_id),
+                gene_biotype=(attrs.get("gene_biotype") or attrs.get("biotype") or "unknown"),
+                original_gene_name=attrs.get("original_gene_name"),
+            )
+        elif ftype == "transcript":
+            tx_id = attrs.get("transcript_id") or attrs.get("ID")
+            gene_id = attrs.get("gene_id") or attrs.get("Parent")
+            if tx_id and gene_id:
+                transcript_to_gene[tx_id] = gene_id
+
+    print(f"    {len(genes):,} genes, {len(transcript_to_gene):,} transcripts")
+
+    # --- pass 2: write GTF, resolving every exon to its gene ---------------
+    dest = BUILD_DIR / MERGED_GTF
+    counts = {"gene": 0, "transcript": 0, "exon": 0}
+    unresolved_exons = 0
+    unresolved_examples: list[str] = []
+    print(f"  pass 2/2: writing {dest.name}")
+    with dest.open("wt", encoding="utf-8") as out:
+        for fields in iter_gff_rows(source):
+            ftype = fields[2]
+            if ftype not in ("gene", "transcript", "exon"):
+                continue
+            attrs = parse_attributes(fields[8])
+
+            if ftype == "gene":
+                gene_id = attrs.get("gene_id") or attrs.get("ID")
+                info = genes.get(gene_id) if gene_id else None
+                if info is None:
+                    continue
+                pairs = [("gene_id", info.gene_id), ("gene_name", info.gene_name),
+                         ("gene_biotype", info.gene_biotype)]
+                if info.original_gene_name:
+                    pairs.append(("original_gene_name", info.original_gene_name))
+            elif ftype == "transcript":
+                tx_id = attrs.get("transcript_id") or attrs.get("ID")
+                gene_id = attrs.get("gene_id") or attrs.get("Parent")
+                info = genes.get(gene_id) if gene_id else None
+                if info is None or not tx_id:
+                    continue
+                pairs = [("gene_id", info.gene_id), ("transcript_id", tx_id),
+                         ("gene_name", info.gene_name), ("gene_biotype", info.gene_biotype)]
+                original = attrs.get("original_gene_name") or info.original_gene_name
+                if original:
+                    pairs.append(("original_gene_name", original))
+            else:  # exon
+                tx_id = attrs.get("transcript_id") or attrs.get("Parent")
+                gene_id = attrs.get("gene_id") or (transcript_to_gene.get(tx_id) if tx_id else None)
+                info = genes.get(gene_id) if gene_id else None
+                if info is None or not tx_id:
+                    unresolved_exons += 1
+                    if len(unresolved_examples) < 5:
+                        unresolved_examples.append(fields[8][:160])
+                    continue
+                pairs = [("gene_id", info.gene_id), ("transcript_id", tx_id),
+                         ("gene_name", info.gene_name), ("gene_biotype", info.gene_biotype)]
+                # The row's own value wins over the gene's. Normalization
+                # rewrites the rows it changed, which for the MSTRG collisions
+                # is a novel-isoform transcript and its exons — the gene row
+                # keeps the real symbol and is never rewritten, so reading
+                # original_gene_name from the gene would lose exactly the
+                # record that says which transcript used to be MSTRG.x.
+                original = attrs.get("original_gene_name") or info.original_gene_name
+                if original:
+                    pairs.append(("original_gene_name", original))
+                if "exon_number" in attrs:
+                    pairs.append(("exon_number", attrs["exon_number"]))
+
+            out.write("\t".join(fields[:8]) + "\t" + _gtf_attributes(pairs) + "\n")
+            counts[ftype] += 1
+
+    print(f"    wrote {counts['gene']:,} gene, {counts['transcript']:,} transcript, "
+          f"{counts['exon']:,} exon rows")
+
+    if unresolved_exons:
+        provenance.record_step(
+            "gff3_to_gtf", status="fail_closed", unresolved_exons=unresolved_exons,
+            unresolved_examples=unresolved_examples, counts=counts,
+        )
+        print(
+            f"FAIL CLOSED: {unresolved_exons:,} exon rows could not be resolved to a gene. "
+            "An exon Cell Ranger cannot attribute to a gene is one that silently does not "
+            f"count. Examples: {unresolved_examples}",
+            file=sys.stderr,
+        )
+        return 1
+
+    if counts["exon"] == 0:
+        provenance.record_step("gff3_to_gtf", status="fail_closed", reason="no exon rows written")
+        print("FAIL CLOSED: no exon rows were written.", file=sys.stderr)
+        return 1
+
+    provenance.record_step(
+        "gff3_to_gtf", status="ok", source_file=source.name, gtf_file=dest.name,
+        counts=counts, genes_indexed=len(genes), transcripts_indexed=len(transcript_to_gene),
+        rule=("gene rows supply gene_id (gene_id= or ID=), gene_name (gene_name=, Name= or "
+              "gene=) and gene_biotype (gene_biotype= or biotype=); transcript rows link "
+              "transcript_id to gene via transcript_id=/ID= and gene_id=/Parent=; every exon "
+              "resolves its transcript (transcript_id= or Parent=) to that gene and is written "
+              "with gene_id, gene_name, gene_biotype and transcript_id explicit. "
+              "original_gene_name is carried through where normalization set it. Any exon that "
+              "cannot be resolved fails the step rather than being dropped silently."),
     )
-    return 1
+    return 0
 
 
 def cmd_mkgtf(args: argparse.Namespace) -> int:
-    binary = shutil.which("cellranger") or "cellranger"
-    attr_flags = " ".join(f'--attribute="{a}"' for a in REFSEQ_MKGTF_ATTRIBUTES)
-    print("NOT IMPLEMENTED in this dry-run-only revision. The command this will run:")
-    print(f"  {binary} mkgtf <merged>.gtf <filtered>.gtf {attr_flags}")
-    print("  using the RefSeq biotype vocabulary above — a GENCODE-shaped filter list would "
-          "silently drop every immune receptor segment (problem 4).")
-    return 1
+    """Filter the GTF with `cellranger mkgtf`, using RefSeq's biotype vocabulary."""
+    source = BUILD_DIR / MERGED_GTF
+    if not source.exists():
+        raise SystemExit(f"{source.name} not found — run gff3-to-gtf first.")
+    binary = shutil.which("cellranger")
+    if binary is None:
+        raise SystemExit("cellranger is not on PATH.")
+    provenance = Provenance.load_or_create(BUILD_DIR)
+
+    dest = BUILD_DIR / FILTERED_GTF
+    cmd = [binary, "mkgtf", str(source), str(dest)]
+    cmd += [f"--attribute={a}" for a in REFSEQ_MKGTF_ATTRIBUTES]
+    print("  " + " ".join(cmd))
+    completed = subprocess.run(cmd, capture_output=True, text=True)
+    if completed.returncode != 0:
+        provenance.record_step(
+            "mkgtf", status="failed", command=cmd, returncode=completed.returncode,
+            stderr=completed.stderr[-4000:],
+        )
+        print(completed.stdout, file=sys.stdout)
+        print(completed.stderr, file=sys.stderr)
+        print(f"FAIL: cellranger mkgtf exited {completed.returncode}", file=sys.stderr)
+        return completed.returncode
+    if not dest.exists() or dest.stat().st_size == 0:
+        provenance.record_step("mkgtf", status="failed", reason="no output produced", command=cmd)
+        print("FAIL: cellranger mkgtf reported success but produced no output.", file=sys.stderr)
+        return 1
+
+    kept = {"gene": 0, "transcript": 0, "exon": 0}
+    for fields in iter_gff_rows(dest):
+        if fields[2] in kept:
+            kept[fields[2]] += 1
+    print(f"  kept {kept['gene']:,} gene, {kept['transcript']:,} transcript, "
+          f"{kept['exon']:,} exon rows")
+
+    provenance.record_step(
+        "mkgtf", status="ok", command=cmd, returncode=0,
+        cellranger=_cellranger_version(binary),
+        attributes=list(REFSEQ_MKGTF_ATTRIBUTES), input_file=source.name,
+        output_file=dest.name, rows_kept=kept,
+        rule=("RefSeq's own biotype vocabulary (V_segment / J_segment / D_segment / C_region), "
+              "not GENCODE's (IG_V_gene / TR_V_gene), because the primary annotation is RefSeq — "
+              "a GENCODE-shaped filter would drop every immune receptor segment. Mt_rRNA and "
+              "Mt_tRNA are included on top of that list because the chrM rows come from the "
+              "CAT/Liftoff annotation, which uses those names, and dropping them would "
+              "understate pct_counts_mt rather than error."),
+    )
+    return 0
+
+
+def _cellranger_version(binary: str) -> str:
+    try:
+        out = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=60)
+        return out.stdout.strip() or out.stderr.strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"unknown ({exc})"
 
 
 def cmd_mkref(args: argparse.Namespace) -> int:
+    """Run `cellranger mkref`, into a staging directory beside the build inputs.
+
+    Deliberately not written to `OUTPUT_DIR`: that path is currently a broken
+    symlink into a deleted project directory, and repairing it is a separate,
+    reviewable act rather than a side effect of a build. The reference is
+    produced here, validated here, and only then is anything pointed at it.
+    """
     _require(args.i_confirm_build, "pass --i-confirm-build to run cellranger mkref")
-    binary = shutil.which("cellranger") or "cellranger"
+    binary = shutil.which("cellranger")
+    if binary is None:
+        raise SystemExit("cellranger is not on PATH.")
+    provenance = Provenance.load_or_create(BUILD_DIR)
+
+    genes_gtf = BUILD_DIR / FILTERED_GTF
+    if not genes_gtf.exists():
+        raise SystemExit(f"{genes_gtf.name} not found — run mkgtf first.")
+
+    fasta = BUILD_DIR / GENOME_FASTA
+    if not fasta.exists():
+        gz = BUILD_DIR / "chm13v2.0_maskedY.fa.gz"
+        if not gz.exists():
+            raise SystemExit("run fetch-fasta first.")
+        print(f"  decompressing {gz.name} -> {fasta.name}")
+        with gzip.open(gz, "rb") as src, fasta.open("wb") as out:
+            shutil.copyfileobj(src, out, length=1 << 22)
+        # Recorded so the validator can prove the FASTA inside the built
+        # reference is byte-identical to the one whose MD5 was verified at
+        # download time, rather than trusting that nothing swapped it.
+        provenance.record_step(
+            "decompress_fasta", status="ok", source=gz.name, output=fasta.name,
+            decompressed_sha256=sha256_of(fasta), size_bytes=fasta.stat().st_size,
+        )
+
+    staging = BUILD_DIR / REFERENCE_NAME
+    if staging.exists():
+        raise SystemExit(
+            f"{staging} already exists. cellranger mkref will not overwrite it, and this "
+            "script will not delete a reference it did not just build. Move or remove it by hand."
+        )
+
     cmd = [
         binary, "mkref",
-        "--genome=T2T_CHM13v2_RefSeqLiftoff_v5_3",
-        f"--fasta={BUILD_DIR / 'chm13v2.0_maskedY.fa'}",
-        f"--genes={BUILD_DIR / 'filtered.gtf'}",
+        f"--genome={REFERENCE_NAME}",
+        f"--fasta={fasta}",
+        f"--genes={genes_gtf}",
         f"--nthreads={args.nthreads}",
         f"--memgb={args.memgb}",
         "--ref-version=t2t-chm13v2.0-refseq-liftoff-v5.3+chrm",
     ]
-    print("NOT IMPLEMENTED in this dry-run-only revision. The command this will run:")
     print("  " + " ".join(cmd))
-    return 1
+    print(f"  (cwd {BUILD_DIR}; this builds a STAR index and takes on the order of an hour)")
+
+    from datetime import datetime, timezone
+    started = datetime.now(timezone.utc)
+    completed = subprocess.run(cmd, cwd=BUILD_DIR, capture_output=True, text=True)
+    finished = datetime.now(timezone.utc)
+    elapsed_s = (finished - started).total_seconds()
+
+    if completed.returncode != 0:
+        provenance.record_step(
+            "mkref", status="failed", command=cmd, returncode=completed.returncode,
+            elapsed_seconds=elapsed_s, stderr=completed.stderr[-8000:],
+        )
+        print(completed.stdout[-4000:], file=sys.stdout)
+        print(completed.stderr[-4000:], file=sys.stderr)
+        print(f"FAIL: cellranger mkref exited {completed.returncode}", file=sys.stderr)
+        return completed.returncode
+
+    required = ["reference.json", "fasta/genome.fa", "genes/genes.gtf", "star"]
+    missing = [r for r in required if not (staging / r).exists()]
+    if missing:
+        provenance.record_step(
+            "mkref", status="failed", reason="incomplete output", missing=missing,
+            command=cmd, returncode=0, elapsed_seconds=elapsed_s,
+        )
+        print(f"FAIL: mkref exited 0 but the reference is incomplete, missing {missing}. "
+              "Not reporting this as a success.", file=sys.stderr)
+        return 1
+
+    provenance.record_step(
+        "mkref", status="ok", command=cmd, returncode=0,
+        cellranger=_cellranger_version(binary),
+        host=platform.node(), python=platform.python_version(),
+        started_at=started.isoformat(timespec="seconds"),
+        finished_at=finished.isoformat(timespec="seconds"),
+        elapsed_seconds=elapsed_s,
+        nthreads=args.nthreads, memgb=args.memgb,
+        reference_dir=str(staging), fasta=fasta.name, genes=genes_gtf.name,
+    )
+    # The provenance record travels with the reference, so a reference found
+    # on disk years from now can still say where it came from — the exact
+    # failure that made this script necessary.
+    shutil.copy2(provenance.path, staging / "BUILD_PROVENANCE.json")
+    print(f"  reference built at {staging} in {elapsed_s / 60:.1f} min")
+    return 0
 
 
 def cmd_all(args: argparse.Namespace) -> int:
