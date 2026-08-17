@@ -8,13 +8,11 @@ import remarkGfm from "remark-gfm";
  * The saved report, rendered — headings, tables and all — with a contents
  * list built from its own headings.
  *
- * Figures are the one thing that cannot render yet. `build_report` writes
- * them next to the report as relative paths (`figures/m1_funnel.png`), and
- * the gateway serves no artifact bytes, so an `<img>` would resolve against
- * this app's origin and break. A stated placeholder is the same discipline
- * `docs/report_contract.md` applies to the report itself: an absent figure
- * with a reason is evidence, an absent figure with no explanation is
- * indistinguishable from an oversight.
+ * Figures are resolved from the run's artifact manifest rather than from
+ * arbitrary Markdown URLs. `build_report` writes them next to the report as
+ * relative paths (`figures/m1_funnel.png`), and this component maps only names
+ * the gateway published to opaque artifact ids. Unknown figures remain an
+ * explicit placeholder instead of making the browser fetch an arbitrary URL.
  */
 
 type Heading = { level: number; text: string; id: string };
@@ -32,12 +30,13 @@ export default function ReportReader({
   sourcePath,
   runId,
   figures,
+  embeddings,
 }: {
   content: string;
   sourcePath: string | null;
   runId: string;
-  /** Figure artifacts this run published, keyed by file name. */
   figures: Record<string, string>;
+  embeddings: Record<string, string>;
 }) {
   const headings = useMemo<Heading[]>(() => {
     const found: Heading[] = [];
@@ -74,12 +73,6 @@ export default function ReportReader({
             h2: ({ children }) => <h2 id={slug(String(children))}>{children}</h2>,
             h3: ({ children }) => <h3 id={slug(String(children))}>{children}</h3>,
             img: ({ alt, src }) => {
-              // The report writes figures as paths relative to itself
-              // (`figures/m1_funnel.png`). Only the file name is used to look
-              // one up, and only against the artifacts this run actually
-              // published — a src the manifest does not know resolves to
-              // nothing, so a report cannot make this app fetch an arbitrary
-              // URL by naming one.
               const name = String(src ?? "").split("/").pop() ?? "";
               const id = figures[name];
               if (!id) {
@@ -97,6 +90,20 @@ export default function ReportReader({
                   alt={alt || name}
                   loading="lazy"
                 />
+              );
+            },
+            a: ({ children, href }) => {
+              const name = String(href ?? "").split("/").pop() ?? "";
+              const id = embeddings[name];
+              if (!id) return <a href={href}>{children}</a>;
+              return (
+                <a
+                  href={`/api/artifacts/${encodeURIComponent(runId)}/${encodeURIComponent(id)}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  {children}
+                </a>
               );
             },
           }}

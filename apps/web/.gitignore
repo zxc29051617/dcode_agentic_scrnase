@@ -1,6 +1,8 @@
 node_modules/
 .next/
 .env.local
+test-results/
+playwright-report/
 
 # The repository root ignores `runs/` — that rule is for the scientific run
 # output directories, which are hundreds of megabytes each. It is unanchored,

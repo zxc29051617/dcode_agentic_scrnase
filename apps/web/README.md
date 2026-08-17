@@ -64,10 +64,26 @@ be testing an action the product does not expose.
 
 ## Run it
 
+For local development, one command starts both read-only gateway and Next.js:
+
+```bash
+npm run dev:stack
+```
+
+It uses `fixtures/synthetic_runs`, gateway port `8010`, and web port `3000` by
+default. Override them without changing the code:
+
+```bash
+GATEWAY_RUNS_ROOT=/path/to/runs GATEWAY_PORT=8011 WEB_PORT=3001 npm run dev:stack
+```
+
+The gateway remains a separate process and environment; the script only
+orchestrates the two services and stops both when either one exits.
+
+For a production-like build:
+
 ```bash
 npm run build && npm run start -- -p 3000
-# or, for development:
-npm run dev
 ```
 
 ## Pages
@@ -75,7 +91,7 @@ npm run dev
 ```text
 /runs                        run inventory
 /runs/[id]                   status, pending gate (view-only), workflow timeline
-/runs/[id]/report             saved report, or a stated reason it is absent
+/runs/[id]/report             saved report plus interactive Plotly view/dimension/color controls
 /runs/[id]/assistant          CopilotKit chat scoped to read-only actions
 ```
 

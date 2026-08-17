@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import RunShell from "@/components/RunShell";
 import ReportReader from "@/components/ReportReader";
 import ArtifactFrame from "@/components/ArtifactFrame";
+import EmbeddingViewer from "@/components/EmbeddingViewer";
 import { getReport, getRunSnapshot, listArtifacts } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
@@ -16,24 +17,54 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
   if (!snapshot || !report) notFound();
 
   const entries = artifacts ?? [];
-  // Figure name -> artifact id. Built from the manifest, so a markdown
-  // `![](figures/anything.png)` can only ever resolve to a figure this run
-  // genuinely published.
   const figures = Object.fromEntries(
     entries.filter((e) => e.kind === "figure").map((e) => [e.name, e.artifact_id]),
   );
+  const embeddingArtifacts = Object.fromEntries(
+    entries.filter((e) => e.kind === "embedding_html").map((e) => [e.name, e.artifact_id]),
+  );
   const reportHtml = entries.find((e) => e.kind === "report_html");
+  const embeddings = entries
+    .filter((e) => e.kind === "embedding_html")
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const embeddingDataArtifacts = entries
+    .filter((e) => e.kind === "embedding_json")
+    .sort((a, b) => a.name.localeCompare(b.name));
 
   return (
     <RunShell run={{ id, status: snapshot.status, hasReport: snapshot.has_report }}>
       <h1>Report</h1>
 
+      <div className="panel">
+        <h2 style={{ marginTop: 0 }}>Interactive embedding viewer</h2>
+        <p className="subtle" style={{ marginTop: 0 }}>
+          Choose the embedding view and metadata coloring below. Hover cells, zoom, and rotate
+          3D views directly in the application.
+        </p>
+        {embeddingDataArtifacts.length > 0 ? (
+          <EmbeddingViewer
+            runId={id}
+            dataArtifacts={embeddingDataArtifacts}
+            standaloneArtifacts={embeddings}
+          />
+        ) : embeddings.length === 0 ? (
+          <p style={{ margin: 0 }}>
+            No Plotly embedding data was recorded for this run. Run <code>run_umap</code>
+            with the Plotly-enabled <code>build_report</code> to publish 2D or 3D views here.
+          </p>
+        ) : (
+          <p style={{ margin: 0 }}>
+            Standalone Plotly files were recorded, but interactive viewer data was not published.
+          </p>
+        )}
+      </div>
+
       {reportHtml && (
         <div className="panel">
-          <h2 style={{ marginTop: 0 }}>The report as build_report rendered it</h2>
+          <h2 style={{ marginTop: 0 }}>Standalone report HTML</h2>
           <p className="subtle" style={{ marginTop: 0 }}>
-            Same content as below, in the pipeline&apos;s own single-file HTML with its figures
-            inlined. Shown in an isolated frame.
+            Optional pipeline-rendered HTML for archival or download. The interactive viewer above
+            is the primary way to inspect embeddings in this application.
           </p>
           <ArtifactFrame runId={id} artifact={reportHtml} height="60vh" />
         </div>
@@ -45,6 +76,7 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
           sourcePath={report.source_path}
           runId={id}
           figures={figures}
+          embeddings={embeddingArtifacts}
         />
       ) : (
         <div className="panel">

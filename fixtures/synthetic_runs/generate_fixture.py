@@ -241,6 +241,40 @@ _SVG = """<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16">
 FIGURE_NAMES = ("m1_funnel.png", "m2_qc.png", "a2_qc_per_sample.png")
 
 
+def _embedding_data(method: str, dimensions: int) -> dict:
+    coordinates = []
+    for index in range(12):
+        row = [
+            round(((index % 4) - 1.5) * 1.8 + (index // 4) * 0.15, 4),
+            round(((index // 4) - 1.0) * 1.7 + (index % 3) * 0.12, 4),
+        ]
+        if dimensions == 3:
+            row.append(round(((index % 3) - 1) * 1.2, 4))
+        coordinates.append(row)
+    return {
+        "basis": f"X_{method}{'_3d' if dimensions == 3 else ''}",
+        "method": method,
+        "dimensions": dimensions,
+        "total_cells": 12,
+        "displayed_cells": 12,
+        "downsampled": False,
+        "cells": [f"SYNTH-{index:04d}-1" for index in range(12)],
+        "coordinates": coordinates,
+        "colors": {
+            "leiden": {"kind": "categorical", "values": [str(index % 3) for index in range(12)]},
+            "cell_type": {
+                "kind": "categorical",
+                "values": [["T cell", "B cell", "Monocyte"][index % 3] for index in range(12)]
+            },
+            "sample": {"kind": "categorical", "values": [["A", "B"][index % 2] for index in range(12)]},
+            "conf_score": {
+                "kind": "numeric",
+                "values": [round(0.55 + index * 0.03, 3) for index in range(12)],
+            },
+        },
+    }
+
+
 def write_artifacts(run_dir: Path, *, fastq_route: bool) -> None:
     """The files the artifact manifest is allowed to list, plus some it is not."""
     report_dir = run_dir / "build_report"
@@ -249,6 +283,13 @@ def write_artifacts(run_dir: Path, *, fastq_route: bool) -> None:
     for name in FIGURE_NAMES:
         (report_dir / "figures" / name).write_bytes(_PNG_1X1)
     (report_dir / "figures" / "m3_umap.svg").write_text(_SVG, encoding="utf-8")
+    for method in ("umap", "tsne"):
+        for dimensions in (2, 3):
+            suffix = "_3d" if dimensions == 3 else ""
+            _write_json(
+                report_dir / "figures" / f"m3_{method}{suffix}.json",
+                _embedding_data(method, dimensions),
+            )
 
     # Not on the whitelist: same directories, must never be listed or served.
     (report_dir / "report_model.json").write_text('{"internal": true}', encoding="utf-8")
