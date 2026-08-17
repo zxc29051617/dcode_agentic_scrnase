@@ -1,0 +1,89 @@
+{
+  "status": "ok",
+  "reports": [
+    {
+      "file": "SAMPLE_S1_L001_R1_001.fastq.gz",
+      "read_role": "R1",
+      "total_sequences": 5000000,
+      "sequence_length": "28",
+      "pct_gc": "48",
+      "q30_fraction": 0.9612,
+      "duplicate_fraction": 0.71,
+      "max_adapter_pct": 0.0,
+      "modules_failed": [],
+      "modules_warned": [
+        "Per base sequence content"
+      ],
+      "modules_expected_for_read_role": [
+        "Per base sequence content",
+        "Sequence Duplication Levels"
+      ],
+      "module_status": {
+        "Basic Statistics": "pass",
+        "Adapter Content": "pass"
+      }
+    },
+    {
+      "file": "SAMPLE_S1_L001_R2_001.fastq.gz",
+      "read_role": "R2",
+      "total_sequences": 5000000,
+      "sequence_length": "91",
+      "pct_gc": "48",
+      "q30_fraction": 0.9218,
+      "duplicate_fraction": 0.68,
+      "max_adapter_pct": 1.2,
+      "modules_failed": [
+        "Overrepresented sequences"
+      ],
+      "modules_warned": [],
+      "modules_expected_for_read_role": [
+        "Per base sequence content",
+        "Sequence Duplication Levels"
+      ],
+      "module_status": {
+        "Basic Statistics": "pass",
+        "Adapter Content": "pass"
+      }
+    }
+  ],
+  "notes": [
+    "cDNA (R2) duplication is 68%. Expected for scRNA-seq: the protocol amplifies by PCR and UMIs collapse the copies, which FastQC cannot see."
+  ],
+  "multiqc_report": "/synthetic/runs/demo/fastq_qc/multiqc_report.html",
+  "report_dir": "/synthetic/runs/demo/fastq_qc",
+  "per_read_role": {
+    "R1": {
+      "n_files": 1,
+      "q30_fraction": 0.9612,
+      "duplicate_fraction": 0.71,
+      "total_sequences": 5000000
+    },
+    "R2": {
+      "n_files": 1,
+      "q30_fraction": 0.9218,
+      "duplicate_fraction": 0.68,
+      "total_sequences": 5000000
+    }
+  },
+  "module_failures": {
+    "SAMPLE_S1_L001_R2_001.fastq.gz": [
+      "Overrepresented sequences"
+    ]
+  },
+  "expected_module_flags": [
+    "Per base sequence content",
+    "Sequence Duplication Levels"
+  ],
+  "metrics": {
+    "n_files": 2,
+    "total_sequences": 10000000,
+    "q30_r2": 0.9218,
+    "pct_duplicate_r2": 0.68,
+    "max_adapter_pct": 1.2,
+    "n_module_failures": 1
+  },
+  "warnings": [
+    "SAMPLE_S1_L001_R2_001.fastq.gz: FastQC failed Overrepresented sequences"
+  ],
+  "errors": []
+}

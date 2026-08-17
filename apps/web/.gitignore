@@ -1,0 +1,11 @@
+node_modules/
+.next/
+.env.local
+
+# The repository root ignores `runs/` — that rule is for the scientific run
+# output directories, which are hundreds of megabytes each. It is unanchored,
+# so it also matched this app's `app/runs/` route folder and silently kept
+# four page files out of a commit. Re-include the route directory here; the
+# root rule still covers `runs/` at the repository root, which is what it was
+# written for.
+!app/runs/
