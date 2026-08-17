@@ -301,6 +301,237 @@ def test_chrm_candidates_have_no_hardcoded_winner():
         )
 
 
+# --- gene_name conflict classification and normalization --------------------
+#
+# The real CAT+Liftoff annotations carry 1,384 gene_ids with two gene_names,
+# caused by StringTie's `MSTRG.<n>` placeholder surviving on novel-isoform
+# transcripts merged into an existing locus. These fixtures reproduce each of
+# the three cases that needs a different answer, at a size a test can assert on.
+
+
+def _gff3_row(contig: str, ftype: str, start: int, attrs: str) -> str:
+    return f"{contig}\tCAT\t{ftype}\t{start}\t{start + 100}\t.\t+\t.\t{attrs}"
+
+
+def _annotation(rows: list[str]) -> str:
+    return "##gff-version 3\n" + "\n".join(rows) + "\n"
+
+
+def test_repeated_gene_id_across_exons_is_not_a_conflict():
+    # The normal shape of any annotation: one gene, one name, many exon rows
+    # all repeating that gene_id. Must not be reported as anything at all.
+    with tempfile.TemporaryDirectory() as tmp:
+        rows = [_gff3_row("chr1", "gene", 100, "gene_id=G1;gene_name=REAL1")]
+        rows += [
+            _gff3_row("chr1", "exon", 100 + i, f"gene_id=G1;transcript_id=T1;gene_name=REAL1")
+            for i in range(12)
+        ]
+        path = _write(Path(tmp) / "a.gff3", _annotation(rows))
+        c = builder.classify_gene_name_conflicts(path)
+        assert c.resolvable == {}, c.resolvable
+        assert c.hard_conflicts == {}, c.hard_conflicts
+        assert c.placeholder_only == {}, c.placeholder_only
+
+
+def test_real_symbol_plus_placeholder_is_resolvable():
+    with tempfile.TemporaryDirectory() as tmp:
+        rows = [
+            _gff3_row("chr1", "gene", 100, "gene_id=G1;gene_name=CCNL2"),
+            _gff3_row("chr1", "transcript", 100, "gene_id=G1;transcript_id=T1;gene_name=CCNL2"),
+            _gff3_row("chr1", "exon", 100, "gene_id=G1;transcript_id=T1;gene_name=CCNL2"),
+            _gff3_row("chr1", "transcript", 300, "gene_id=G1;transcript_id=T2;gene_name=MSTRG.9"),
+            _gff3_row("chr1", "exon", 300, "gene_id=G1;transcript_id=T2;gene_name=MSTRG.9"),
+        ]
+        path = _write(Path(tmp) / "a.gff3", _annotation(rows))
+        c = builder.classify_gene_name_conflicts(path)
+        assert c.resolvable == {"G1": "CCNL2"}, c.resolvable
+        assert c.hard_conflicts == {}
+        assert c.counts["resolvable"] == {"gene_ids": 1, "gene": 1, "transcript": 2, "exon": 2}
+
+
+def test_two_real_symbols_is_a_hard_conflict():
+    # No rule can pick between two real symbols, so this must fail closed
+    # rather than resolve to whichever sorts first.
+    with tempfile.TemporaryDirectory() as tmp:
+        rows = [
+            _gff3_row("chr1", "gene", 100, "gene_id=G1;gene_name=REAL1"),
+            _gff3_row("chr1", "exon", 100, "gene_id=G1;transcript_id=T1;gene_name=REAL1"),
+            _gff3_row("chr1", "exon", 300, "gene_id=G1;transcript_id=T2;gene_name=REAL2"),
+        ]
+        path = _write(Path(tmp) / "a.gff3", _annotation(rows))
+        c = builder.classify_gene_name_conflicts(path)
+        assert c.hard_conflicts == {"G1": ["REAL1", "REAL2"]}, c.hard_conflicts
+        assert c.resolvable == {}
+
+
+def test_normalization_refuses_to_write_while_a_hard_conflict_exists():
+    with tempfile.TemporaryDirectory() as tmp:
+        rows = [
+            _gff3_row("chr1", "gene", 100, "gene_id=G1;gene_name=REAL1"),
+            _gff3_row("chr1", "exon", 300, "gene_id=G1;transcript_id=T2;gene_name=REAL2"),
+        ]
+        path = _write(Path(tmp) / "a.gff3", _annotation(rows))
+        c = builder.classify_gene_name_conflicts(path)
+        dest = Path(tmp) / "normalized.a.gff3"
+        try:
+            builder.normalize_annotation(path, dest, c)
+        except RuntimeError:
+            assert not dest.exists(), "a normalized file must not exist after a refusal"
+        else:
+            raise AssertionError("normalize_annotation must refuse while hard conflicts remain")
+
+
+def test_placeholder_only_gene_id_keeps_its_placeholder():
+    # No real symbol exists anywhere for this locus, so inventing one would
+    # be a guess. It stays MSTRG.x.
+    with tempfile.TemporaryDirectory() as tmp:
+        rows = [
+            _gff3_row("chr1", "gene", 100, "gene_id=G2;gene_name=MSTRG.77"),
+            _gff3_row("chr1", "exon", 100, "gene_id=G2;transcript_id=T9;gene_name=MSTRG.77"),
+        ]
+        path = _write(Path(tmp) / "a.gff3", _annotation(rows))
+        c = builder.classify_gene_name_conflicts(path)
+        assert c.placeholder_only == {"G2": ["MSTRG.77"]}, c.placeholder_only
+        assert c.resolvable == {} and c.hard_conflicts == {}
+
+        dest = Path(tmp) / "normalized.a.gff3"
+        builder.normalize_annotation(path, dest, c)
+        text = dest.read_text(encoding="utf-8")
+        assert "gene_name=MSTRG.77" in text
+        assert "original_gene_name" not in text, "nothing should have been rewritten"
+
+
+def test_normalization_leaves_one_gene_name_per_gene_id():
+    # The property the whole step exists to establish, asserted on the
+    # normalized output rather than inferred from the classification.
+    with tempfile.TemporaryDirectory() as tmp:
+        rows = [
+            _gff3_row("chr1", "gene", 100, "gene_id=G1;gene_name=CCNL2"),
+            _gff3_row("chr1", "transcript", 300, "gene_id=G1;transcript_id=T2;gene_name=MSTRG.9"),
+            _gff3_row("chr1", "exon", 300, "gene_id=G1;transcript_id=T2;gene_name=MSTRG.9;Name=MSTRG.9"),
+            _gff3_row("chr1", "gene", 900, "gene_id=G2;gene_name=MSTRG.77"),
+        ]
+        path = _write(Path(tmp) / "a.gff3", _annotation(rows))
+        c = builder.classify_gene_name_conflicts(path)
+        dest = Path(tmp) / "normalized.a.gff3"
+        stats = builder.normalize_annotation(path, dest, c)
+        assert stats["gene_ids_normalized"] == 1, stats
+
+        after = builder.classify_gene_name_conflicts(dest)
+        assert after.resolvable == {} and after.hard_conflicts == {}, (after.resolvable, after.hard_conflicts)
+
+        # And directly: no gene_id in the output carries two names.
+        names_by_id: dict[str, set[str]] = {}
+        for fields in builder.iter_gff_rows(dest):
+            attrs = builder.parse_attributes(fields[8])
+            gid, name = attrs.get("gene_id"), attrs.get("gene_name") or attrs.get("Name")
+            if gid and name:
+                names_by_id.setdefault(gid, set()).add(name)
+        assert all(len(v) == 1 for v in names_by_id.values()), names_by_id
+        assert names_by_id["G1"] == {"CCNL2"}
+        assert names_by_id["G2"] == {"MSTRG.77"}
+
+
+def test_normalization_preserves_the_displaced_name_and_other_attributes():
+    with tempfile.TemporaryDirectory() as tmp:
+        rows = [
+            _gff3_row("chr1", "gene", 100, "gene_id=G1;gene_name=CCNL2"),
+            _gff3_row("chr1", "exon", 300,
+                      "source_gene=ENSG1;gene_id=G1;transcript_id=T2;gene_name=MSTRG.9;tag=basic"),
+        ]
+        path = _write(Path(tmp) / "a.gff3", _annotation(rows))
+        c = builder.classify_gene_name_conflicts(path)
+        dest = Path(tmp) / "normalized.a.gff3"
+        builder.normalize_annotation(path, dest, c)
+        text = dest.read_text(encoding="utf-8")
+        assert "original_gene_name=MSTRG.9" in text, text
+        # Every unrelated attribute survives byte-for-byte.
+        assert "source_gene=ENSG1" in text and "tag=basic" in text and "transcript_id=T2" in text
+
+
+def test_normalized_audit_outranks_the_raw_one_when_selecting_a_candidate():
+    # The raw audit reports the MSTRG placeholder conflicts that normalization
+    # exists to remove. Judging a normalized build by the raw file's blockers
+    # would refuse a candidate for a defect that is no longer in what gets
+    # built — this asserts the normalized audit is what the gate reads.
+    import argparse
+
+    with tempfile.TemporaryDirectory() as tmp:
+        build_dir = Path(tmp)
+        label = builder.CHRM_CANDIDATES[0].label
+        provenance = builder.Provenance.load_or_create(build_dir)
+        provenance.record_step(
+            "compare_chrm_candidates", mitochondrial_contig="chrM",
+            results=[{"label": label, "file": "x.gff3", "contig_name_used": "chrM",
+                      "canonical_genes_found": 13, "canonical_genes_missing": [],
+                      "total_gene_names_on_contig": 43}],
+        )
+        provenance.record_step(
+            "schema_audit_chrm_candidates",
+            candidates=[{"label": label, "mkref_ready": False,
+                         "blockers": ["1384 gene_id(s) resolve to more than one gene_name"]}],
+        )
+        provenance.record_step("normalize_annotation", candidate=label, status="ok")
+        provenance.record_step(
+            "schema_audit_chrm_candidates_normalized",
+            candidates=[{"label": label, "mkref_ready": True, "blockers": []}],
+        )
+
+        original_build_dir = builder.BUILD_DIR
+        builder.BUILD_DIR = build_dir
+        try:
+            args = argparse.Namespace(label=label, reason="test", i_confirm_human_selection=True)
+            assert builder.cmd_select_chrm_candidate(args) == 0
+            reloaded = builder.Provenance.load_or_create(build_dir)
+            selected = [s for s in reloaded.data["steps"] if s["step"] == "chrm_candidate_selected"]
+            assert selected and selected[-1]["audit_basis"] == "normalized", selected
+        finally:
+            builder.BUILD_DIR = original_build_dir
+
+
+def test_selection_refuses_when_a_normalized_audit_has_no_matching_normalize_step():
+    # Guards against crediting a normalized audit to a candidate that was
+    # never actually normalized.
+    import argparse
+
+    with tempfile.TemporaryDirectory() as tmp:
+        build_dir = Path(tmp)
+        label = builder.CHRM_CANDIDATES[0].label
+        provenance = builder.Provenance.load_or_create(build_dir)
+        provenance.record_step(
+            "compare_chrm_candidates", mitochondrial_contig="chrM",
+            results=[{"label": label, "file": "x.gff3", "contig_name_used": "chrM",
+                      "canonical_genes_found": 13, "canonical_genes_missing": []}],
+        )
+        provenance.record_step(
+            "schema_audit_chrm_candidates_normalized",
+            candidates=[{"label": label, "mkref_ready": True, "blockers": []}],
+        )
+        original_build_dir = builder.BUILD_DIR
+        builder.BUILD_DIR = build_dir
+        try:
+            args = argparse.Namespace(label=label, reason="test", i_confirm_human_selection=True)
+            try:
+                builder.cmd_select_chrm_candidate(args)
+            except SystemExit:
+                pass
+            else:
+                raise AssertionError("must refuse without a matching normalize_annotation step")
+        finally:
+            builder.BUILD_DIR = original_build_dir
+
+
+def test_placeholder_pattern_is_anchored_not_a_substring_match():
+    # A real symbol that merely contains the letters MSTRG must never be
+    # treated as a placeholder and silently overwritten.
+    assert builder.is_placeholder_gene_name("MSTRG.9")
+    assert builder.is_placeholder_gene_name("MSTRG.12.3")
+    assert not builder.is_placeholder_gene_name("MSTRG")
+    assert not builder.is_placeholder_gene_name("NOTMSTRG.9")
+    assert not builder.is_placeholder_gene_name("MSTRG.9x")
+    assert not builder.is_placeholder_gene_name("CCNL2")
+
+
 def main() -> int:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     failures = []

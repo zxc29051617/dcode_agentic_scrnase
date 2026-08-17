@@ -54,6 +54,8 @@ Run with:
     python scripts/build_t2t_chm13_reference.py fetch-fasta --i-confirm-download
     python scripts/build_t2t_chm13_reference.py fetch-primary-annotation --i-confirm-download
     python scripts/build_t2t_chm13_reference.py compare-chrm-candidates --i-confirm-download
+    python scripts/build_t2t_chm13_reference.py schema-audit-chrm-candidates
+    python scripts/build_t2t_chm13_reference.py select-chrm-candidate --label <label> --i-confirm-human-selection
     python scripts/build_t2t_chm13_reference.py merge-chrm
     python scripts/build_t2t_chm13_reference.py gff3-to-gtf
     python scripts/build_t2t_chm13_reference.py mkgtf
@@ -561,6 +563,547 @@ def cmd_compare_chrm_candidates(args: argparse.Namespace) -> int:
     return 1
 
 
+#: What `cellranger mkref` actually needs to see in a GTF, distilled from
+#: `reference/README.md` problem 3 and Cell Ranger's own documented
+#: requirements: `gene`, `transcript` and `exon` feature rows, every exon
+#: carrying both `gene_id` and `transcript_id` (STAR indexes off these, not
+#: off the ID/Parent chain GFF3 uses), and a `gene_id` that never resolves to
+#: two different `gene_name`s (the liftover failure `check_gene_id_consistency`
+#: in the validator already guards against post-build).
+MKREF_REQUIRED_FEATURE_TYPES = ("gene", "transcript", "exon")
+
+
+@dataclass
+class SchemaAudit:
+    """One candidate annotation's shape, measured rather than assumed.
+
+    Every field here is something `cellranger mkgtf`/`mkref` either depends
+    on directly (gene_id/transcript_id on exons) or that a bad liftover would
+    corrupt silently (gene_id -> multiple gene_name). Counting these is what
+    "no structural problems" in the module docstring's build order actually
+    means — a candidate is not judged by having complete chrM gene coverage
+    alone (that is `compare-chrm-candidates`'s question), but by whether its
+    *entire* file is shaped the way mkgtf/mkref require.
+    """
+
+    label: str
+    file: str
+    total_rows: int
+    feature_counts: dict[str, int]
+    contigs: list[str]
+    gene_count: int
+    gene_id_missing: int
+    gene_name_missing: int
+    transcript_count: int
+    transcript_id_missing: int
+    transcript_gene_id_missing: int
+    exon_count: int
+    exon_gene_id_missing: int
+    exon_gene_name_missing: int
+    exon_transcript_id_missing: int
+    gene_id_conflicts: dict[str, list[str]]  # capped sample; see audit_annotation_schema
+    gene_id_conflict_count: int
+    biotype_key_used: str | None
+    biotype_distribution: dict[str, int]
+    blockers: list[str]
+
+    @property
+    def mkref_ready(self) -> bool:
+        return not self.blockers
+
+
+def audit_annotation_schema(path: Path, label: str) -> SchemaAudit:
+    """One streaming pass over `path`. Never loads more than one row at a time —
+    the whole-genome candidate is ~3.98 GB uncompressed, and this is run
+    against it directly, the same way `iter_gff_rows` is used elsewhere."""
+    feature_counts: dict[str, int] = {}
+    contigs: set[str] = set()
+    total_rows = 0
+    gene_count = gene_id_missing = gene_name_missing = 0
+    transcript_count = transcript_id_missing = transcript_gene_id_missing = 0
+    exon_count = exon_gene_id_missing = exon_gene_name_missing = exon_transcript_id_missing = 0
+    gene_id_to_names: dict[str, set[str]] = {}
+    biotype_counts: dict[str, int] = {}
+    biotype_key_used: str | None = None
+
+    for fields in iter_gff_rows(path):
+        total_rows += 1
+        contigs.add(fields[0])
+        ftype = fields[2]
+        feature_counts[ftype] = feature_counts.get(ftype, 0) + 1
+        attrs = parse_attributes(fields[8])
+        gene_id = attrs.get("gene_id")
+        gene_name = attrs.get("gene_name") or attrs.get("Name")
+
+        if gene_id and gene_name:
+            gene_id_to_names.setdefault(gene_id, set()).add(gene_name)
+
+        if ftype == "gene":
+            gene_count += 1
+            if not gene_id:
+                gene_id_missing += 1
+            if not gene_name:
+                gene_name_missing += 1
+            biotype = attrs.get("gene_biotype") or attrs.get("biotype")
+            if biotype:
+                if biotype_key_used is None:
+                    biotype_key_used = "gene_biotype" if "gene_biotype" in attrs else "biotype"
+                biotype_counts[biotype] = biotype_counts.get(biotype, 0) + 1
+        elif ftype == "transcript":
+            transcript_count += 1
+            if not attrs.get("transcript_id"):
+                transcript_id_missing += 1
+            if not gene_id:
+                transcript_gene_id_missing += 1
+        elif ftype == "exon":
+            exon_count += 1
+            if not gene_id:
+                exon_gene_id_missing += 1
+            if not gene_name:
+                exon_gene_name_missing += 1
+            if not attrs.get("transcript_id"):
+                exon_transcript_id_missing += 1
+
+    conflicts = {gid: sorted(names) for gid, names in gene_id_to_names.items() if len(names) > 1}
+    conflict_sample = dict(list(conflicts.items())[:20])
+
+    blockers: list[str] = []
+    missing_types = [t for t in MKREF_REQUIRED_FEATURE_TYPES if feature_counts.get(t, 0) == 0]
+    if missing_types:
+        blockers.append(f"no {'/'.join(missing_types)} rows at all")
+    if gene_id_missing:
+        blockers.append(f"{gene_id_missing}/{gene_count} gene rows missing gene_id")
+    if gene_name_missing:
+        blockers.append(f"{gene_name_missing}/{gene_count} gene rows missing gene_name")
+    if exon_gene_id_missing:
+        blockers.append(f"{exon_gene_id_missing}/{exon_count} exon rows missing gene_id")
+    if exon_transcript_id_missing:
+        blockers.append(f"{exon_transcript_id_missing}/{exon_count} exon rows missing transcript_id")
+    if conflicts:
+        blockers.append(f"{len(conflicts)} gene_id(s) resolve to more than one gene_name")
+    if biotype_key_used is None:
+        blockers.append("no gene row carries gene_biotype or biotype")
+
+    return SchemaAudit(
+        label=label, file=path.name, total_rows=total_rows,
+        feature_counts=dict(sorted(feature_counts.items(), key=lambda kv: -kv[1])),
+        contigs=sorted(contigs),
+        gene_count=gene_count, gene_id_missing=gene_id_missing, gene_name_missing=gene_name_missing,
+        transcript_count=transcript_count, transcript_id_missing=transcript_id_missing,
+        transcript_gene_id_missing=transcript_gene_id_missing,
+        exon_count=exon_count, exon_gene_id_missing=exon_gene_id_missing,
+        exon_gene_name_missing=exon_gene_name_missing, exon_transcript_id_missing=exon_transcript_id_missing,
+        gene_id_conflicts=conflict_sample, gene_id_conflict_count=len(conflicts),
+        biotype_key_used=biotype_key_used, biotype_distribution=dict(sorted(biotype_counts.items(), key=lambda kv: -kv[1])),
+        blockers=blockers,
+    )
+
+
+#: StringTie names an assembled transcript it cannot match to a known gene
+#: `MSTRG.<n>`. When CAT's `exRef` mode merges such a transcript into an
+#: existing locus, the transcript keeps that placeholder as its `gene_name`
+#: while the locus's other rows keep the real symbol — which is why one
+#: `gene_id` ends up carrying two names. Every occurrence in both real
+#: candidates matches this exact shape (checked: `MSTRG.` followed by digits,
+#: with an optional further `.digits`), so the pattern is anchored rather
+#: than a loose substring match: a real gene legitimately called something
+#: containing "MSTRG" must not be silently treated as a placeholder.
+PLACEHOLDER_GENE_NAME_RE = re.compile(r"^MSTRG\.\d+(\.\d+)*$")
+
+
+def is_placeholder_gene_name(name: str) -> bool:
+    return bool(PLACEHOLDER_GENE_NAME_RE.match(name))
+
+
+@dataclass
+class ConflictClassification:
+    """Every `gene_id` that carries more than one `gene_name`, sorted into the
+    three cases that need three different answers.
+
+    The distinction that matters: a placeholder next to exactly one real
+    symbol is a *naming* artifact with one defensible resolution, while two
+    real symbols on one `gene_id` is a genuine ambiguity no rule can settle —
+    those must stop the build rather than be resolved by picking whichever
+    sorts first.
+    """
+
+    #: gene_id -> the single real symbol, with >=1 MSTRG.x alongside it.
+    #: Normalizable: every row is rewritten to the real symbol.
+    resolvable: dict[str, str]
+    #: gene_id -> the >=2 real symbols found. Not resolvable by any rule here.
+    hard_conflicts: dict[str, list[str]]
+    #: gene_id -> the placeholder names, with no real symbol anywhere.
+    #: Left exactly as they are — inventing a symbol would be a guess.
+    placeholder_only: dict[str, list[str]]
+    #: Per-category row counts, so the report says how much annotation each case covers.
+    counts: dict[str, dict[str, int]]
+
+
+def classify_gene_name_conflicts(path: Path) -> ConflictClassification:
+    """One streaming pass: which `gene_id`s conflict, and into which of the
+    three cases each falls, with gene/transcript/exon row counts per case."""
+    names_by_id: dict[str, set[str]] = {}
+    rows_by_id: dict[str, dict[str, int]] = {}
+
+    for fields in iter_gff_rows(path):
+        attrs = parse_attributes(fields[8])
+        gene_id = attrs.get("gene_id")
+        if not gene_id:
+            continue
+        gene_name = attrs.get("gene_name") or attrs.get("Name")
+        if gene_name:
+            names_by_id.setdefault(gene_id, set()).add(gene_name)
+        ftype = fields[2]
+        if ftype in MKREF_REQUIRED_FEATURE_TYPES:
+            counts = rows_by_id.setdefault(gene_id, {"gene": 0, "transcript": 0, "exon": 0})
+            counts[ftype] += 1
+
+    resolvable: dict[str, str] = {}
+    hard_conflicts: dict[str, list[str]] = {}
+    placeholder_only: dict[str, list[str]] = {}
+
+    for gene_id, names in names_by_id.items():
+        if len(names) < 2:
+            # Not a conflict at all. A gene_id repeating one name across
+            # hundreds of exon rows is normal GTF/GFF3 structure, and the
+            # single-name case includes a gene_id whose only name happens to
+            # be a placeholder — that is handled below only when it conflicts.
+            if len(names) == 1 and is_placeholder_gene_name(next(iter(names))):
+                placeholder_only[gene_id] = sorted(names)
+            continue
+        real = sorted(n for n in names if not is_placeholder_gene_name(n))
+        if len(real) == 1:
+            resolvable[gene_id] = real[0]
+        elif len(real) == 0:
+            placeholder_only[gene_id] = sorted(names)
+        else:
+            hard_conflicts[gene_id] = real
+
+    def _tally(gene_ids) -> dict[str, int]:
+        total = {"gene_ids": 0, "gene": 0, "transcript": 0, "exon": 0}
+        for gene_id in gene_ids:
+            total["gene_ids"] += 1
+            counts = rows_by_id.get(gene_id, {})
+            for key in ("gene", "transcript", "exon"):
+                total[key] += counts.get(key, 0)
+        return total
+
+    return ConflictClassification(
+        resolvable=resolvable,
+        hard_conflicts=hard_conflicts,
+        placeholder_only=placeholder_only,
+        counts={
+            "resolvable": _tally(resolvable),
+            "hard_conflicts": _tally(hard_conflicts),
+            "placeholder_only": _tally(placeholder_only),
+        },
+    )
+
+
+def _rewrite_attribute_column(column9: str, new_name: str) -> str:
+    """Set `gene_name`/`Name` to `new_name`, keeping the old value as
+    `original_gene_name`, and leaving every other attribute byte-identical.
+
+    Rebuilt by splitting on `;` rather than by parsing into a dict and
+    re-serialising: a dict round-trip would silently drop any attribute whose
+    shape `parse_attributes`'s regex does not match, and this file has ~3.9M
+    rows in which one such drop would be invisible.
+    """
+    parts = column9.split(";")
+    original: str | None = None
+    out: list[str] = []
+    for part in parts:
+        if part.startswith("gene_name="):
+            original = original or part[len("gene_name="):]
+            out.append(f"gene_name={new_name}")
+        elif part.startswith("Name="):
+            original = original or part[len("Name="):]
+            out.append(f"Name={new_name}")
+        else:
+            out.append(part)
+    if original is not None and original != new_name:
+        out.append(f"original_gene_name={original}")
+    return ";".join(out)
+
+
+def normalize_annotation(source_path: Path, dest_path: Path, classification: ConflictClassification) -> dict[str, int]:
+    """Write `source_path` to `dest_path` with resolvable placeholder names
+    replaced by their locus's real symbol.
+
+    Refuses outright if any hard conflict exists — the caller checks this too,
+    but a function that can write a normalized file while unresolvable
+    ambiguity remains is one an incautious future caller can misuse.
+    """
+    if classification.hard_conflicts:
+        raise RuntimeError(
+            f"{len(classification.hard_conflicts)} gene_id(s) carry two or more real gene_names; "
+            "refusing to write a normalized annotation while any remain unresolved."
+        )
+
+    rewritten_rows = 0
+    touched_gene_ids: set[str] = set()
+    opener = gzip.open if dest_path.suffix == ".gz" else open
+    with _open_maybe_gzip(source_path) as handle, opener(dest_path, "wt", encoding="utf-8") as out:
+        for line in handle:
+            if not line or line.startswith("#"):
+                out.write(line)
+                continue
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) != 9:
+                out.write(line)
+                continue
+            attrs = parse_attributes(fields[8])
+            gene_id = attrs.get("gene_id")
+            target = classification.resolvable.get(gene_id) if gene_id else None
+            if target is None:
+                out.write(line)
+                continue
+            current = attrs.get("gene_name") or attrs.get("Name")
+            if current == target:
+                out.write(line)
+                continue
+            fields[8] = _rewrite_attribute_column(fields[8], target)
+            out.write("\t".join(fields) + "\n")
+            rewritten_rows += 1
+            touched_gene_ids.add(gene_id)
+
+    return {"rewritten_rows": rewritten_rows, "gene_ids_normalized": len(touched_gene_ids)}
+
+
+def _print_classification(label: str, c: ConflictClassification) -> None:
+    print(f"\n{label} — gene_name conflict classification:")
+    print(f"  case 1, one real symbol + MSTRG.x  (normalizable): {c.counts['resolvable']}")
+    print(f"  case 2, two or more real symbols   (fail closed):  {c.counts['hard_conflicts']}")
+    print(f"  case 3, MSTRG.x only               (left as-is):   {c.counts['placeholder_only']}")
+    if c.resolvable:
+        sample = dict(list(c.resolvable.items())[:5])
+        print(f"    case 1 sample: {sample}")
+    if c.hard_conflicts:
+        print(f"    case 2 FULL LIST ({len(c.hard_conflicts)}): {c.hard_conflicts}")
+    if c.placeholder_only:
+        sample = dict(list(c.placeholder_only.items())[:5])
+        print(f"    case 3 sample: {sample}")
+
+
+def cmd_classify_gene_name_conflicts(args: argparse.Namespace) -> int:
+    """Sort every conflicting gene_id into the three cases, and report counts.
+    Reads only; writes nothing but a provenance record."""
+    provenance = Provenance.load_or_create(BUILD_DIR)
+    exit_code = 0
+    for source in CHRM_CANDIDATES:
+        path = BUILD_DIR / Path(source.url).name
+        if not path.exists():
+            raise SystemExit(f"{path.name} not found — run compare-chrm-candidates first.")
+        print(f"classifying {source.label} ({path.name}) — streaming the whole file")
+        c = classify_gene_name_conflicts(path)
+        _print_classification(source.label, c)
+        provenance.record_step(
+            "classify_gene_name_conflicts", candidate=source.label, file=path.name,
+            counts=c.counts,
+            hard_conflicts=c.hard_conflicts,
+            resolvable_sample=dict(list(c.resolvable.items())[:50]),
+            placeholder_only_sample=dict(list(c.placeholder_only.items())[:50]),
+        )
+        if c.hard_conflicts:
+            print(f"FAIL CLOSED: {source.label} has {len(c.hard_conflicts)} gene_id(s) with two or "
+                  "more real gene_names. No rule can pick between two real symbols; a human has to.",
+                  file=sys.stderr)
+            exit_code = 1
+    return exit_code
+
+
+def cmd_normalize_annotations(args: argparse.Namespace) -> int:
+    """Classify, then write a normalized copy of each candidate, then say what changed.
+
+    Fails closed before writing anything if any hard conflict exists, so a
+    normalized file never exists in a state where some ambiguity was resolved
+    by guesswork.
+    """
+    provenance = Provenance.load_or_create(BUILD_DIR)
+    for source in CHRM_CANDIDATES:
+        path = BUILD_DIR / Path(source.url).name
+        if not path.exists():
+            raise SystemExit(f"{path.name} not found — run compare-chrm-candidates first.")
+        print(f"classifying {source.label} ({path.name})")
+        c = classify_gene_name_conflicts(path)
+        _print_classification(source.label, c)
+
+        if c.hard_conflicts:
+            provenance.record_step(
+                "normalize_annotation", candidate=source.label, status="fail_closed",
+                hard_conflicts=c.hard_conflicts, counts=c.counts,
+            )
+            print(f"FAIL CLOSED: {source.label} has {len(c.hard_conflicts)} unresolvable gene_id(s) "
+                  "(two or more real gene_names). Not writing a normalized file.", file=sys.stderr)
+            return 1
+
+        dest = BUILD_DIR / f"normalized.{path.name}"
+        print(f"  writing {dest.name}")
+        stats = normalize_annotation(path, dest, c)
+        print(f"  normalized {stats['gene_ids_normalized']} gene_id(s) across "
+              f"{stats['rewritten_rows']:,} rewritten row(s); original names kept as original_gene_name")
+        provenance.record_step(
+            "normalize_annotation", candidate=source.label, status="ok",
+            source_file=path.name, normalized_file=dest.name,
+            rule=("a gene_id carrying exactly one non-placeholder gene_name and one or more "
+                  "MSTRG.<n> placeholders has every row rewritten to that one real symbol; the "
+                  "displaced name is preserved on the row as original_gene_name. gene_ids with "
+                  "two or more real names fail closed. gene_ids with only placeholders are left "
+                  "untouched — no symbol is invented."),
+            counts=c.counts, **stats,
+        )
+    return 0
+
+
+def cmd_schema_audit_chrm_candidates(args: argparse.Namespace) -> int:
+    """Full-file structural audit of both chrM candidates — not just their
+    chrM gene coverage, which `compare-chrm-candidates` already settled.
+
+    A candidate can carry all 13 canonical mitochondrial genes and still be
+    unusable as the primary annotation source if its genome-wide gene_id/
+    gene_name/biotype attributes are inconsistent — this is the check that
+    decides that question with evidence instead of assuming a smaller or
+    newer-looking file is automatically fine.
+    """
+    provenance = Provenance.load_or_create(BUILD_DIR)
+    normalized = getattr(args, "normalized", False)
+    audits = []
+    for source in CHRM_CANDIDATES:
+        raw_path = BUILD_DIR / Path(source.url).name
+        path = BUILD_DIR / f"normalized.{raw_path.name}" if normalized else raw_path
+        if not path.exists():
+            raise SystemExit(
+                f"{path.name} not found — run "
+                + ("normalize-annotations" if normalized else "compare-chrm-candidates")
+                + " first."
+            )
+        print(f"auditing {source.label} ({path.name}) — this streams the whole file, "
+              f"expect this to take a few minutes for the larger candidate")
+        audit = audit_annotation_schema(path, source.label)
+        audits.append(audit)
+
+        print(f"\n{audit.label} ({audit.file}):")
+        print(f"  total rows: {audit.total_rows:,}")
+        print(f"  feature counts: {audit.feature_counts}")
+        print(f"  contigs ({len(audit.contigs)}): {audit.contigs}")
+        print(f"  genes: {audit.gene_count:,}  (missing gene_id: {audit.gene_id_missing}, "
+              f"missing gene_name: {audit.gene_name_missing})")
+        print(f"  transcripts: {audit.transcript_count:,}  (missing transcript_id: "
+              f"{audit.transcript_id_missing}, missing gene_id: {audit.transcript_gene_id_missing})")
+        print(f"  exons: {audit.exon_count:,}  (missing gene_id: {audit.exon_gene_id_missing}, "
+              f"missing gene_name: {audit.exon_gene_name_missing}, missing transcript_id: "
+              f"{audit.exon_transcript_id_missing})")
+        print(f"  gene_id -> multiple gene_name conflicts: {audit.gene_id_conflict_count}"
+              + (f" (sample: {audit.gene_id_conflicts})" if audit.gene_id_conflicts else ""))
+        print(f"  biotype key used: {audit.biotype_key_used!r}")
+        print(f"  biotype distribution: {audit.biotype_distribution}")
+        print(f"  mkref-ready: {audit.mkref_ready}"
+              + (f"  blockers: {audit.blockers}" if audit.blockers else ""))
+
+    provenance.record_step(
+        "schema_audit_chrm_candidates_normalized" if normalized else "schema_audit_chrm_candidates",
+        candidates=[
+            {
+                "label": a.label, "file": a.file, "total_rows": a.total_rows,
+                "feature_counts": a.feature_counts, "contigs": a.contigs,
+                "gene_count": a.gene_count, "gene_id_missing": a.gene_id_missing,
+                "gene_name_missing": a.gene_name_missing, "transcript_count": a.transcript_count,
+                "transcript_id_missing": a.transcript_id_missing,
+                "transcript_gene_id_missing": a.transcript_gene_id_missing,
+                "exon_count": a.exon_count, "exon_gene_id_missing": a.exon_gene_id_missing,
+                "exon_gene_name_missing": a.exon_gene_name_missing,
+                "exon_transcript_id_missing": a.exon_transcript_id_missing,
+                "gene_id_conflict_count": a.gene_id_conflict_count,
+                "gene_id_conflicts_sample": a.gene_id_conflicts,
+                "biotype_key_used": a.biotype_key_used, "biotype_distribution": a.biotype_distribution,
+                "blockers": a.blockers, "mkref_ready": a.mkref_ready,
+            }
+            for a in audits
+        ],
+    )
+
+    print()
+    if all(a.mkref_ready for a in audits):
+        print("no structural problems found in either candidate.")
+        return 0
+    for a in audits:
+        if not a.mkref_ready:
+            print(f"BLOCKED: {a.label} has structural problems: {a.blockers}", file=sys.stderr)
+    return 1
+
+
+def cmd_select_chrm_candidate(args: argparse.Namespace) -> int:
+    """Record a human's choice of chrM candidate when `compare-chrm-candidates`
+    itself failed closed (tied on canonical gene coverage) — never automatic.
+
+    This does not run without `--i-confirm-human-selection`, and it refuses if
+    `schema_audit_chrm_candidates` has not been recorded for the requested
+    label, or found that label unready — this is a place to *record* a human
+    decision that was actually informed by the audit, not a shortcut around it.
+    """
+    _require(
+        args.i_confirm_human_selection,
+        "pass --i-confirm-human-selection to record a candidate a human picked by hand "
+        "(compare-chrm-candidates did not pick one automatically)",
+    )
+    provenance = Provenance.load_or_create(BUILD_DIR)
+
+    # The normalized audit is the authority when one exists, because
+    # normalization is precisely what resolves the MSTRG.x placeholder
+    # conflicts the raw audit reports — judging a normalized build by the raw
+    # file's blockers would refuse a candidate for a defect that no longer
+    # exists in what will actually be built. The raw audit is still consulted
+    # when nothing has been normalized, so this never *weakens* the gate:
+    # a candidate with real (non-placeholder) problems fails either way,
+    # since normalize-annotations itself fails closed on those.
+    normalized_steps = [s for s in provenance.data["steps"] if s["step"] == "schema_audit_chrm_candidates_normalized"]
+    raw_steps = [s for s in provenance.data["steps"] if s["step"] == "schema_audit_chrm_candidates"]
+    audit_steps = normalized_steps or raw_steps
+    which = "normalized" if normalized_steps else "raw"
+    if not audit_steps:
+        raise SystemExit("no schema audit recorded — run schema-audit-chrm-candidates first.")
+
+    if normalized_steps:
+        normalize_ok = [
+            s for s in provenance.data["steps"]
+            if s["step"] == "normalize_annotation" and s.get("status") == "ok"
+            and s.get("candidate") == args.label
+        ]
+        if not normalize_ok:
+            raise SystemExit(
+                f"a normalized audit exists but no successful normalize_annotation step for "
+                f"{args.label!r} — refusing to credit that audit to a candidate that was never "
+                "normalized."
+            )
+
+    candidates_by_label = {c["label"]: c for c in audit_steps[-1]["candidates"]}
+    audited = candidates_by_label.get(args.label)
+    if audited is None:
+        raise SystemExit(f"{args.label!r} was not one of the audited candidates: {list(candidates_by_label)}")
+    if not audited["mkref_ready"]:
+        raise SystemExit(f"{args.label!r} failed the {which} schema audit: {audited['blockers']}. Not recording it.")
+
+    comparison_steps = [s for s in provenance.data["steps"] if s["step"] == "compare_chrm_candidates"]
+    if not comparison_steps:
+        raise SystemExit("no compare_chrm_candidates step recorded — run compare-chrm-candidates first.")
+    comparison_results = {r["label"]: r for r in comparison_steps[-1]["results"]}
+    comparison = comparison_results.get(args.label)
+    if comparison is None:
+        raise SystemExit(f"{args.label!r} was not one of the compared candidates: {list(comparison_results)}")
+
+    winner = {
+        "label": comparison["label"], "file": comparison["file"],
+        "contig_name_used": comparison["contig_name_used"],
+        "canonical_genes_found": comparison["canonical_genes_found"],
+        "selected_by": "human",
+        "audit_basis": which,
+        "reason": args.reason or "tied on canonical mitochondrial gene coverage; human chose by schema audit",
+    }
+    provenance.record_step("chrm_candidate_selected", **winner)
+    print(f"recorded human selection: {args.label} — {winner['reason']}")
+    return 0
+
+
 def cmd_merge_chrm(args: argparse.Namespace) -> int:
     provenance = Provenance.load_or_create(BUILD_DIR)
     selected = [s for s in provenance.data["steps"] if s["step"] == "chrm_candidate_selected"]
@@ -645,6 +1188,36 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--i-confirm-download", action="store_true")
     p.set_defaults(func=cmd_compare_chrm_candidates)
+
+    p = sub.add_parser(
+        "schema-audit-chrm-candidates",
+        help="full-file structural audit of both chrM candidates (gene/transcript/exon counts, "
+             "gene_id/gene_name completeness and conflicts, biotype coverage, mkref-readiness)",
+    )
+    p.add_argument("--normalized", action="store_true",
+                   help="audit the normalized.* copies instead of the raw downloads")
+    p.set_defaults(func=cmd_schema_audit_chrm_candidates)
+
+    sub.add_parser(
+        "classify-gene-name-conflicts",
+        help="sort every conflicting gene_id into: one real symbol + MSTRG.x (normalizable), "
+             "two or more real symbols (fail closed), or MSTRG.x only (left alone)",
+    ).set_defaults(func=cmd_classify_gene_name_conflicts)
+
+    sub.add_parser(
+        "normalize-annotations",
+        help="write normalized.<file> for each candidate, rewriting MSTRG.x placeholders to their "
+             "locus's real symbol and preserving the old value as original_gene_name",
+    ).set_defaults(func=cmd_normalize_annotations)
+
+    p = sub.add_parser(
+        "select-chrm-candidate",
+        help="record a human's choice of chrM candidate when compare-chrm-candidates tied",
+    )
+    p.add_argument("--label", required=True, choices=[s.label for s in CHRM_CANDIDATES])
+    p.add_argument("--reason", default=None)
+    p.add_argument("--i-confirm-human-selection", action="store_true")
+    p.set_defaults(func=cmd_select_chrm_candidate)
 
     sub.add_parser("merge-chrm", help="merge the winning candidate's chrM rows into the primary annotation").set_defaults(func=cmd_merge_chrm)
     sub.add_parser("gff3-to-gtf", help="convert the merged GFF3 to GTF, propagating gene_id/gene_name to every exon").set_defaults(func=cmd_gff3_to_gtf)
