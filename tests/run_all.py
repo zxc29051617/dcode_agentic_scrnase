@@ -55,6 +55,7 @@ from tests import (  # noqa: E402
     test_scientific_bugfixes,
     test_manifest,
     test_study_design,
+    test_t2t_reference_builder,
 )
 
 #: Roughly pipeline order. Each module appears once — a repeat costs the time
@@ -104,6 +105,7 @@ MODULES = (
     test_step_prompts,
     test_scientific_bugfixes,
     test_graph_smoke,
+    test_t2t_reference_builder,
 )
 
 

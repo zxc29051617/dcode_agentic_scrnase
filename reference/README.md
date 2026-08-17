@@ -53,7 +53,44 @@ matter:
    are `V_segment` / `J_segment` / `C_region`, not `IG_V_gene` / `TR_V_gene`,
    so a GENCODE-shaped `mkgtf` filter drops them all.
 
-The build script and its provenance record live with the reference itself.
+The build script and its provenance record live with the reference itself —
+**that directory (`claude_agentic_scrna`) was later deleted, and both went
+with it.** What survived was this description. `scripts/build_t2t_chm13_reference.py`
+and `scripts/validate_t2t_chm13_reference.py` exist so that does not happen
+again: every source is a URL plus a checksum (published, or computed and
+recorded rather than left implicit), every step is a named subcommand, and a
+rebuilt reference carries its own `BUILD_PROVENANCE.json` inside
+`reference/T2T_CHM13v2_RefSeqLiftoff_v5_3/` rather than depending on a
+directory elsewhere continuing to exist.
+
+```bash
+# prints the full plan — every source, size and checksum — and touches
+# nothing. Safe to run any time.
+python scripts/build_t2t_chm13_reference.py plan
+
+# each step needs its own explicit flag before it downloads or builds anything
+python scripts/build_t2t_chm13_reference.py fetch-fasta --i-confirm-download
+python scripts/build_t2t_chm13_reference.py fetch-primary-annotation --i-confirm-download
+python scripts/build_t2t_chm13_reference.py compare-chrm-candidates --i-confirm-download
+
+# after a built reference exists:
+python scripts/validate_t2t_chm13_reference.py ~/data/references/T2T_CHM13v2_RefSeqLiftoff_v5_3
+```
+
+**Where chrM comes from is not hardcoded.** Two CAT/Liftoff candidates exist
+upstream and neither is assumed correct; `compare-chrm-candidates` downloads
+both, detects the mitochondrial contig from the FASTA itself (by sequence
+length agreeing with a name that looks mitochondrial — never by assuming a
+name like "chrM"), counts how many of the 13 canonical mitochondrial
+protein-coding genes each candidate annotates on that contig, and **fails
+closed** — exits non-zero and prints the comparison — unless exactly one
+candidate is the unambiguous answer. The rest of the build will not proceed
+past that point until a person has looked at the comparison.
+
+As of this writing, the merge, GFF3→GTF conversion, `mkgtf` and `mkref`
+subcommands are authored and reviewable but not yet exercised against a real
+download — see the script's own `--help` and module docstring for exactly
+what runs where.
 
 ## Another species
 
