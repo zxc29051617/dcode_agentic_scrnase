@@ -116,7 +116,14 @@ def _whitelist_dir(config: dict[str, Any] | None = None) -> Path | None:
 
     import glob as _glob
 
+    # This project's own `tools/` is checked first, for the same reason
+    # `cellranger_count.BINARY_SEARCH_GLOBS` checks it first: it is the one
+    # location that lives and dies with the repository, rather than beside it
+    # where an unrelated cleanup can remove it. The `~/projects/...` entries
+    # below stay for installs that predate that convention.
+    project_root = Path(__file__).resolve().parent.parent.parent
     for pattern in (
+        str(project_root / "tools" / "cellranger-*" / "lib" / "python" / "cellranger" / "barcodes"),
         "~/projects/cellranger-*/lib/python/cellranger/barcodes",
         "~/cellranger-*/lib/python/cellranger/barcodes",
         "/opt/cellranger-*/lib/python/cellranger/barcodes",
