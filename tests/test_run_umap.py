@@ -96,6 +96,51 @@ def test_both_computes_both_and_neither_overwrites_the_other():
         assert "X_umap" in written.obsm and "X_tsne" in written.obsm
 
 
+def test_both_methods_can_write_independent_two_and_three_dimensional_keys():
+    import anndata
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        result = _run(root, _adata(), method="both", dimensions=[2, 3])
+        assert result["errors"] == []
+        assert set(result["embedding_summary"]["computed"]) == {
+            "umap", "umap_3d", "tsne", "tsne_3d",
+        }
+        assert result["embedding_summary"]["dimensions"] == [2, 3]
+        assert result["embedding_summary"]["embeddings"] == [
+            {"method": "umap", "dimensions": 2, "key": "X_umap"},
+            {"method": "umap", "dimensions": 3, "key": "X_umap_3d"},
+            {"method": "tsne", "dimensions": 2, "key": "X_tsne"},
+            {"method": "tsne", "dimensions": 3, "key": "X_tsne_3d"},
+        ]
+        assert result["embedding_summary"]["umap_3d_key"] == "X_umap_3d"
+        assert result["embedding_summary"]["tsne_3d_key"] == "X_tsne_3d"
+        written = anndata.read_h5ad(result["adata_path"])
+        assert written.obsm["X_umap"].shape == (200, 2)
+        assert written.obsm["X_umap_3d"].shape == (200, 3)
+        assert written.obsm["X_tsne"].shape == (200, 2)
+        assert written.obsm["X_tsne_3d"].shape == (200, 3)
+
+
+def test_three_dimensional_tsne_does_not_need_neighbors():
+    import anndata
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        result = _run(root, _adata(with_neighbors=False), method="tsne", dimensions=3)
+        assert result["errors"] == []
+        assert result["embedding_summary"]["computed"] == ["tsne_3d"]
+        written = anndata.read_h5ad(result["adata_path"])
+        assert written.obsm["X_tsne_3d"].shape == (200, 3)
+        assert "X_tsne" not in written.obsm
+
+
+def test_invalid_dimensions_is_an_error():
+    with tempfile.TemporaryDirectory() as tmp:
+        result = _run(Path(tmp), _adata(), dimensions=[2, 4])
+    assert any("dimensions" in e for e in result["errors"])
+
+
 def test_invalid_method_is_an_error():
     with tempfile.TemporaryDirectory() as tmp:
         result = _run(Path(tmp), _adata(), method="pca")
@@ -151,13 +196,17 @@ def test_the_pre_integration_embedding_is_computed_when_batches_were_corrected()
 
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        result = _integrated(root, _two_batch_adata())
+        result = _integrated(root, _two_batch_adata(), dimensions=[2, 3])
         assert result["errors"] == []
         assert "umap_unintegrated" in result["embedding_summary"]["computed"]
+        assert "umap_unintegrated_3d" in result["embedding_summary"]["computed"]
         assert result["embedding_summary"]["unintegrated_umap_key"] == "X_umap_unintegrated"
+        assert result["embedding_summary"]["unintegrated_umap_3d_key"] == "X_umap_unintegrated_3d"
         written = anndata.read_h5ad(result["adata_path"])
         assert "X_umap_unintegrated" in written.obsm
+        assert "X_umap_unintegrated_3d" in written.obsm
         assert written.obsm["X_umap_unintegrated"].shape == written.obsm["X_umap"].shape
+        assert written.obsm["X_umap_unintegrated_3d"].shape == written.obsm["X_umap_3d"].shape
 
 
 def test_the_mainline_neighbor_graph_is_not_overwritten():

@@ -181,8 +181,8 @@ REGISTRY: dict[str, StepSpec] = {
                  config_keys=("adata_path", "embedding_key", "n_neighbors",
                               "random_state", "resolution")),
         StepSpec("run_umap", "analysis", "judge_umap",
-                 config_keys=("adata_path", "embedding_key", "method", "perplexity",
-                              "random_state")),
+                 config_keys=("adata_path", "dimensions", "embedding_key", "method",
+                              "perplexity", "random_state")),
         StepSpec("find_markers", "analysis", "judge_markers",
                  config_keys=("cluster_key", "marker_method", "n_genes_reported")),
         # Both of these stop rather than guess, and both list their candidates
@@ -204,7 +204,7 @@ REGISTRY: dict[str, StepSpec] = {
         # cut — `resolve_reference` and `matrix_preflight` read it far earlier —
         # but the declaration has to match what the source does.
         StepSpec("build_report", "utility", "judge_report",
-                 config_keys=("inline_figures", "species")),
+                 config_keys=("embedding_max_cells", "inline_figures", "species")),
     )
 }
 

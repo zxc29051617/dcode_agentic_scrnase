@@ -59,6 +59,7 @@ TOOL_NAME = "run_umap"
 INPUT_FIELDS = (
     "artifacts.run_clustering",
     "config.method",
+    "config.dimensions",
     "config.perplexity",
     "run_dir",
 )
@@ -72,6 +73,8 @@ OUTPUT_FIELDS = (
 
 VALID_METHODS = ("umap", "tsne", "both")
 DEFAULT_METHOD = "umap"
+VALID_DIMENSIONS = (2, 3)
+DEFAULT_DIMENSIONS = (2,)
 
 #: scikit-learn's own default, and the number most tutorials use unchanged.
 DEFAULT_PERPLEXITY = 30
@@ -93,8 +96,47 @@ DEFAULT_N_NEIGHBORS = 15
 #: The pre-integration embedding, and the neighbour graph behind it. Kept
 #: under their own keys so the mainline `neighbors`/`X_umap` that clustering
 #: and the report depend on are never overwritten.
-UNINTEGRATED_UMAP_KEY = "X_umap_unintegrated"
 UNINTEGRATED_NEIGHBORS_KEY = "neighbors_unintegrated"
+
+
+def _requested_dimensions(config: dict[str, Any]) -> tuple[tuple[int, ...], str | None]:
+    raw = config.get("dimensions", DEFAULT_DIMENSIONS)
+    if raw == "both":
+        raw = DEFAULT_DIMENSIONS + (3,)
+    elif isinstance(raw, bool):
+        return DEFAULT_DIMENSIONS, f"dimensions={raw!r} is not one of {VALID_DIMENSIONS}"
+    elif isinstance(raw, int):
+        raw = (raw,)
+    elif isinstance(raw, str):
+        try:
+            raw = tuple(int(part.strip()) for part in raw.split(",") if part.strip())
+        except ValueError:
+            return DEFAULT_DIMENSIONS, f"dimensions={raw!r} is not a list of integers"
+
+    try:
+        dimensions = tuple(dict.fromkeys(raw))
+    except TypeError:
+        return DEFAULT_DIMENSIONS, f"dimensions={raw!r} is not a list of integers"
+    if not dimensions:
+        return DEFAULT_DIMENSIONS, "dimensions must contain at least one value"
+    invalid = tuple(dimension for dimension in dimensions if dimension not in VALID_DIMENSIONS)
+    if invalid:
+        return DEFAULT_DIMENSIONS, (
+            f"dimensions={list(invalid)!r} is not one of {VALID_DIMENSIONS}"
+        )
+    return dimensions, None
+
+
+def _embedding_key(method: str, dimensions: int, *, unintegrated: bool = False) -> str:
+    suffix = "_3d" if dimensions == 3 else ""
+    middle = "_unintegrated" if unintegrated else ""
+    return f"X_{method}{middle}{suffix}"
+
+
+def _computed_name(method: str, dimensions: int, *, unintegrated: bool = False) -> str:
+    suffix = "_3d" if dimensions == 3 else ""
+    middle = "_unintegrated" if unintegrated else ""
+    return f"{method}{middle}{suffix}"
 
 
 def _requested_perplexity(config: dict[str, Any]) -> tuple[float, str | None]:
@@ -160,6 +202,47 @@ def _resolve(payload: dict[str, Any]) -> tuple[str | None, str]:
     return config.get("adata_path"), str(override or "X_pca")
 
 
+def _run_tsne(
+    adata: Any,
+    scanpy: Any,
+    embedding_key: str,
+    perplexity: float,
+    random_state: int,
+    dimensions: int,
+) -> str:
+    key = _embedding_key("tsne", dimensions)
+    if dimensions == 2:
+        scanpy.tl.tsne(
+            adata,
+            use_rep=embedding_key,
+            perplexity=perplexity,
+            random_state=random_state,
+        )
+        return key
+
+    from sklearn.manifold import TSNE
+
+    coordinates = TSNE(
+        n_components=dimensions,
+        perplexity=perplexity,
+        random_state=random_state,
+        metric="euclidean",
+        early_exaggeration=12,
+        learning_rate=1000,
+    ).fit_transform(adata.obsm[embedding_key])
+    adata.obsm[key] = coordinates
+    adata.uns[key] = {
+        "params": {
+            "n_components": dimensions,
+            "perplexity": perplexity,
+            "random_state": random_state,
+            "metric": "euclidean",
+            "use_rep": embedding_key,
+        }
+    }
+    return key
+
+
 def run(payload: dict[str, Any]) -> dict[str, Any]:
     config = payload.get("config") or {}
     warnings: list[str] = []
@@ -174,6 +257,9 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
     method = str(config.get("method", DEFAULT_METHOD)).lower()
     if method not in VALID_METHODS:
         return _result(errors=[f"method={method!r} is not one of {VALID_METHODS}"])
+    dimensions, dimensions_problem = _requested_dimensions(config)
+    if dimensions_problem is not None:
+        return _result(errors=[dimensions_problem])
 
     try:
         adata, _ = matrix_io.load_matrix(source)
@@ -207,14 +293,21 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
         if "neighbors" not in adata.uns:
             return _result(errors=[f"{source} has no neighbor graph; run_clustering must run first"])
         try:
-            sc.tl.umap(adata, random_state=int(config.get("random_state", 0)))
+            for dimension in dimensions:
+                key = _embedding_key("umap", dimension)
+                sc.tl.umap(
+                    adata,
+                    n_components=dimension,
+                    key_added=None if dimension == 2 else key,
+                    random_state=int(config.get("random_state", 0)),
+                )
+                computed.append(_computed_name("umap", dimension))
         except Exception as exc:  # noqa: BLE001 - a failed fit is a finding, not a crash
             return _result(errors=[f"UMAP failed: {type(exc).__name__}: {exc}"])
-        computed.append("umap")
 
         # ---- the integration diagnostic ------------------------------------
-        # Computed here rather than at report time on purpose: a UMAP has a
-        # seed, a neighbour count and a package version behind it, so
+        # Computed here rather than at report time on purpose: an embedding has
+        # a seed, a neighbour count and a package version behind it, so
         # recomputing it later would produce a figure that no longer matches
         # the run it claims to describe. It is a diagnostic, not a proof —
         # it shows whether libraries mix, and cannot by itself distinguish
@@ -227,13 +320,16 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
                     n_neighbors=_neighbors_used(payload),
                     key_added=UNINTEGRATED_NEIGHBORS_KEY,
                 )
-                sc.tl.umap(
-                    adata,
-                    neighbors_key=UNINTEGRATED_NEIGHBORS_KEY,
-                    key_added=UNINTEGRATED_UMAP_KEY,
-                    random_state=int(config.get("random_state", 0)),
-                )
-                computed.append("umap_unintegrated")
+                for dimension in dimensions:
+                    key = _embedding_key("umap", dimension, unintegrated=True)
+                    sc.tl.umap(
+                        adata,
+                        neighbors_key=UNINTEGRATED_NEIGHBORS_KEY,
+                        key_added=key,
+                        n_components=dimension,
+                        random_state=int(config.get("random_state", 0)),
+                    )
+                    computed.append(_computed_name("umap", dimension, unintegrated=True))
             except Exception as exc:  # noqa: BLE001 - losing a diagnostic must not lose the run
                 warnings.append(
                     f"the pre-integration embedding could not be computed "
@@ -265,15 +361,18 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
                 f"(got {perplexity}); sklearn requires 0 < perplexity < n_obs"
             ])
         try:
-            sc.tl.tsne(
-                adata,
-                use_rep=embedding_key,
-                perplexity=perplexity,
-                random_state=int(config.get("random_state", 0)),
-            )
+            for dimension in dimensions:
+                _run_tsne(
+                    adata,
+                    sc,
+                    embedding_key,
+                    perplexity,
+                    int(config.get("random_state", 0)),
+                    dimension,
+                )
+                computed.append(_computed_name("tsne", dimension))
         except Exception as exc:  # noqa: BLE001 - a failed fit is a finding, not a crash
             return _result(errors=[f"t-SNE failed: {type(exc).__name__}: {exc}"])
-        computed.append("tsne")
         if adata.n_obs < MIN_CELLS_FOR_MEANINGFUL_TSNE:
             notes.append(
                 f"only {adata.n_obs} cells; t-SNE structure is unreliable this small "
@@ -283,19 +382,52 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
     out_dir = Path(payload.get("run_dir") or ".") / TOOL_NAME
     adata_path = matrix_io.write_h5ad(adata, out_dir / "adata.h5ad")
 
+    embedding_keys = {
+        name: {
+            str(dimension): (
+                _embedding_key(name, dimension)
+                if _computed_name(name, dimension) in computed
+                else None
+            )
+            for dimension in dimensions
+        }
+        for name in ("umap", "tsne")
+    }
+    unintegrated_umap_keys = {
+        str(dimension): (
+            _embedding_key("umap", dimension, unintegrated=True)
+            if _computed_name("umap", dimension, unintegrated=True) in computed
+            else None
+        )
+        for dimension in dimensions
+    }
     embedding_summary = {
         "method": method,
+        "dimensions": list(dimensions),
         "computed": computed,
+        "embeddings": [
+            {
+                "method": name,
+                "dimensions": dimension,
+                "key": embedding_keys[name].get(str(dimension)),
+            }
+            for name in embedding_keys
+            for dimension in dimensions
+            if embedding_keys[name].get(str(dimension)) is not None
+        ],
+        "embedding_keys": embedding_keys,
         "embedding_key": embedding_key,
         "random_state": int(config.get("random_state", 0)),
-        "umap_key": "X_umap" if "umap" in computed else None,
-        "tsne_key": "X_tsne" if "tsne" in computed else None,
+        "umap_key": embedding_keys["umap"].get("2"),
+        "tsne_key": embedding_keys["tsne"].get("2"),
+        "umap_3d_key": embedding_keys["umap"].get("3"),
+        "tsne_3d_key": embedding_keys["tsne"].get("3"),
         # Present only when integration ran on more than one batch. The report
-        # renders a before/after panel from this and says nothing about it
+        # renders a before/after panel from the 2D key and says nothing about it
         # otherwise, rather than implying the comparison was possible.
-        "unintegrated_umap_key": (
-            UNINTEGRATED_UMAP_KEY if "umap_unintegrated" in computed else None
-        ),
+        "unintegrated_umap_key": unintegrated_umap_keys.get("2"),
+        "unintegrated_umap_3d_key": unintegrated_umap_keys.get("3"),
+        "unintegrated_umap_keys": unintegrated_umap_keys,
     }
 
     return _result(
@@ -334,11 +466,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("adata_path")
     parser.add_argument("--run-dir", default="runs/manual")
     parser.add_argument("--method", choices=VALID_METHODS, default=DEFAULT_METHOD)
+    parser.add_argument(
+        "--dimensions", nargs="+", type=int, choices=VALID_DIMENSIONS,
+        default=list(DEFAULT_DIMENSIONS),
+    )
     parser.add_argument("--embedding-key", default="X_pca")
     parser.add_argument("--perplexity", type=float)
     args = parser.parse_args(argv)
 
-    config: dict[str, Any] = {"method": args.method, "embedding_key": args.embedding_key}
+    config: dict[str, Any] = {
+        "method": args.method,
+        "dimensions": args.dimensions,
+        "embedding_key": args.embedding_key,
+    }
     if args.perplexity is not None:
         config["perplexity"] = args.perplexity
 

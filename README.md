@@ -280,6 +280,8 @@ t-SNE 直接讀 embedding、不需要先跑過 clustering：
 ```bash
 --embedding-method tsne    # 只算 t-SNE
 --embedding-method both    # 兩個都算，互不覆蓋（分別存在 X_umap / X_tsne）
+--embedding-dimensions 2 3  # 同時產生 2D 和 3D（X_*_3d）
+--embedding-max-cells 50000 # browser display 上限；完整結果仍保留在 AnnData
 ```
 
 **細胞類型標註用 CellTypist，但模型要你選**。用錯組織/物種的模型不會報錯，

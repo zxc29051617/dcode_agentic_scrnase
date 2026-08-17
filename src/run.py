@@ -439,7 +439,15 @@ def build_parser() -> argparse.ArgumentParser:
     ana.add_argument("--resolution", type=float, metavar="R",
                      help="Leiden resolution (default 1.0)")
     ana.add_argument("--embedding-method", choices=["umap", "tsne", "both"], dest="method",
-                     help="which 2D embedding(s) to compute (default umap)")
+                     help="which embedding method(s) to compute (default umap)")
+    ana.add_argument(
+        "--embedding-dimensions", nargs="+", type=int, choices=[2, 3], dest="dimensions",
+        help="embedding dimensions to compute, 2, 3, or both (default 2)",
+    )
+    ana.add_argument(
+        "--embedding-max-cells", type=int, metavar="N",
+        help="maximum cells in each browser embedding display artifact (default is dimension-specific)",
+    )
     ana.add_argument("--celltypist-model", metavar="NAME",
                      help="e.g. Immune_All_Low.pkl; omit to list the candidates and stop")
     # Scored against every tissue rather than one, 14 of 15 PBMC clusters change
@@ -575,6 +583,8 @@ def main(argv: list[str] | None = None) -> int:
             "remove_doublets": args.remove_doublets,
             "resolution": args.resolution,
             "method": args.method,
+            "dimensions": args.dimensions,
+            "embedding_max_cells": args.embedding_max_cells,
             "celltypist_model": args.celltypist_model,
             "scmayomap_tissue": args.scmayomap_tissue,
             "random_state": args.random_state,

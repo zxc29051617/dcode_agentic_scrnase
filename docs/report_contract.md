@@ -35,7 +35,7 @@ explicitly rather than omitting the section silently or failing.
 |---|---|---|---|
 | M1 | Cell-retention funnel: barcodes → called cells → QC-passed → doublet-filtered → clustered | step summaries only | always |
 | M2 | QC summary (genes, UMI, %mito), before vs after filtering | `run_qc_metrics/adata.h5ad` + `apply_cell_qc_filter/adata.h5ad` | QC metrics computed |
-| M3 | Embedding by cell type, cluster, sample, confidence | final `adata.obsm[X_umap\|X_tsne]` | `run_umap` ran |
+| M3 | Embedding by cell type, cluster, sample, confidence | final `adata.obsm[X_umap\|X_umap_3d\|X_tsne\|X_tsne_3d]` plus display JSON | `run_umap` ran |
 | M4 | Marker dotplot, top N per cluster | final `uns["rank_genes_groups"]` + `X` | `find_markers` ran |
 | M5 | Cell-type composition per sample (stacked bar) | `obs["sample"]` × `obs["cell_type"]` | annotated **and** >1 sample |
 | M6 | Annotation confidence and consensus per cluster | `annotate_cells.per_cluster` | annotated |
@@ -163,10 +163,18 @@ already gotten wrong once or is the reason a prerequisite step was changed.
 
 ## Figures are files
 
-PNG or SVG written next to the report. `report.html` may inline them as data
-URIs for a single self-contained file; `report.md` always references them by
-relative path. `annotate_cells` already writes its own confidence figures —
-`build_report` links those rather than redrawing them.
+PNG or SVG written next to the report. Embedding sections also write a
+self-contained Plotly HTML figure and a JSON coordinate/observation artifact for
+each recorded 2D or 3D embedding. The HTML is the standalone/download view;
+the JSON is the input to the web app's interactive viewer. It may be a
+reproducible display subset for a large object; the full coordinates remain in
+the scientific AnnData artifact, and the JSON records `total_cells`,
+`displayed_cells`, and `downsampled`. `report.html` may inline PNG/SVG files and
+identifies Plotly documents as separate artifacts; the app-native viewer is the
+interactive rendering;
+`report.md` always references figures by relative path.
+`annotate_cells` already writes its own confidence figures — `build_report`
+links those rather than redrawing them.
 
 ## Conditions on the real test object
 
