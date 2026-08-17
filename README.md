@@ -106,14 +106,15 @@ fastqc --version && multiqc --version    # 應該是 0.12.1 和 1.35
 ```bash
 conda activate dcode-scrna
 
-# 一次性：把 reference 放進專案（symlink，不複製 32 GB）
-bash scripts/link_reference.sh human /path/to/T2T_CHM13v2_RefSeqLiftoff_v5_3
+# reference 直接放在 reference/ 底下（實體目錄，不是 symlink —— 專案外的
+# 路徑是別人刪得掉的路徑，理由見 tools/README.md）。人類的用
+# scripts/build_t2t_chm13_reference.py 建，見 reference/README.md。
 
 # 預設 policy：走到 human gate 就停，不會偷偷放行
 python -m src.run --input /path/to/filtered_feature_bc_matrix
 
 # FASTQ 路線，走完整條線（--headless-decision accept 是明確的 opt-in）
-python -m src.run --input ~/data/pbmc_1k_v3/pbmc_1k_v3_fastqs --headless-decision accept
+python -m src.run --input data/pbmc_1k_v3/pbmc_1k_v3_fastqs --headless-decision accept
 
 # 只跑單一 skill，不進 graph
 python skills/ingest_validate/ingest_validate.py ~/data/pbmc_1k_v3/pbmc_1k_v3_fastqs
@@ -157,7 +158,7 @@ CI 會另外檢查 skip 的**理由**:缺資料的 skip 可以接受,缺 depende
 ```bash
 bash scripts/get_test_data.sh          # 列出需要什麼、有什麼
 bash scripts/get_test_data.sh fastq    # 18 GB，FASTQ 路線
-bash scripts/link_reference.sh         # reference 怎麼放
+cat reference/README.md                # reference 怎麼放、人類的怎麼建
 ```
 
 `--input` 給什麼由 `ingest_validate` 自己偵測（FASTQ / MTX / .h5 / .h5ad）。

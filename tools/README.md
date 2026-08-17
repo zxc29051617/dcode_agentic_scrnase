@@ -1,12 +1,21 @@
 # tools/
 
-Third-party binaries, as symlinks. **Nothing here is in the repository.**
+Third-party binaries. **Nothing here is in the repository** — `.gitignore`
+keeps everything but this file out.
 
 ```
 tools/
-  cellranger-10.1.0 -> wherever it was unpacked
+  cellranger-10.1.0/   unpacked here, a real directory
   cellranger        -> cellranger-10.1.0/bin/cellranger
 ```
+
+Unpack it **here**, rather than elsewhere with a symlink pointing in. A
+symlink to a path outside the project is a path something else can delete: on
+2026-08-17 the install under `~/projects/` was removed while `mkref` was
+running, and the build only survived because Linux keeps a deleted-but-open
+file readable — the next step to `exec()` a new subprocess failed outright.
+Everything the pipeline needs to find Cell Ranger now checks `tools/` first
+for that reason.
 
 ## Cell Ranger
 
