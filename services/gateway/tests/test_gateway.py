@@ -540,3 +540,189 @@ def test_a_large_nested_setting_says_what_it_cut(client):
     projected = _project_settings(wide)["per_cluster"]
     assert len(projected) == MAX_SETTING_ENTRIES + 1
     assert "5 more not shown" in projected["…"]
+
+
+def test_the_run_list_names_the_step_a_waiting_run_is_sitting_in(liveness_client, monkeypatch):
+    """A row that says only "waiting" tells somebody to go and find out what.
+
+    The detail already carried this; the list is where a person decides which
+    run to open, so it is where the fact has to be.
+    """
+    client, root = liveness_client
+    _write_run(root, "at-a-gate", MID_STEP + [
+        {"event": "human_gate_open", "gate": "human_gate", "step": "fastq_qc",
+         "verdict": "warn", "reasons": [], "revisable": []},
+    ], age_seconds=30)
+    row = client.get("/v1/scientific-runs").json()[0]
+    assert row["status"] == "needs_review"
+    assert row["unfinished_step"] == "fastq_qc"
+
+
+def test_a_finished_run_names_no_unfinished_step_in_the_list(liveness_client):
+    client, root = liveness_client
+    _write_run(root, "all-done", [
+        {"event": "step_start", "step": "ingest_validate"},
+        {"event": "step_end", "step": "ingest_validate", "status": "ok"},
+    ], age_seconds=30, report=True)
+    row = client.get("/v1/scientific-runs").json()[0]
+    assert row["unfinished_step"] is None
+
+
+def test_the_list_names_the_step_a_gate_is_asking_about(liveness_client):
+    """Not the step the run is inside — a gate opens after its step has ended.
+
+    `unfinished_step` is null for a run at a gate, which is exactly the run
+    somebody scanning the list most needs to identify, so the two facts are
+    reported separately rather than one standing in for the other.
+    """
+    client, root = liveness_client
+    _write_run(root, "gated", [
+        {"event": "step_start", "step": "apply_cell_qc_filter"},
+        {"event": "step_end", "step": "apply_cell_qc_filter", "status": "ok"},
+        {"event": "human_gate_open", "gate": "human_gate", "step": "apply_cell_qc_filter",
+         "verdict": "warn", "reasons": [], "revisable": []},
+    ], age_seconds=30)
+    row = client.get("/v1/scientific-runs").json()[0]
+    assert row["status"] == "needs_review"
+    assert row["unfinished_step"] is None, "the step finished before the gate opened"
+    assert row["pending_gate_step"] == "apply_cell_qc_filter"
+
+
+def test_a_run_with_no_open_gate_names_no_gate_step(liveness_client):
+    client, root = liveness_client
+    _write_run(root, "ungated", MID_STEP, age_seconds=30)
+    row = client.get("/v1/scientific-runs").json()[0]
+    assert row["pending_gate_step"] is None
+
+
+# --- how long things take -------------------------------------------------------
+#
+# Every duration a person is shown comes from this machine's own finished runs.
+# The alternative was a table of expected durations written by hand, which is a
+# claim rather than a measurement — and one that `cellranger_count` breaks
+# immediately, since a 1k library and a 10k library differ by more than any
+# single written number survives.
+
+
+def _timed_run(root, run_id, pairs, *, report=True):
+    """A run whose steps have real start/end timestamps `pairs` seconds apart."""
+    from datetime import datetime, timedelta, timezone
+
+    t = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    events = []
+    for step, seconds in pairs:
+        events.append({"ts": t.isoformat(), "event": "step_start", "step": step})
+        t += timedelta(seconds=seconds)
+        events.append({"ts": t.isoformat(), "event": "step_end", "step": step, "status": "ok"})
+    return _write_run(root, run_id, events, age_seconds=60, report=report)
+
+
+def test_a_step_reports_how_long_it_took(liveness_client):
+    client, root = liveness_client
+    _timed_run(root, "timed", [("ingest_validate", 3), ("cellranger_count", 1800)])
+    steps = {s["step"]: s for s in client.get("/v1/scientific-runs/timed/steps").json()}
+    assert steps["ingest_validate"]["duration_seconds"] == 3
+    assert steps["cellranger_count"]["duration_seconds"] == 1800
+
+
+#: `MID_STEP` predates timing and carries no `ts`, which the executor always
+#: writes. Timing tests use this instead, so they exercise the shape a real
+#: audit log has rather than one only the older fixtures do.
+TIMED_MID_STEP = [
+    {"ts": "2026-01-01T00:00:00+00:00", "event": "step_start", "step": "ingest_validate"},
+    {"ts": "2026-01-01T00:00:05+00:00", "event": "step_end", "step": "ingest_validate", "status": "ok"},
+    {"ts": "2026-01-01T00:00:06+00:00", "event": "step_start", "step": "fastq_qc"},
+]
+
+
+def test_a_step_still_running_has_no_duration(liveness_client):
+    """Absent, not zero. It has not taken no time; it has not finished."""
+    client, root = liveness_client
+    _write_run(root, "midway", TIMED_MID_STEP, age_seconds=30)
+    steps = {s["step"]: s for s in client.get("/v1/scientific-runs/midway/steps").json()}
+    assert steps["fastq_qc"]["duration_seconds"] is None
+    assert steps["ingest_validate"]["duration_seconds"] is not None
+
+
+def test_a_running_run_says_how_long_it_has_been_in_this_step(liveness_client):
+    """"In cellranger_count" and "in cellranger_count for 40 minutes" are
+    different facts, and only the second tells a working run from a stuck one."""
+    client, root = liveness_client
+    _write_run(root, "working", TIMED_MID_STEP, age_seconds=30)
+    body = client.get("/v1/scientific-runs/working").json()
+    assert body["unfinished_step"] == "fastq_qc"
+    assert body["current_step_started_at"] is not None
+    assert body["current_step_elapsed_seconds"] > 0
+
+
+def test_a_finished_run_is_not_in_any_step(liveness_client):
+    client, root = liveness_client
+    _timed_run(root, "done", [("ingest_validate", 3)])
+    body = client.get("/v1/scientific-runs/done").json()
+    assert body["current_step_started_at"] is None
+    assert body["current_step_elapsed_seconds"] is None
+
+
+def test_one_run_is_not_enough_to_call_a_duration_typical(liveness_client):
+    """A single sample presented as "usually takes" is a claim this projection
+    has not earned. The same step varies by minutes between runs."""
+    client, root = liveness_client
+    _timed_run(root, "only-one", [("run_pca", 10)])
+    body = client.get("/v1/step-timings").json()
+    assert body["steps"] == {}
+    assert body["runs_measured"] == 1
+    assert body["total_median_seconds"] is None
+
+
+def test_timings_are_reported_with_their_sample_size_and_range(liveness_client):
+    """"About 30 minutes" drawn from runs of 12 and 48 is a different thing to
+    know than one drawn from runs of 29 and 31."""
+    client, root = liveness_client
+    _timed_run(root, "run-a", [("run_pca", 10)])
+    _timed_run(root, "run-b", [("run_pca", 30)])
+    entry = client.get("/v1/step-timings").json()["steps"]["run_pca"]
+    assert entry == {"n": 2, "median_seconds": 20.0, "min_seconds": 10.0, "max_seconds": 30.0}
+
+
+def test_a_run_that_stopped_at_a_gate_does_not_set_the_expectation(liveness_client):
+    """It spent an unbounded amount of that step's wall-clock waiting for a
+    person. Counting it would make every future estimate wrong the same way."""
+    client, root = liveness_client
+    _timed_run(root, "fine-a", [("run_pca", 10)])
+    _timed_run(root, "fine-b", [("run_pca", 30)])
+    _write_run(root, "at-gate", [
+        {"ts": "2026-01-01T00:00:00+00:00", "event": "step_start", "step": "run_pca"},
+        {"ts": "2026-01-02T00:00:00+00:00", "event": "step_end", "step": "run_pca", "status": "ok"},
+        {"event": "human_gate_open", "gate": "human_gate", "step": "run_pca",
+         "verdict": "warn", "reasons": [], "revisable": []},
+    ], age_seconds=60)
+    entry = client.get("/v1/step-timings").json()["steps"]["run_pca"]
+    assert entry["n"] == 2, "the gated run was counted"
+    assert entry["max_seconds"] == 30.0
+
+
+def test_an_unparseable_timestamp_does_not_take_the_step_record_down(liveness_client):
+    """Timing is a convenience; the step record it hangs off is not."""
+    client, root = liveness_client
+    _write_run(root, "bad-ts", [
+        {"ts": "not-a-time", "event": "step_start", "step": "run_pca"},
+        {"ts": "also-not", "event": "step_end", "step": "run_pca", "status": "ok"},
+    ], age_seconds=60, report=True)
+    steps = client.get("/v1/scientific-runs/bad-ts/steps").json()
+    assert steps[0]["step"] == "run_pca"
+    assert steps[0]["duration_seconds"] is None
+
+
+def test_a_step_with_no_timestamp_at_all_is_absent_rather_than_guessed(liveness_client):
+    """Older runs, written before `ts` was recorded, still list their steps.
+
+    The one thing this must not do is invent a duration for them — a made-up
+    number here would flow straight into `/v1/step-timings` and become the
+    expectation shown to somebody deciding whether to keep waiting.
+    """
+    client, root = liveness_client
+    _write_run(root, "no-ts", MID_STEP, age_seconds=30)
+    body = client.get("/v1/scientific-runs/no-ts").json()
+    assert body["current_step_elapsed_seconds"] is None
+    steps = {s["step"]: s for s in client.get("/v1/scientific-runs/no-ts/steps").json()}
+    assert steps["ingest_validate"]["duration_seconds"] is None

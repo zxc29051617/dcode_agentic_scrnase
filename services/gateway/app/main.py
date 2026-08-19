@@ -38,6 +38,20 @@ def list_runs() -> list[dict]:
     return read_model.list_runs(settings.runs_root)
 
 
+@app.get("/v1/step-timings")
+def step_timings() -> dict:
+    """How long each step has actually taken on this machine.
+
+    Registered above the `/{run_id}` route so `step-timings` is never read as
+    a run id. Drawn only from completed runs, and reported with the sample
+    size and range so a caller can decline to show an estimate it does not
+    trust — which is why this exists rather than a table of expected durations
+    written by hand.
+    """
+    settings = get_settings()
+    return read_model.step_timings(settings.runs_root)
+
+
 def _not_found(run_id: str) -> HTTPException:
     # Identical response whether `run_id` names nothing or was a path-traversal
     # attempt — see `read_model.resolve_run_dir`. Distinguishing them here

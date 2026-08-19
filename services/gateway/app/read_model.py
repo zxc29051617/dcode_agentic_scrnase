@@ -209,6 +209,71 @@ def _derive_status(
     return "running"
 
 
+def _parse_ts(value: Any) -> float | None:
+    """An audit timestamp as a POSIX float, or None if it is not one.
+
+    Every event carries `ts` as ISO-8601 with an offset. A run written by an
+    older executor, or a line somebody hand-edited, must not take the timing
+    projection down with it — timing is a convenience, and the step record it
+    hangs off is not.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value).timestamp()
+    except ValueError:
+        return None
+
+
+def _step_durations(events: list[dict[str, Any]]) -> dict[str, float]:
+    """How long each finished step took, in seconds, from its own audit pair.
+
+    Measured from `step_start` to `step_end` for the same step. A step with no
+    end is absent rather than zero: it is still running, or the run died in it,
+    and both of those are questions this dict does not answer.
+
+    Note the executor re-emits `step_start` when a step is retried after a
+    `revise`, so the *last* start before the end is the one that produced the
+    result on disk. That is the duration a person is asking about.
+    """
+    starts: dict[str, float] = {}
+    out: dict[str, float] = {}
+    for event in events:
+        name = event.get("step")
+        if not isinstance(name, str):
+            continue
+        stamp = _parse_ts(event.get("ts"))
+        if stamp is None:
+            continue
+        if event.get("event") == "step_start":
+            starts[name] = stamp
+        elif event.get("event") == "step_end" and name in starts:
+            out[name] = max(0.0, stamp - starts.pop(name))
+    return out
+
+
+def _current_step_started(events: list[dict[str, Any]]) -> float | None:
+    """When the step a run is currently inside began, or None.
+
+    Paired with `_unfinished_step`: together they are "what is it doing, and
+    for how long". Without the second half a run that has been in
+    `cellranger_count` for forty minutes and one that entered it twenty seconds
+    ago look identical, and the first is normal while the second is the whole
+    of what somebody wants to know.
+    """
+    started: float | None = None
+    open_step: str | None = None
+    for event in events:
+        name = event.get("step")
+        if not isinstance(name, str):
+            continue
+        if event.get("event") == "step_start":
+            open_step, started = name, _parse_ts(event.get("ts"))
+        elif event.get("event") == "step_end" and name == open_step:
+            open_step, started = None, None
+    return started if open_step else None
+
+
 def _judge_verdicts(events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """Latest judge verdict per step, keyed by step name."""
     verdicts: dict[str, dict[str, Any]] = {}
@@ -345,6 +410,19 @@ def list_runs(runs_root: Path) -> list[dict[str, Any]]:
             # threshold that produced it can be second-guessed by whoever is
             # looking at the row rather than only trusted.
             "last_activity_at": _iso(activity),
+            # Which step a run is sitting inside, in the *list* and not only in
+            # the detail. It is what makes a row actionable: "waiting" tells
+            # somebody to open it, "waiting at apply_cell_qc_filter" tells them
+            # what they are about to be asked. Already computed for the detail
+            # from the same events, so this costs a function call, not a read.
+            "unfinished_step": _unfinished_step(events),
+            # Which step the run is *asking about*, which is not the same thing
+            # as the step it is inside. A gate opens after its step has already
+            # finished — `apply_cell_qc_filter` writes `step_end` and only then
+            # asks whether to apply the cut — so `unfinished_step` is null for
+            # exactly the runs a person most needs to identify. Only the name
+            # travels; the evidence stays in the detail.
+            "pending_gate_step": (_pending_gate(events) or {}).get("step"),
             "steps_recorded": len(_step_order(events)),
             **_headline(child),
         })
@@ -373,6 +451,15 @@ def get_run_snapshot(runs_root: Path, run_id: str) -> dict[str, Any] | None:
         # Named so a reader of an `interrupted` run knows where it stopped, and
         # so `--resume-from` has somewhere to start from.
         "unfinished_step": _unfinished_step(events),
+        # How long it has been in that step. "In cellranger_count" and "in
+        # cellranger_count for 40 minutes" are different facts, and only the
+        # second one lets somebody tell a working run from a stuck one — which
+        # is the question every person watching a long step actually has.
+        "current_step_started_at": _iso(_current_step_started(events)),
+        "current_step_elapsed_seconds": (
+            None if _current_step_started(events) is None
+            else round(time.time() - _current_step_started(events), 1)
+        ),
         "started_at": (metadata.get("runtime") or {}).get("started_at"),
         "species": (metadata.get("source") or {}).get("config", {}).get("species"),
         "steps": [
@@ -578,6 +665,7 @@ def get_steps(runs_root: Path, run_id: str) -> list[dict[str, Any]] | None:
     events = _read_audit(run_dir)
     step_status = _step_status(events)
     verdicts = _judge_verdicts(events)
+    durations = _step_durations(events)
     rows = []
     for step in _step_order(events):
         output = _read_json(run_dir / step / "output.json") or {}
@@ -602,6 +690,10 @@ def get_steps(runs_root: Path, run_id: str) -> list[dict[str, Any]] | None:
             # did. A scientific reservation that reaches disk and not the screen
             # is a reservation nobody acts on.
             "notes": output.get("notes") or [],
+            # How long it took, from its own audit pair. Absent rather than
+            # zero for a step with no recorded end — still running, or the run
+            # died inside it, and neither is "took no time".
+            "duration_seconds": durations.get(step),
             # How this step ran: the settings, thresholds and choices behind the
             # numbers. `docs/report_contract.md` calls this the tier that is the
             # reason the pipeline exists, and it was already on disk.
@@ -622,6 +714,73 @@ def get_steps(runs_root: Path, run_id: str) -> list[dict[str, Any]] | None:
             ),
         })
     return rows
+
+
+#: How many finished runs a per-step timing is drawn from before it is offered
+#: as an expectation. One run is an anecdote — the same step on the same data
+#: varies by minutes between runs on a loaded machine — and a single sample
+#: presented as "usually takes" is a claim this projection has not earned.
+MIN_RUNS_FOR_TIMING = 2
+
+
+def step_timings(runs_root: Path) -> dict[str, Any]:
+    """What each step has actually taken on this machine, from finished runs.
+
+    Every number a person is shown about how long something will take comes
+    from here, and therefore from measurement rather than from a sentence
+    somebody wrote once. That matters more than it sounds: `cellranger_count`
+    on a 1k-cell library and on a 10k-cell one differ by a factor that no
+    hardcoded estimate survives, and the machine's own history is the only
+    thing that knows which one this is.
+
+    Only completed runs contribute. A run that was interrupted inside a step
+    has no end for it, and a run that was stopped at a gate spent an unbounded
+    amount of that step's wall-clock waiting for a person — counting either as
+    "how long the step takes" would make every future estimate wrong in the
+    same direction.
+
+    Reported with `n` and the full range, not a lone median. A reader deciding
+    whether to wait or investigate needs to know whether "about 30 minutes" was
+    drawn from two runs that took 12 and 48.
+    """
+    per_step: dict[str, list[float]] = {}
+    contributing = 0
+    for child in sorted(runs_root.iterdir()) if runs_root.is_dir() else []:
+        if not child.is_dir():
+            continue
+        events = _read_audit(child)
+        if not events:
+            continue
+        if _derive_status(events, has_report=_has_report(child),
+                          last_activity=_last_activity(child)) != "completed":
+            continue
+        contributing += 1
+        for step, seconds in _step_durations(events).items():
+            per_step.setdefault(step, []).append(seconds)
+
+    steps: dict[str, Any] = {}
+    for step, samples in per_step.items():
+        if len(samples) < MIN_RUNS_FOR_TIMING:
+            continue
+        ordered = sorted(samples)
+        mid = len(ordered) // 2
+        median = ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2
+        steps[step] = {
+            "n": len(ordered),
+            "median_seconds": round(median, 1),
+            "min_seconds": round(ordered[0], 1),
+            "max_seconds": round(ordered[-1], 1),
+        }
+    return {
+        "steps": steps,
+        "runs_measured": contributing,
+        "min_runs_required": MIN_RUNS_FOR_TIMING,
+        # Named so a caller can say "no estimate yet" rather than rendering an
+        # empty object as "instant".
+        "total_median_seconds": (
+            round(sum(v["median_seconds"] for v in steps.values()), 1) if steps else None
+        ),
+    }
 
 
 def get_report(runs_root: Path, run_id: str) -> dict[str, Any] | None:

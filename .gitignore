@@ -1,7 +1,10 @@
 __pycache__/
 *.pyc
 .claude/settings.local.json
-runs/
+# Anchored. Unanchored, `runs/` matches a directory of that name at any depth —
+# it was silently excluding `apps/web/app/api/runs/`, a Route Handler, from
+# every commit. Scientific run output is only ever at the repository root.
+/runs/
 .claude/settings.local.json.tmp.*
 
 # References are 20-32 GB and machine-specific; reference/README.md says how to get one.

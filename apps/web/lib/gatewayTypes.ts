@@ -20,6 +20,14 @@ export type RunSummary = {
    * rather than asking to be taken at its word.
    */
   last_activity_at: string | null;
+  /** The step a run is sitting inside, when it is sitting inside one. Present
+   *  in the list as well as the detail, because the list is where somebody
+   *  decides which run to open. */
+  unfinished_step: string | null;
+  /** The step an open gate is asking about. Distinct from `unfinished_step`:
+   *  a gate opens after its step has already ended, so a run waiting for a
+   *  person has one of these and not the other. */
+  pending_gate_step: string | null;
   steps_recorded: number;
   cells: number | null;
   clusters: number | null;
@@ -56,6 +64,10 @@ export type RunSnapshot = {
   /** The step a run stopped inside, when it stopped inside one. Where
    *  `--resume-from` would pick it up. */
   unfinished_step: string | null;
+  /** When the step it is currently inside began, or null if it is not inside one. */
+  current_step_started_at: string | null;
+  /** How long it has been in that step. Null when no step is open. */
+  current_step_elapsed_seconds: number | null;
   has_report: boolean;
   warn_count: number;
   fail_count: number;
@@ -160,6 +172,10 @@ export type StepRecord = {
    * the step ran soundly and by that measure it did.
    */
   notes?: string[];
+  /** How long this step took, from its own audit pair. Absent for a step that
+   *  has not ended — still running, or the run died inside it. Neither of
+   *  those is "took no time". */
+  duration_seconds?: number | null;
   /** How the step ran: its settings, thresholds and choices. Never a path. */
   settings?: Record<string, unknown>;
   /** Figures this step's numbers produced, by artifact id. */
@@ -183,4 +199,22 @@ export type Provenance = {
   study_design: Record<string, unknown>;
   judge_sessions: unknown[];
   revisions: unknown[];
+};
+
+/**
+ * How long each step has actually taken on this machine.
+ *
+ * Every duration shown to a person comes from here. `steps` omits any step the
+ * gateway has fewer than `min_runs_required` finished runs for, so an absent
+ * entry means "not measured yet" and never "instant" — the UI has to say the
+ * first rather than imply the second.
+ */
+export type StepTimings = {
+  steps: Record<
+    string,
+    { n: number; median_seconds: number; min_seconds: number; max_seconds: number }
+  >;
+  runs_measured: number;
+  min_runs_required: number;
+  total_median_seconds: number | null;
 };
