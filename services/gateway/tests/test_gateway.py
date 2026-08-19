@@ -463,3 +463,80 @@ def test_an_unreadable_threshold_falls_back_to_the_default(liveness_client, monk
     _write_run(root, "typo-env", MID_STEP, age_seconds=10 * 86400)
     rows = {r["scientific_run_id"]: r for r in client.get("/v1/scientific-runs").json()}
     assert rows["typo-env"]["status"] == "interrupted"
+
+
+# --- step traceability: how a step ran, not only that it did ---------------------
+#
+# `docs/report_contract.md` calls this tier — "who decided what, and can it be
+# rerun" — the reason the pipeline exists. Every field of it was already being
+# written to disk and none of it was projected, so the app could show that a
+# step passed and not what it passed with.
+
+
+def test_a_step_reports_the_settings_it_ran_with(client):
+    steps = {s["step"]: s for s in client.get("/v1/scientific-runs/demo-2026-0003/steps").json()}
+    assert steps, "the fixture should record some steps"
+    assert all("settings" in s for s in steps.values())
+
+
+def test_a_step_reports_its_own_reservations(client):
+    """A judge can return `pass` while the step itself recorded a doubt.
+
+    `run_clustering` writes "the smallest cluster has only 8 cells; may be
+    noise rather than a population" and is judged `pass`, because the judge is
+    asked whether the step ran soundly and by that measure it did. Both facts
+    have to reach the screen; only one of them used to.
+    """
+    steps = {s["step"]: s for s in client.get("/v1/scientific-runs/demo-2026-0003/steps").json()}
+    assert all(isinstance(s["notes"], list) for s in steps.values())
+
+
+def test_settings_never_carry_a_host_path(client):
+    """The same rule `get_provenance` follows for `source.command`."""
+    body = client.get("/v1/scientific-runs/demo-2026-0003/steps").json()
+    text = json.dumps([s["settings"] for s in body])
+    assert "/home/" not in text and "/tmp/" not in text
+    for step in body:
+        for key in step["settings"]:
+            assert not key.endswith("_path"), f"{step['step']}.{key} is a path"
+            assert not key.endswith("_paths"), f"{step['step']}.{key} is a path"
+
+
+def test_figures_are_named_by_artifact_id_not_by_filename(client):
+    """An id the content endpoint accepts, not a path the browser assembles.
+
+    `list_artifacts` is the whole access-control surface for run files: an id
+    absent from it cannot be fetched. Building figure references any other way
+    would be a second way to name a file.
+    """
+    body = client.get("/v1/scientific-runs/demo-2026-0003/steps").json()
+    served = {
+        a["artifact_id"]
+        for a in client.get("/v1/scientific-runs/demo-2026-0003/artifacts").json()
+    }
+    for step in body:
+        for figure in step["figures"]:
+            assert figure["artifact_id"] in served, (
+                f"{step['step']} names a figure the artifact endpoint will not serve"
+            )
+
+
+def test_a_step_with_no_figure_of_its_own_reports_none(client):
+    """Absent, not guessed. Several steps legitimately produce no figure, and a
+    prefix this projection has no entry for is shown against nothing rather
+    than matched by a name that happens to look close."""
+    steps = {s["step"]: s for s in client.get("/v1/scientific-runs/demo-2026-0003/steps").json()}
+    for step in steps.values():
+        assert isinstance(step["figures"], list)
+
+
+def test_a_large_nested_setting_says_what_it_cut(client):
+    """A `per_cluster` table on a real run is long. It is bounded, and the
+    projection declares the cut rather than truncating in silence — the rule
+    `src/nodes.py` already applies when it abridges output for the judge."""
+    from app.read_model import MAX_SETTING_ENTRIES, _project_settings
+
+    wide = {"per_cluster": {str(i): i for i in range(MAX_SETTING_ENTRIES + 5)}}
+    projected = _project_settings(wide)["per_cluster"]
+    assert len(projected) == MAX_SETTING_ENTRIES + 1
+    assert "5 more not shown" in projected["…"]

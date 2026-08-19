@@ -27,7 +27,7 @@ export default async function WorkflowPage({ params }: { params: Promise<{ id: s
       </div>
 
       <div className="panel">
-        <WorkflowTimeline steps={steps} />
+        <WorkflowTimeline steps={steps} runId={id} />
       </div>
     </RunShell>
   );

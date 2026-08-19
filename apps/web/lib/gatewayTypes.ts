@@ -151,6 +151,19 @@ export type StepRecord = {
     errors: string[];
     metrics: Record<string, unknown>;
   };
+  /**
+   * What the step said about its own result, in its own words.
+   *
+   * Distinct from a judge verdict and from a warning. `run_clustering` records
+   * "the smallest cluster has only 8 cells; may be noise rather than a
+   * population" and is still judged `pass`, because the judge is asked whether
+   * the step ran soundly and by that measure it did.
+   */
+  notes?: string[];
+  /** How the step ran: its settings, thresholds and choices. Never a path. */
+  settings?: Record<string, unknown>;
+  /** Figures this step's numbers produced, by artifact id. */
+  figures?: { artifact_id: string; name: string; label: string }[];
   upstream_detail?: UpstreamDetail;
 };
 

@@ -479,6 +479,98 @@ UPSTREAM_DETAIL: dict[str, Any] = {
 }
 
 
+#: Figure filenames are named for the report section they illustrate — `m3_`,
+#: `a4_` — rather than for the step that produced the numbers behind them, so
+#: attributing one to a step needs a table. It lives here because it is a fact
+#: about `build_report`'s naming and nothing else knows it.
+#:
+#: Read the other way round on purpose: a step may own several figures, and
+#: several steps may legitimately own none. A prefix absent from this table is
+#: simply not shown against any step, rather than guessed at from its name.
+FIGURES_BY_STEP: dict[str, tuple[str, ...]] = {
+    "run_qc_metrics": ("m2_qc", "a2_qc_per_sample"),
+    "apply_cell_qc_filter": ("m1_funnel", "a3_filter_reasons"),
+    "detect_doublets": ("a4_doublets",),
+    "normalize_hvg_prepare": ("a5_pca_hvg",),
+    "run_pca": ("a5_pca_hvg",),
+    "run_umap": ("m3_umap", "m3_umap_3d", "m3_tsne", "m3_tsne_3d"),
+    "find_markers": ("m4_markers",),
+    "annotate_cells": ("m6_confidence",),
+    "cross_check_annotation": ("m7_cross_check",),
+}
+
+#: Keys every step's `output.json` carries that are not the step's own
+#: settings: bookkeeping, routing hints, and paths.
+#:
+#: Paths are excluded because they are absolute on the machine that ran the
+#: analysis, and this service must not repeat one into a browser response —
+#: the same rule `get_provenance` follows for `source.command`.
+_NOT_SETTINGS = frozenset({
+    "metrics", "warnings", "errors", "notes", "recommended_next_tool",
+    "adata_path", "adata_paths", "marker_table_path", "cell_flags_path",
+    "markdown_path", "html_path", "model_path", "figure_paths",
+    "embedding_data_paths", "matrix_path", "matrix_paths", "report_dir",
+    "multiqc_report", "outs", "bam", "web_summary", "reports", "libraries",
+})
+
+#: How many entries of a nested settings block are projected. A `per_cluster`
+#: table on a 15-cluster run is large and belongs on the step's own page, not
+#: in a timeline row; the projection says what it cut rather than truncating in
+#: silence.
+MAX_SETTING_ENTRIES = 12
+
+
+def _project_settings(output: dict[str, Any]) -> dict[str, Any]:
+    """The values that describe *how this step ran*, as a browser may see them.
+
+    This is the third tier `docs/report_contract.md` calls the reason the
+    pipeline exists — "who decided what, and can it be rerun" — and every field
+    of it was already being written to disk. It simply was not being projected,
+    so the app could show that a step passed and not what it passed *with*.
+    """
+    settings: dict[str, Any] = {}
+    for key, value in output.items():
+        if key in _NOT_SETTINGS or key.endswith("_path") or key.endswith("_paths"):
+            continue
+        if isinstance(value, dict):
+            items = list(value.items())
+            projected = {k: v for k, v in items[:MAX_SETTING_ENTRIES]}
+            if len(items) > MAX_SETTING_ENTRIES:
+                projected["…"] = f"{len(items) - MAX_SETTING_ENTRIES} more not shown"
+            settings[key] = projected
+        elif isinstance(value, list):
+            settings[key] = value[:MAX_SETTING_ENTRIES]
+        else:
+            settings[key] = value
+    return settings
+
+
+def _step_figures(run_dir: Path, step: str) -> list[dict[str, str]]:
+    """The figures this step produced, as artifact ids the browser may fetch.
+
+    Ids come from `artifacts.list_artifacts`, which is the whole access-control
+    surface for run files — an id that does not appear there cannot be fetched.
+    Building them any other way here would be a second way to name a file.
+    """
+    prefixes = FIGURES_BY_STEP.get(step)
+    if not prefixes:
+        return []
+    from . import artifacts as artifact_store
+
+    found: list[dict[str, str]] = []
+    for entry in artifact_store.list_artifacts(run_dir):
+        if entry["kind"] != "figure":
+            continue
+        stem = Path(entry["name"]).stem
+        if stem in prefixes:
+            found.append({
+                "artifact_id": entry["artifact_id"],
+                "name": entry["name"],
+                "label": entry["label"],
+            })
+    return found
+
+
 def get_steps(runs_root: Path, run_id: str) -> list[dict[str, Any]] | None:
     run_dir = resolve_run_dir(runs_root, run_id)
     if run_dir is None:
@@ -495,13 +587,30 @@ def get_steps(runs_root: Path, run_id: str) -> list[dict[str, Any]] | None:
             "verdict": verdicts.get(step),
             # A projection, not the raw output — an output.json can be large
             # and step-specific; the gateway promises a bounded shape, so it
-            # exposes exactly these three fields and nothing else the step
-            # happened to return.
+            # exposes exactly these fields and nothing else the step happened
+            # to return.
             "output_summary": {
                 "warnings": output.get("warnings") or [],
                 "errors": output.get("errors") or [],
                 "metrics": output.get("metrics") or {},
             },
+            # What the step said about its own result, in its own words. These
+            # were recorded from the beginning and shown nowhere: `run_clustering`
+            # writes "the smallest cluster has only 8 cells; may be noise rather
+            # than a population" while its judge returns `pass`, because the
+            # judge is asked whether the step ran soundly and by that measure it
+            # did. A scientific reservation that reaches disk and not the screen
+            # is a reservation nobody acts on.
+            "notes": output.get("notes") or [],
+            # How this step ran: the settings, thresholds and choices behind the
+            # numbers. `docs/report_contract.md` calls this the tier that is the
+            # reason the pipeline exists, and it was already on disk.
+            "settings": _project_settings(output),
+            # The figures this step's numbers produced, by artifact id. They all
+            # live in `build_report/figures/` under report-section names, so
+            # without this a person looking at `detect_doublets` has to know
+            # that its plot is called `a4_doublets`.
+            "figures": _step_figures(run_dir, step),
             # Present only for the upstream steps that carry their own QC
             # numbers (FastQC per file, Cell Ranger per library). Absent —
             # not empty — for every other step, so a reader can tell "this
