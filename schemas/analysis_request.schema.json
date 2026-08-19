@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dcode.local/schemas/analysis_request.schema.json",
+  "title": "Analysis request",
+  "description": "One proposed scRNA-seq analysis, as the controller stores and returns it. Every field name here is the same string in services/controller/app/domain.py, in apps/web/lib/controllerTypes.ts and in the intake conversation. `analysis` holds the public vocabulary, which services/controller/app/domain.py::to_executor_config maps to executor config keys; it is never passed through as a config dict.",
+  "type": "object",
+  "required": [
+    "request_id",
+    "status",
+    "analysis",
+    "created_at",
+    "updated_at",
+    "missing_questions",
+    "validation_errors"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "request_id": {
+      "type": "string",
+      "pattern": "^ar_[a-z0-9]+$",
+      "description": "One proposed analysis request. Never a conversation id and never a scientific run id."
+    },
+    "conversation_id": {
+      "type": ["string", "null"],
+      "description": "The CopilotKit conversation this draft was prepared in. A conversation may prepare many requests; it is not a run identity and is never used as a checkpoint thread key."
+    },
+    "input_ref": {
+      "type": ["string", "null"],
+      "pattern": "^(dataset:[A-Za-z0-9_.-]+|local:[0-9a-f]{16})$",
+      "description": "A server-side reference, never a filesystem path. `dataset:` names a catalog entry; `local:` is an opaque token this server issued for a path that passed its allowlist. Only the controller can resolve either."
+    },
+    "project": {
+      "type": ["string", "null"],
+      "description": "What the report titles itself with."
+    },
+    "species": {
+      "type": ["string", "null"],
+      "description": "Resolves the reference genome and the QC gene sets. Validated against src/species.py, including its aliases."
+    },
+    "research_question": {
+      "type": ["string", "null"],
+      "description": "What this analysis is for, in the requester's own words. Recorded with the request and shown at review. It is never converted into a config value: it can only cause the intake to ask a question, never to set a parameter."
+    },
+    "study_design_ref": {
+      "type": ["string", "null"],
+      "pattern": "^manifest:[A-Za-z0-9_.-]+$",
+      "description": "A server-side manifest reference. A manifest path cannot be supplied directly by a caller or a model."
+    },
+    "analysis": {
+      "$ref": "#/$defs/analysisSettings"
+    },
+    "status": {
+      "enum": [
+        "draft",
+        "validated",
+        "awaiting_confirmation",
+        "queued",
+        "running",
+        "needs_review",
+        "completed",
+        "failed",
+        "cancelled",
+        "rejected"
+      ]
+    },
+    "config_digest": {
+      "type": ["string", "null"],
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "Taken over exactly what decides the execution. Confirmation must carry it back; a mismatch is refused so a draft cannot be confirmed under a version nobody read."
+    },
+    "created_by": {
+      "enum": ["conversation", "operator", "api"]
+    },
+    "created_at": { "type": "string" },
+    "updated_at": { "type": "string" },
+    "missing_questions": {
+      "type": "array",
+      "description": "Information the request needs and does not have. A required entry blocks confirmation. These are questions rather than defaults on purpose: a filled-in species or manifest produces a request that looks complete and describes an analysis nobody asked for.",
+      "items": {
+        "type": "object",
+        "required": ["field", "question", "required"],
+        "additionalProperties": false,
+        "properties": {
+          "field": { "type": "string" },
+          "question": { "type": "string" },
+          "required": { "type": "boolean" },
+          "options": { "type": "array", "items": {} }
+        }
+      }
+    },
+    "validation_errors": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "This request is wrong and nothing can start. Distinct from missing_questions, which mean it is incomplete."
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "This request will run, and here is what it will do that may not have been meant — a gate it will stop at, a hint that is only a hint."
+    },
+    "unsupported": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Analyses asked for that this workflow has no step for. Reported rather than silently dropped, and never presented as supported."
+    },
+    "scientific_run_id": {
+      "type": ["string", "null"],
+      "description": "Set at confirmation, before the worker starts, so a crash between queueing and running leaves a run directory the job already claims. Distinct from request_id, conversation_id and job_id."
+    }
+  },
+  "$defs": {
+    "analysisSettings": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The public analysis vocabulary. Only these names exist; anything else is a validation error rather than a config key that reaches the executor.",
+      "properties": {
+        "embedding_method": {
+          "enum": ["umap", "tsne", "both"],
+          "description": "Executor config key: method"
+        },
+        "embedding_dimensions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "enum": [2, 3] },
+          "description": "Executor config key: dimensions"
+        },
+        "embedding_max_cells": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Executor config key: embedding_max_cells"
+        },
+        "integration_mode": {
+          "enum": ["none", "harmony"],
+          "description": "Executor config key: integration_mode. `harmony` requires study_design_ref: correction runs on the manifest's technical_batch and nothing else."
+        },
+        "resolution": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Executor config key: resolution (Leiden)"
+        },
+        "celltypist_model": {
+          "type": "string",
+          "description": "Executor config key: celltypist_model. Left unset, annotate_cells lists its candidates and stops at a gate rather than guessing a model."
+        },
+        "scmayomap_tissue": {
+          "type": "string",
+          "description": "Executor config key: scmayomap_tissue. Left unset, cross_check_annotation lists its candidates and stops."
+        },
+        "random_state": { "type": "integer" },
+        "min_genes": { "type": "number" },
+        "min_counts": { "type": "number" },
+        "max_pct_mito": { "type": "number" },
+        "remove_doublets": { "type": "boolean" },
+        "annotation": {
+          "const": true,
+          "description": "annotate_cells is on the mainline and every route that produces a report runs it. `false` is reported as unsupported rather than accepted and ignored."
+        },
+        "doublet_detection": {
+          "const": true,
+          "description": "detect_doublets is on the mainline. `false` is reported as unsupported."
+        }
+      }
+    }
+  }
+}

@@ -56,6 +56,8 @@ from tests import (  # noqa: E402
     test_manifest,
     test_study_design,
     test_t2t_reference_builder,
+    test_service_seam,
+    test_web_intake_flow,
 )
 
 #: Roughly pipeline order. Each module appears once — a repeat costs the time
@@ -106,6 +108,11 @@ MODULES = (
     test_scientific_bugfixes,
     test_graph_smoke,
     test_t2t_reference_builder,
+    # The product boundary: the seam the web front end reaches the executor
+    # through, and the whole preview -> confirm -> gate path across the two
+    # environments it actually runs in.
+    test_service_seam,
+    test_web_intake_flow,
 )
 
 

@@ -5,7 +5,89 @@ import { useEffect, useMemo, useState } from "react";
 import type { Data, Layout } from "plotly.js";
 import type { ArtifactEntry } from "@/lib/gatewayTypes";
 
-const Plot = dynamic(() => import("react-plotly.js"), { ssr: false });
+/** How tall the plot is, in one place, so the placeholder reserves exactly it. */
+const PLOT_HEIGHT = 650;
+
+/**
+ * A placeholder that occupies the plot's own height while something is pending.
+ *
+ * The size is the point. Plotly draws into a box this tall, and a placeholder
+ * that is any shorter makes the page jump when the real chart arrives — which
+ * reads as a second bug on top of the wait.
+ */
+function PlotPending({ label }: { label: string }) {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      data-testid="embedding-loading"
+      style={{
+        height: `${PLOT_HEIGHT}px`,
+        display: "grid",
+        placeItems: "center",
+        alignContent: "center",
+        gap: "0.9rem",
+        border: "1px dashed var(--line, #d5dae2)",
+        borderRadius: "6px",
+      }}
+    >
+      {/* A determinate-looking bar rather than a spinner: this wait is seconds
+          long and a spinner that never fills reads as stuck. `prefers-reduced-
+          motion` drops the animation and leaves a static bar, which still says
+          "something belongs here" — the whole job of this element. */}
+      <div
+        aria-hidden="true"
+        style={{
+          width: "min(240px, 40%)",
+          height: "3px",
+          borderRadius: "999px",
+          background: "var(--line, #d5dae2)",
+          overflow: "hidden",
+          position: "relative",
+        }}
+      >
+        <span className="embedding-pending-bar" />
+      </div>
+      <span className="subtle">{label}</span>
+      <style>{`
+        .embedding-pending-bar {
+          position: absolute; inset: 0; display: block;
+          background: currentColor; opacity: .55;
+          transform-origin: left center;
+          animation: embedding-pending 1.4s ease-in-out infinite;
+        }
+        @keyframes embedding-pending {
+          0%   { transform: translateX(-100%) scaleX(.35); }
+          50%  { transform: translateX(35%)  scaleX(.55); }
+          100% { transform: translateX(190%) scaleX(.35); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .embedding-pending-bar { animation: none; transform: scaleX(.4); }
+        }
+      `}</style>
+    </div>
+  );
+}
+
+/**
+ * Plotly, loaded in the browser only, with something to look at while it comes.
+ *
+ * `react-plotly.js` pulls in plotly.js, which is by far the largest thing this
+ * app ships — seconds to fetch, parse and draw on a first visit. Without the
+ * `loading` option `next/dynamic` renders *nothing* until it resolves, so the
+ * page showed working controls above an empty 650px gap and no explanation.
+ * Every person who saw that concluded the chart was broken, which is a fair
+ * reading: a blank space says nothing, and a blank space where a chart clearly
+ * belongs says something is wrong.
+ *
+ * Note this is a distinct wait from fetching the embedding JSON, which the
+ * component already reported. Two waits happen in sequence and only the first
+ * had a message; the visible gap was always the second one.
+ */
+const Plot = dynamic(() => import("react-plotly.js"), {
+  ssr: false,
+  loading: () => <PlotPending label="Loading the plotting library…" />,
+});
 
 type ColorColumn = {
   kind: "categorical" | "numeric";
@@ -192,7 +274,7 @@ export default function EmbeddingViewer({ runId, dataArtifacts, standaloneArtifa
   );
   const layout = useMemo<Partial<Layout>>(() => ({
     title: document ? { text: `${document.method.toUpperCase()} ${document.dimensions}D` } : undefined,
-    height: 650,
+    height: PLOT_HEIGHT,
     autosize: true,
     margin: { l: 20, r: 20, t: 55, b: 20 },
     legend: { orientation: "h" },
@@ -207,11 +289,18 @@ export default function EmbeddingViewer({ runId, dataArtifacts, standaloneArtifa
   if (error) {
     return <p data-tone="warn" style={{ margin: 0 }}>Could not load embedding data: {error}</p>;
   }
-  if (loading && !document) {
-    return <p style={{ margin: 0 }}>Loading embedding data…</p>;
-  }
+  // The first visit has no document yet, so there are no controls to keep and
+  // the placeholder stands alone. Reserving the plot's height here too means
+  // the section does not resize twice on the way to showing a chart.
+  //
+  // The label is unconditional because by this point a view is always on its
+  // way: the guards above have established that there is at least one usable
+  // artifact, and an effect selects the first one. Saying "select a view to
+  // begin" — as this did — described a state the component cannot be in, and
+  // it showed during the very first render, before the effect had run, so the
+  // one message a person actually saw was the one that was never true.
   if (!document || !selectedArtifact) {
-    return <p style={{ margin: 0 }}>Select an embedding view to begin.</p>;
+    return <PlotPending label="Loading embedding data…" />;
   }
 
   const totalCells = document.total_cells ?? document.cells.length;
@@ -241,6 +330,15 @@ export default function EmbeddingViewer({ runId, dataArtifacts, standaloneArtifa
           {displayedCells.toLocaleString()} of {totalCells.toLocaleString()} cells
           {document.downsampled ? " (display subset)" : ""}
         </span>
+        {/* Switching to a view whose data is not cached fetches again. The
+            chart below stays on screen showing the *previous* view while that
+            happens, so without this the controls say one thing and the plot
+            shows another with nothing to explain the gap. */}
+        {loading && (
+          <span className="subtle" role="status" aria-live="polite" data-testid="embedding-switching">
+            loading the selected view…
+          </span>
+        )}
       </div>
       {dataArtifacts.length > availableArtifacts.length && (
         <p className="subtle" style={{ margin: "0 0 0.5rem" }}>

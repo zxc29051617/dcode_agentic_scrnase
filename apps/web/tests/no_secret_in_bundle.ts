@@ -15,12 +15,22 @@ import { join } from "node:path";
 
 const STATIC_DIR = ".next/static";
 
-/** Env vars whose values must never appear in client-side JavaScript. */
+/**
+ * Env vars whose values must never appear in client-side JavaScript.
+ *
+ * `ANALYSIS_CONTROLLER_URL` is on this list for the same reason `GATEWAY_URL`
+ * is, and it matters more: the controller is the one service in this product
+ * that accepts a POST which can start an analysis. A browser that learned its
+ * address could talk to it directly, bypassing the route handlers where the
+ * operator identity is decided. It is read only inside `lib/controller.ts`,
+ * which begins with `import "server-only"`.
+ */
 const SECRET_VARS = [
   "ASSISTANT_MODEL_API_KEY",
   "ASSISTANT_MODEL_BASE_URL",
   "ASSISTANT_MODEL_NAME",
   "GATEWAY_URL",
+  "ANALYSIS_CONTROLLER_URL",
 ];
 
 function walk(dir: string): string[] {

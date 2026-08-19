@@ -7,7 +7,7 @@ process.env.LD_LIBRARY_PATH = [condaLib, process.env.LD_LIBRARY_PATH]
 
 export default defineConfig({
   testDir: "./tests",
-  testMatch: "embedding_viewer.browser.ts",
+  testMatch: "*.browser.ts",
   use: {
     baseURL: process.env.WEB_URL ?? "http://127.0.0.1:13000",
     headless: true,

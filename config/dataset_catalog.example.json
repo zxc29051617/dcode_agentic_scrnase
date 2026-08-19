@@ -1,0 +1,61 @@
+{
+  "_README": [
+    "Copy to config/dataset_catalog.json (gitignored) and point the paths at",
+    "your own data. This file decides what an analysis request may name, and",
+    "it is read server-side only — no path in it ever reaches a browser or a",
+    "model, which see only the input_ref and the display name.",
+    "",
+    "Every path here is also checked against CONTROLLER_DATA_ROOTS. An entry",
+    "outside the allowed roots is dropped rather than honoured: the catalog",
+    "says what is offered, the roots say what is reachable, and a catalog",
+    "cannot widen the second.",
+    "",
+    "A relative path is taken relative to the repository root, not the",
+    "process's working directory — so 'data/counted/...' means what you would",
+    "expect. An absolute path is taken as written. Either way it still has to",
+    "sit inside CONTROLLER_DATA_ROOTS.",
+    "",
+    "An entry whose path does not exist, or falls outside the allowed roots,",
+    "is refused and named on the /analysis/new page with the reason. It is not",
+    "silently dropped: an empty dataset list would otherwise be",
+    "indistinguishable from a catalog nobody has filled in yet.",
+    "",
+    "'kind' is a hint for the intake conversation. ingest_validate detects",
+    "FASTQ, MTX, .h5 and .h5ad from the filesystem on every run and its answer",
+    "decides the route — a wrong 'kind' here misleads a conversation, it does",
+    "not misroute an analysis."
+  ],
+
+  "datasets": {
+    "pbmc_1k_v3": {
+      "path": "data/pbmc_1k_v3/pbmc_1k_v3_fastqs",
+      "display_name": "PBMC 1k v3 (FASTQ)",
+      "kind": "fastq",
+      "species": "human",
+      "description": "10x 3' v3, human PBMC. The reference end-to-end run; counting takes about twenty minutes."
+    },
+    "pbmc_1k_v3_counted": {
+      "path": "data/counted/pbmc_1k_v3/outs",
+      "display_name": "PBMC 1k v3 (counted)",
+      "kind": "matrix",
+      "species": "human",
+      "description": "Cell Ranger output for the above. Skips counting; the matrix route starts at matrix_preflight."
+    },
+    "neuron_1k_v3": {
+      "path": "data/neuron_1k_v3/neuron_1k_v3_fastqs",
+      "display_name": "Mouse neuron 1k v3 (FASTQ)",
+      "kind": "fastq",
+      "species": "mouse",
+      "description": "10x 3' v3, mouse brain. A second reference and the cross-species guard."
+    }
+  },
+
+  "manifests": {
+    "_README": "One row per sequencing library: library_id, sample_id, donor_id, condition, technical_batch. Required before Harmony can run, and before any question about differences between samples.",
+    "pbmc_study": {
+      "path": "data/designs/pbmc_study.csv",
+      "display_name": "PBMC study design",
+      "description": "Example only — replace with a manifest that describes your libraries."
+    }
+  }
+}

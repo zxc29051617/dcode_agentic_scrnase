@@ -40,6 +40,7 @@ def run_workflow(
     checkpointer_kind: str | None = None,
     decide: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     resume_run_id: str | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     """Run one pass of the workflow and return the final state.
 
@@ -50,6 +51,16 @@ def run_workflow(
     pending question and returns the answer, driving the `Command(resume=...)`
     loop. `resume_run_id` reuses a run directory and skips the steps it already
     holds finished artifacts for.
+
+    `run_id` names a *fresh* run instead of minting a name for it, which is a
+    different request from `resume_run_id` and must not be confused with it: no
+    resume plan is drawn up, nothing is reused, and the run is new in every way
+    except that its identity was decided before it started. A caller outside
+    this process needs that — a worker records which scientific run a queued job
+    became before handing control to the graph, so that a crash between the two
+    leaves a directory some job still claims rather than an orphan and a retry
+    that starts a second one. Passing both is a caller contradicting itself, and
+    is refused rather than silently resolved.
 
     `checkpointer_kind` builds one instead of taking one, which the `sqlite`
     kind needs: its database goes in the run directory, and the run directory is
@@ -71,10 +82,15 @@ def run_workflow(
     output is gone. Conflating them into one "resume" would have to pick a
     winner silently.
     """
+    if resume_run_id and run_id:
+        raise ValueError(
+            "pass resume_run_id or run_id, not both: one reuses a finished run's "
+            "artifacts, the other names a run that has not happened yet"
+        )
     resolved = dict(config or {})
     state = new_run_state(
         project=project, config=resolved, input_bundle=input_bundle,
-        study_design=study_design, runs_dir=runs_dir, run_id=resume_run_id,
+        study_design=study_design, runs_dir=runs_dir, run_id=resume_run_id or run_id,
     )
     owned = None
     if checkpointer is None and checkpointer_kind:

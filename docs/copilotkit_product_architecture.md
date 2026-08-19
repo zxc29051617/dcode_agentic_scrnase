@@ -2,20 +2,36 @@
 
 ## Status and scope
 
-This document is a **Phase 0 product architecture**, not an implementation
-claim. It records how a browser product may later surround the existing
+This document began as a **Phase 0 product architecture** and is now part
+implementation record. It records how a browser product surrounds the existing
 scRNA-seq executor without becoming a second executor or a second source of
 scientific truth.
 
 | status | meaning in this document |
 |---|---|
 | **Current** | code and behaviour that exist on this branch today |
-| **Near-term** | the next bounded implementation slices; none are implemented by this document |
+| **Near-term** | the next bounded implementation slices; not implemented |
 | **Production target** | the full service architecture after the near-term slices have proved their contracts |
 
-There is no Next.js, React, CopilotKit, AG-UI, FastAPI, queue, PostgreSQL,
-object storage, or Deep Agents runtime in this repository today. `deepagents` is
-not installed. This document changes none of those facts.
+**What has since been built, and where its own documentation lives.** Several
+things this document listed as absent now exist, and §2.5 and §3 have been
+corrected accordingly:
+
+| | status | authority |
+|---|---|---|
+| Next.js / React / CopilotKit UI | Current | `apps/web/README.md` |
+| Read-only FastAPI gateway | Current | `services/gateway/README.md` |
+| Write-capable analysis controller | Current, local MVP | `services/controller/README.md` |
+| Scientific worker and durable job queue | Current, local MVP | `services/controller/README.md` |
+| External (browser) human-gate mode | Current | `docs/analysis_request_contract.md` |
+| `ScientificWorkflowService` | Current, as `src/service.py` — two functions, not a service class | `src/service.py` |
+| AG-UI events or SSE replay | **absent** | polling is used instead, and is labelled as such |
+| Queue, PostgreSQL, object storage, API authentication | **absent** | SQLite and no auth; see the controller README's limitations |
+| Deep Agents runtime | **absent**; `deepagents` is not installed | `docs/deep_agents_architecture.md` |
+
+Where this document and the code disagree, the code wins and this document is
+wrong. `docs/analysis_request_contract.md` is the maintained record of the
+write-side contract.
 
 `docs/deep_agents_architecture.md` is the companion design for the read-only
 review layer: reviewer responsibilities, evidence contracts, prompt shape and
@@ -184,25 +200,56 @@ contract forbids new analysis during report construction.
 
 ### 2.5 Explicitly absent today
 
-None of the following exists today:
+This list was written before the web slices existed and has been corrected.
+What is **still** absent:
 
-- a `ScientificWorkflowService`
-- FastAPI endpoints
-- AG-UI events or SSE replay
-- Next.js / React / CopilotKit UI
-- browser upload handling or API authentication
-- Web Worker, queue, PostgreSQL or object storage
-- external human-gate mode
-- Deep Agents coordinator, reviewer, tools, review store or reviewer prompts
-- public FASTQ golden-run baseline and cleaned evidence fixture
+- AG-UI events or SSE replay. The intake page polls the controller and the
+  worker polls the job table; neither streams, and nothing claims to.
+- API authentication and authorization. Anyone who can reach the controller can
+  confirm a request, which is why that service is labelled local-development
+  and must not be exposed.
+- Browser upload handling. Data reaches the pipeline by being placed inside an
+  allowlisted root on the analysis machine, never by being uploaded.
+- PostgreSQL, a real queue, and object storage. The controller uses one SQLite
+  file and a polling worker.
+- Multi-worker scheduling across machines.
+- Deep Agents coordinator, reviewer, tools, review store and reviewer prompts.
+  `deepagents` is not installed.
+- Public FASTQ golden-run baseline and cleaned evidence fixture.
+
+What has been built since, with the caveat that each is a bounded slice rather
+than the production target described in §3:
+
+- A `ScientificWorkflowService` — as `src/service.py`, two functions rather than
+  a service class. `start_detached_run` starts a run that may stop and has
+  nobody standing by; `continue_checkpoint_once` applies exactly one gate
+  answer. Neither knows anything scientific.
+- FastAPI endpoints, in two services: the GET-only gateway (§3.2) and the
+  write-capable controller (`services/controller`).
+- Next.js / React / CopilotKit UI (`apps/web`), including `/analysis/new`.
+- An external human-gate mode: a browser can answer `accept`, `revise` or
+  `stop` against a specific pending gate generation, validated by
+  `coerce_overrides` and attributed to a server-resolved operator.
+- A durable local job queue, in the same SQLite file as the controller's
+  requests, with restart reconciliation that never re-queues a running job.
 
 ---
 
 ## 3. Near-term
 
 Near-term work is deliberately ordered so that a web product observes proven
-scientific work before it can control it. No item in this section is implemented
-by this document.
+scientific work before it can control it.
+
+**§3.1, §3.2 and §3.4 have since been implemented in bounded form**, and the
+ordering held: the read-only projection (§3.2) and the observation UI (§3.4)
+shipped and were used before anything could control a run. §3.3 (AG-UI) was
+skipped rather than implemented — polling covers what the local MVP needs, and
+claiming SSE without building it is the failure mode this document exists to
+prevent. Each subsection below now carries its own status note.
+
+What each section describes remains the *target*; what exists is a slice of it,
+and the differences are stated in `services/controller/README.md` under
+"Local-development limitations".
 
 ### Phase -1: public FASTQ golden-run baseline
 
@@ -241,8 +288,27 @@ boundaries. Before code is added, settle:
 
 ### 3.1 ScientificWorkflowService
 
-The first integration seam is a thin application service that wraps existing
-core operations without changing their scientific semantics:
+**Status: partly Current, as `src/service.py`.** Two of the six operations
+below exist, under the names this section gave them —
+`continue_checkpoint_once` verbatim, and `start_new_run` as
+`start_detached_run`, renamed because what distinguishes it is not that the run
+is new but that nobody is standing by to answer its gates.
+
+The other four were not built, and the reason is worth recording: they would
+have been wrappers with no caller. `plan_artifact_resume` and
+`start_artifact_resume` have no endpoint yet (re-requesting a finished run from
+the browser is Near-term), and `get_run_projection` / `get_pending_gate` are
+already answered without the executor — the gateway rebuilds a projection from
+`audit.jsonl` and `run_metadata.json`, and the controller derives the pending
+gate from the same log. Adding executor-side versions would have created a
+second answer to each question.
+
+So the seam is two functions rather than a class. What this section asked for —
+wrapping existing core operations without changing their scientific semantics —
+is met: neither function routes, decides what a value means, or knows what a
+step does.
+
+The full intended surface:
 
 ```text
 start_new_run(...)
@@ -264,6 +330,12 @@ opens another gate, the service records a new pending gate and stops; it never
 reuses the prior answer.
 
 ### 3.2 Read-only FastAPI
+
+**Status: Current, as `services/gateway`.** Implemented and unchanged by the
+write-side slice: still GET-only, still never importing `src/`. The write
+endpoints live in a *separate service* (`services/controller`) precisely so
+this one's guarantee stays a property of its code rather than of a permission
+check. See `services/gateway/README.md`.
 
 The first API is observation-only. It presents redacted projections over
 existing run directories and provenance; it does not start a run, resume a run,
@@ -291,6 +363,13 @@ checkpoint contents or complete artifact dictionaries.
 
 ### 3.3 AG-UI observational layer
 
+**Status: not implemented, and deliberately skipped for the local MVP.** The
+intake page polls `/api/analysis-requests/{id}` and the worker polls its job
+table. Polling is stated as polling in the UI, the controller README and
+`docs/analysis_request_contract.md`; nothing in this repository claims SSE or
+AG-UI streaming exists. Building it is worthwhile when there is a reason
+beyond tidiness — a run whose steps a person watches live — and not before.
+
 AG-UI is the real-time event protocol between the future frontend and the
 backend. The initial adapter is observational: it maps a worker's recorded state
 and audit events into ordered, replayable SSE events.
@@ -315,6 +394,12 @@ journal supplies sequence IDs, replay and reconnect without rewriting scientific
 provenance.
 
 ### 3.4 CopilotKit UI
+
+**Status: Current, as `apps/web`.** The read-only observation pages are
+implemented, and so is `/analysis/new`, which is write-capable. The assistant
+is split into two action sets that are never merged — five read-only actions
+for explaining a run, four intake actions for preparing a request — and neither
+set contains an action that can confirm a request or answer a gate.
 
 Near-term UI is an observation product, not a control panel. It uses Next.js /
 React and CopilotKit to render:

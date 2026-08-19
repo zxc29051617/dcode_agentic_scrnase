@@ -7,20 +7,45 @@ import {
 } from "@copilotkit/runtime";
 import OpenAI from "openai";
 import { READ_ONLY_ACTIONS } from "@/lib/assistantActions";
+import { INTAKE_ACTIONS } from "@/lib/intakeActions";
 import { getAssistantModelConfig, scrubSecrets, type AssistantModelConfig } from "@/lib/assistantModel";
 import { SESSION_COOKIE, assistantSessions } from "@/lib/assistantSession";
 
 /**
  * The CopilotKit runtime endpoint.
  *
- * The five actions come from `lib/assistantActions.ts` so that the runtime
- * and the conversation test share one definition. The model configuration
- * comes from `resolveConfig()` below, which layers a visitor's own session
- * (chosen local model, or their own OpenAI key) over the server's env
- * default — never the other way around, and never a value shared across
- * sessions. See `lib/assistantSession.ts` for the isolation guarantee this
- * depends on.
+ * The actions come from `lib/assistantActions.ts` and `lib/intakeActions.ts`
+ * so that the runtime and the conversation tests share one definition. The
+ * model configuration comes from `resolveConfig()` below, which layers a
+ * visitor's own session (chosen local model, or their own OpenAI key) over the
+ * server's env default — never the other way around, and never a value shared
+ * across sessions. See `lib/assistantSession.ts` for the isolation guarantee
+ * this depends on.
+ *
+ * ## Two assistants, two action sets, never merged
+ *
+ * `?mode=intake` gives the four intake actions; anything else gives the five
+ * read-only ones. They are separate on purpose and the union is never offered:
+ *
+ * - The run assistant explains recorded results. Handing it
+ *   `prepare_analysis_request` would let a conversation about an existing run
+ *   quietly produce a request for a new one.
+ * - The intake assistant prepares a request. Handing it `get_report` would not
+ *   be dangerous, but it would blur what the thing is, and the read-only
+ *   assistant's guarantee — "no function that writes was put within its reach"
+ *   — is only legible if the two sets stay distinct.
+ *
+ * Neither set contains a confirm or a gate answer. There is no action anywhere
+ * in this app that can start a run or answer `accept`, `revise` or `stop`.
  */
+
+//: Which action set a request gets. Read from the URL rather than a header so
+//: that it is visible in a network log, and defaulting to read-only so a
+//: missing parameter is the safe case rather than the powerful one.
+function actionsFor(request: NextRequest) {
+  const mode = request.nextUrl.searchParams.get("mode");
+  return mode === "intake" ? INTAKE_ACTIONS : READ_ONLY_ACTIONS;
+}
 
 // `CopilotRuntime`'s `actions` callback infers one `Action<P>` type parameter
 // for the whole returned array, so a zero-argument action (`list_runs`) and a
@@ -31,7 +56,10 @@ import { SESSION_COOKIE, assistantSessions } from "@/lib/assistantSession";
 // parameter/handler pairing, which is what actually executes; nothing here
 // changes at runtime, only what the compiler is asked to unify.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const runtime = new CopilotRuntime({ actions: (): any[] => READ_ONLY_ACTIONS });
+function runtimeFor(request: NextRequest) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return new CopilotRuntime({ actions: (): any[] => actionsFor(request) });
+}
 
 /** Upper bound on one model turn. See the note where the client is built. */
 const MODEL_TIMEOUT_MS = 120_000;
@@ -104,7 +132,7 @@ export async function POST(req: NextRequest) {
   const config = resolveConfig(req);
   try {
     const { handleRequest } = copilotRuntimeNextJSAppRouterEndpoint({
-      runtime,
+      runtime: runtimeFor(req),
       serviceAdapter: serviceAdapter(config),
       endpoint: "/api/copilotkit",
     });

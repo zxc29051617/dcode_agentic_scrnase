@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dcode.local/schemas/analysis_gate_decision.schema.json",
+  "title": "Human gate decision",
+  "description": "One person's answer to one pending human gate, submitted to POST /v1/scientific-runs/{scientific_run_id}/gates/{gate_id}/decision. A model may explain the evidence and propose a value; it may not submit this. The endpoint is reached from a server-side route handler called by a button, and is deliberately not exposed as a CopilotKit action.",
+  "type": "object",
+  "required": ["decision", "operator_id", "expected_generation"],
+  "additionalProperties": false,
+  "properties": {
+    "decision": {
+      "enum": ["accept", "revise", "stop"],
+      "description": "The three answers src/nodes.py::make_human_gate_node accepts. Anything else is refused here and would be coerced to `stop` there."
+    },
+    "rationale": {
+      "type": ["string", "null"],
+      "description": "Why. Recorded in the run's audit log with the decision."
+    },
+    "overrides": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Values for parameters this gate offered, and only those. Validated by src/registry.py::coerce_overrides — the same function the terminal goes through — so the controller has no second opinion about what a value means. Meaningful only with decision='revise'; supplying them otherwise is refused rather than ignored."
+    },
+    "operator_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Who decided. Recorded server-side, never supplied by the model, and never defaulted to anonymous."
+    },
+    "expected_generation": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "How many gates this run had opened when the decision was made, derived from the run's own audit log. A decision behind the run's current generation is stale and refused: the alternative is applying an answer to a question that was never shown. The store's unique index on (scientific_run_id, generation) is what actually holds when two arrive at once, so one decision resumes one checkpoint."
+    }
+  }
+}

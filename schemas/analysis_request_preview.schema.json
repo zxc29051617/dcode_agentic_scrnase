@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dcode.local/schemas/analysis_request_preview.schema.json",
+  "title": "Analysis request preview response",
+  "description": "What POST /v1/analysis-requests/preview returns. This is the UI's source of truth for the draft card: the browser renders these fields, never a parse of the assistant's prose. Nothing this endpoint returns implies anything was executed — preview creates no run directory and queues no job.",
+  "type": "object",
+  "required": ["request", "can_confirm", "execution_plan"],
+  "additionalProperties": false,
+  "properties": {
+    "request": {
+      "$ref": "https://dcode.local/schemas/analysis_request.schema.json"
+    },
+    "can_confirm": {
+      "type": "boolean",
+      "description": "True only when status is awaiting_confirmation: no validation errors and no unanswered required question. The Confirm control is disabled whenever this is false, and the controller refuses independently of the UI."
+    },
+    "executor_config_preview": {
+      "type": "object",
+      "description": "The config the executor would receive, after domain.to_executor_config. Shown so a reviewer can see the public names mapped to the executor's own, and see that nothing else is present.",
+      "additionalProperties": true
+    },
+    "execution_plan": {
+      "type": "object",
+      "required": ["route", "route_is_provisional", "route_decided_by"],
+      "additionalProperties": true,
+      "description": "A description of what confirming would set in motion. It is not a routing decision: src/graph.py owns routing, and this plan says so in route_decided_by.",
+      "properties": {
+        "route": {
+          "enum": ["fastq", "matrix", "h5ad", "unknown"],
+          "description": "A provisional reading of the filesystem, for display only."
+        },
+        "route_is_provisional": {
+          "const": true,
+          "description": "Always true. ingest_validate decides the route at run time from the filesystem and its answer wins over anything shown here or claimed by a requester."
+        },
+        "route_decided_by": {
+          "const": "ingest_validate"
+        },
+        "steps": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Read from src/registry.py, never restated here."
+        },
+        "mainline": { "type": "array", "items": { "type": "string" } },
+        "excluded_by_route": { "type": "array", "items": { "type": "string" } },
+        "gates": {
+          "type": "array",
+          "description": "Where this run is likely to stop and ask. Not exhaustive: a judge verdict can open a gate no plan predicts.",
+          "items": {
+            "type": "object",
+            "required": ["step", "why"],
+            "properties": {
+              "step": { "type": "string" },
+              "why": { "type": "string" }
+            }
+          }
+        },
+        "estimated_gates": { "type": ["integer", "null"] },
+        "note": { "type": "string" }
+      }
+    }
+  }
+}

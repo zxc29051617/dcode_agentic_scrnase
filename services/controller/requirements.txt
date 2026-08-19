@@ -1,0 +1,12 @@
+# Isolated from the scientific environment on purpose — see README.md.
+# Install into a dedicated venv, never into dcode-scrna, and never edit
+# environment.yml or conda-lock.yml for this service.
+#
+# The worker (worker.py) does NOT use this file: it runs in dcode-scrna
+# because it imports the executor. It needs nothing beyond the standard
+# library that the scientific environment does not already have.
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+pydantic==2.10.3
+pytest==8.3.4
+httpx==0.28.1

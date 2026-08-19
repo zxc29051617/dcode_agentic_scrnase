@@ -22,3 +22,18 @@ results/*
 
 # Claude worktrees are separate checkouts of this repository.
 .claude/worktrees/
+
+# The controller's dataset allowlist names paths on this machine, and its
+# database holds requests and operator identities. Neither is source; the
+# committed example says what shape they take.
+config/dataset_catalog.json
+services/controller/.venv/
+services/controller/*.sqlite*
+
+# Local service state: the controller's database lives here. Not a run
+# directory — only the scientific worker writes under runs/ — and not source.
+var/
+
+# Incremental type-check cache, written by `tsc` and `next build`. A 400 KB
+# generated file that changes on every build; not source.
+tsconfig.tsbuildinfo

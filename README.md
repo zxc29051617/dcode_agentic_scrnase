@@ -22,8 +22,11 @@
 ## 目錄
 
 **程式碼**（進 git）
-- `src/`：LangGraph orchestrator 實作
+- `src/`：LangGraph orchestrator 實作。`src/service.py` 是給非終端機前端用的薄接縫
 - `skills/`：每個 workflow step 一個工具（`SKILL.md` 契約 + Python 實作），26 個，與 `src/registry.py` 一一對應
+- `services/gateway/`：唯讀 FastAPI projection，只有 GET，永不 import `src/`
+- `services/controller/`：可寫的 analysis controller（驗證、確認、排程）+ scientific worker（唯一呼叫 executor 的地方）
+- `apps/web/`：Next.js / CopilotKit 前端
 - `tests/`：`python tests/run_all.py` 全跑（數量見下面的 CI baseline）
 - `scripts/`：維運腳本（取測試資料、連 reference、匯出 graph、查磁碟用量）
 
@@ -314,6 +317,56 @@ judge verdict、人工決策、套件版本與模型 hash）。條件不成立�
 bash scripts/run_disk_usage.sh        # 各次執行多大、跑完了沒
 find runs/<run_id> -name adata.h5ad -delete   # 留報告，丟中間檔（就不能再續跑）
 ```
+
+## 兩種啟動方式,不要混用
+
+CLI 和 Web 是兩種**不同的互動模型**,不是同一件事的兩個入口。
+
+| | `python -m src.run --interactive` | Web `/analysis/new` |
+|---|---|---|
+| 誰組出參數 | 你自己打旗標 | 對話整理成 draft,你在畫面上確認 |
+| gate 怎麼問 | 阻塞在終端機的 `input()` | run 掛起,checkpoint 留在磁碟,瀏覽器回答 |
+| 誰在等 | 你的 shell 一直開著 | 沒有人在等,worker 之後才接手 |
+| operator 身分 | `getpass.getuser()` | server 端解析,client 不能自稱 |
+
+**CLI 完全沒有改變**,上面整份文件講的都還算數。Web 是加上去的一層,它自己不執行
+任何東西:controller 只做驗證和排程,真正跑 workflow 的是 `dcode-scrna` 環境裡的
+worker,而 worker 走的是同一個 `src/graph.py`。
+
+### 最小可複製的 Web 啟動
+
+四個東西,三個環境。照順序來:
+
+```bash
+# 1. controller(自己的 venv,有 FastAPI、沒有 scanpy)
+cd services/controller
+python3.11 -m venv .venv && .venv/bin/pip install -r requirements.txt
+
+# 2. 資料白名單:哪些路徑允許被分析請求指名
+cp config/dataset_catalog.example.json config/dataset_catalog.json
+#    改成你自己的路徑。這個檔決定 model 和瀏覽器能指名什麼,
+#    而且每個路徑還要通過 CONTROLLER_DATA_ROOTS 的檢查
+
+# 3. gateway + controller + web 一起起來
+cd apps/web
+cp .env.local.example .env.local   # 設 GATEWAY_URL 和 ANALYSIS_CONTROLLER_URL
+conda activate copilotkit-web
+npm install && npm run dev:stack
+
+# 4. worker —— 另一個 terminal,在科學環境裡
+conda activate dcode-scrna
+CONTROLLER_DB=var/controller/controller.sqlite CONTROLLER_RUNS_ROOT=runs \
+  python -m services.controller.worker
+```
+
+然後開 `http://127.0.0.1:3000/analysis/new`。
+
+`dev:stack` 刻意**不**幫你起 worker:worker 會 import 整個 executor,把 scanpy 塞進
+前端的 process tree 沒有道理。沒裝 controller 的話整個站台就退回唯讀,頁面上會直說。
+
+細節看 `services/controller/README.md` 和 `docs/analysis_request_contract.md`。
+Web 這一層是 **local-development MVP**:SQLite、polling、**沒有 authentication**,
+這些限制在 controller README 裡列得很清楚,不要對外開放那個 port。
 
 ## 兩種續跑,問的是不同的問題
 

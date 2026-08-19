@@ -3,16 +3,44 @@ import { notFound } from "next/navigation";
 import RunShell from "@/components/RunShell";
 import SummaryCards from "@/components/SummaryCards";
 import Badge from "@/components/Badge";
+import GateDecisionCard from "@/components/GateDecisionCard";
 import { getRunSnapshot } from "@/lib/gateway";
+import { controllerConfigured, getGateState } from "@/lib/controller";
+import type { GateState } from "@/lib/controllerTypes";
 import { formatTime, stepTone } from "@/lib/verdict";
 
 export const dynamic = "force-dynamic";
+
+/**
+ * The gate this run is waiting at, as the *controller* reads it, or null.
+ *
+ * Deliberately a second source from the gateway's `pending_gate`. The gateway
+ * projects what happened; answering needs `gate_id` and `generation`, which
+ * only exist to make a decision refer to one specific pending question, and
+ * which the controller derives from the same audit log. Asking the service
+ * that will validate the answer what the question is means the page cannot
+ * offer a control for a gate the controller would then refuse.
+ *
+ * A controller that is down or unconfigured returns null and the page falls
+ * back to what it always said: answer it at the terminal. That is a real
+ * fallback, not a degraded one — the CLI path is unchanged and still works.
+ */
+async function answerableGate(runId: string): Promise<GateState | null> {
+  if (!controllerConfigured()) return null;
+  try {
+    const state = await getGateState(runId);
+    return state.pending_gate && state.gate_id ? state : null;
+  } catch {
+    return null;
+  }
+}
 
 export default async function RunOverviewPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const snapshot = await getRunSnapshot(id);
   if (!snapshot) notFound();
 
+  const gate = await answerableGate(id);
   const done = snapshot.steps.filter((s) => s.status !== "unknown").length;
   const base = `/runs/${encodeURIComponent(id)}`;
 
@@ -35,29 +63,40 @@ export default async function RunOverviewPage({ params }: { params: Promise<{ id
         ]}
       />
 
-      {snapshot.pending_gate && (
-        <div className="panel" data-tone="warn">
-          <h2 style={{ marginTop: 0 }}>Waiting for human review</h2>
-          <p style={{ marginTop: 0 }}>
-            <code>{snapshot.pending_gate.step}</code> ({snapshot.pending_gate.gate}) — verdict{" "}
-            <strong>{snapshot.pending_gate.verdict}</strong>
-            {snapshot.pending_gate.score !== null && ` · score ${snapshot.pending_gate.score}`}
-          </p>
-          <ul style={{ marginTop: 0 }}>
-            {snapshot.pending_gate.reasons.map((reason, i) => (
-              <li key={i}>{reason}</li>
-            ))}
-          </ul>
-          {snapshot.pending_gate.revisable.length > 0 && (
-            <p className="subtle">
-              revisable at this gate: {snapshot.pending_gate.revisable.join(", ")}
+      {/* Two renderings of one fact, and which one appears depends on whether
+          this deployment has a controller. With one, the decision can be made
+          here and is validated and attributed server-side. Without one, the
+          page says what it always said — the terminal is where this is
+          answered — because that path is unchanged and still works. */}
+      {gate ? (
+        <GateDecisionCard state={gate} />
+      ) : (
+        snapshot.pending_gate && (
+          <div className="panel" data-tone="warn">
+            <h2 style={{ marginTop: 0 }}>Waiting for human review</h2>
+            <p style={{ marginTop: 0 }}>
+              <code>{snapshot.pending_gate.step}</code> ({snapshot.pending_gate.gate}) — verdict{" "}
+              <strong>{snapshot.pending_gate.verdict}</strong>
+              {snapshot.pending_gate.score !== null && ` · score ${snapshot.pending_gate.score}`}
             </p>
-          )}
-          <p className="subtle" style={{ marginBottom: 0 }}>
-            This page has no accept / revise / stop control. The decision is answered at the
-            terminal, and the operator identity is recorded there.
-          </p>
-        </div>
+            <ul style={{ marginTop: 0 }}>
+              {snapshot.pending_gate.reasons.map((reason, i) => (
+                <li key={i}>{reason}</li>
+              ))}
+            </ul>
+            {snapshot.pending_gate.revisable.length > 0 && (
+              <p className="subtle">
+                revisable at this gate: {snapshot.pending_gate.revisable.join(", ")}
+              </p>
+            )}
+            <p className="subtle" style={{ marginBottom: 0 }}>
+              This deployment has no analysis controller, so there is no accept / revise / stop
+              control here. Answer it at the terminal, where the operator identity is recorded:
+              <br />
+              <code>python -m src.run --continue-from {id} --interactive</code>
+            </p>
+          </div>
+        )
       )}
 
       <h2>Workflow progress</h2>

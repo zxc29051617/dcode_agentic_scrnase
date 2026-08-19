@@ -34,6 +34,7 @@ export default function AppShell({
   assistantModel,
   assistantEndpoint,
   instructions,
+  canStartAnalyses = false,
   children,
 }: {
   run: ShellRun;
@@ -44,6 +45,16 @@ export default function AppShell({
   /** Endpoint with credentials already stripped by `describeAssistantModel`. */
   assistantEndpoint: string | null;
   instructions: string;
+  /**
+   * Whether an analysis controller is configured.
+   *
+   * The header used to say "read-only" unconditionally, and that was true of
+   * the whole app. It is no longer: with a controller, `/analysis/new` can
+   * start a run and a run page can answer a gate. The label now says which of
+   * the two this deployment is, because a stale "read-only" on a site that can
+   * start an analysis is worse than no label at all.
+   */
+  canStartAnalyses?: boolean;
   children: React.ReactNode;
 }) {
   const [asideOpen, setAsideOpen] = useState(false);
@@ -92,7 +103,13 @@ export default function AppShell({
             Assistant model is not configured
           </span>
         )}
-        <span className="subtle">read-only</span>
+        <span className="subtle" title={
+          canStartAnalyses
+            ? "an analysis controller is configured: this site can prepare and start runs, and answer human gates"
+            : "no analysis controller is configured: every page here only reads recorded runs"
+        }>
+          {canStartAnalyses ? "read + start" : "read-only"}
+        </span>
         <button
           onClick={() => setAsideOpen((open) => !open)}
           data-variant={asideOpen || !assistantConfigured ? undefined : "primary"}
@@ -108,6 +125,15 @@ export default function AppShell({
           <Link className="nav-item" href="/runs" aria-current={pathname === "/runs" ? "page" : undefined}>
             Runs
           </Link>
+          {canStartAnalyses && (
+            <Link
+              className="nav-item"
+              href="/analysis/new"
+              aria-current={pathname === "/analysis/new" ? "page" : undefined}
+            >
+              New analysis
+            </Link>
+          )}
         </div>
         {run && (
           <div className="nav-group">
