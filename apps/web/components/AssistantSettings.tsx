@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import type { AssistantModelsResponse, AssistantSessionStatus } from "@/lib/assistantSessionTypes";
 
 /**
@@ -14,8 +15,24 @@ import type { AssistantModelsResponse, AssistantSessionStatus } from "@/lib/assi
  * `GET /api/assistant-session` only ever returns whether one is set, never
  * its value — so there is nothing for this component to display beyond
  * that boolean.
+ *
+ * ## Why saving refreshes the server render
+ *
+ * The header names the model that would answer, and it is resolved in a Server
+ * Component — the session store is server-side memory keyed by an `httpOnly`
+ * cookie, which page JavaScript cannot read by design. Saving here is a
+ * browser-side POST, so the HTML carrying that header has already been sent
+ * and nothing re-runs on its own: this panel would say "using your OpenAI key"
+ * while the header a few pixels above went on naming the lab default, and the
+ * two would disagree until somebody happened to reload.
+ *
+ * `router.refresh()` re-runs the Server Components for the current route
+ * without a full navigation, so the header catches up in the same interaction
+ * that changed it. Client state here is preserved across it, so nothing typed
+ * is lost.
  */
 export default function AssistantSettings({ onChanged }: { onChanged?: () => void }) {
+  const router = useRouter();
   const [status, setStatus] = useState<AssistantSessionStatus>({ active: false });
   const [localModels, setLocalModels] = useState<AssistantModelsResponse | null>(null);
   const [provider, setProvider] = useState<"local" | "openai">("local");
@@ -71,6 +88,7 @@ export default function AssistantSettings({ onChanged }: { onChanged?: () => voi
       setStatus(data as AssistantSessionStatus);
       setMessage("saved");
       onChanged?.();
+      router.refresh();
     } catch {
       setMessage("could not reach the server");
     } finally {
@@ -89,6 +107,7 @@ export default function AssistantSettings({ onChanged }: { onChanged?: () => voi
       setProvider("local");
       setMessage("cleared");
       onChanged?.();
+      router.refresh();
     } finally {
       setBusy(false);
     }

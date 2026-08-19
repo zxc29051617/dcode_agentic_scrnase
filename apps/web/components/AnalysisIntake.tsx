@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { CopilotKit } from "@copilotkit/react-core";
+import { CopilotKit, useCopilotChat } from "@copilotkit/react-core";
 import { CopilotChat } from "@copilotkit/react-ui";
+import { Role, TextMessage } from "@copilotkit/runtime-client-gql";
 import "@copilotkit/react-ui/styles.css";
 import type {
   DatasetOption,
@@ -34,6 +35,22 @@ import type {
 
 const POLL_MS = 2_000;
 const POLL_TIMEOUT_MS = 15 * 60 * 1000;
+
+/**
+ * Sentences that produce a useful next turn.
+ *
+ * The blank chat box was the hardest part of this page to get past: a person
+ * who has not used it does not know what it will accept, and "Type a message"
+ * does not say. The last one is deliberate — asking for something the workflow
+ * cannot do is a fast way to learn that it refuses honestly rather than
+ * pretending, which is the behaviour most worth demonstrating.
+ */
+const OPENERS = [
+  "What data can I analyse here?",
+  "Human PBMC, I want to know which cell types are present",
+  "Compare cell type composition between conditions",
+  "Can you do trajectory analysis?",
+] as const;
 
 type Draft = PreviewResponse | null;
 
@@ -198,11 +215,27 @@ export default function AnalysisIntake({
       }}
     >
       <section className="panel" data-testid="intake-conversation">
-        <h2 style={{ marginTop: 0 }}>Describe the analysis</h2>
+        <div className="intake-head">
+          <h2>Describe the analysis</h2>
+          <span className="step-chip" data-active={!request}>
+            step 1
+          </span>
+        </div>
+
         {modelConfigured ? (
           // No vendor badge here either — see the note in AssistantPanel.
           <CopilotKit runtimeUrl="/api/copilotkit?mode=intake" showDevConsole={false}>
-            <div style={{ height: "32rem" }}>
+            {/* Openers, not decoration. The blank box was the hardest part of
+                this page to get past: a person who has not used it before does
+                not know what it will accept, and "type a message" does not
+                say. Each of these is a sentence that produces a useful next
+                turn, including the one that ends in an honest refusal. */}
+            <Openers />
+            {/* Tall enough for a few turns, short enough not to leave a
+                band of empty panel under the composer before the form
+                below it. CopilotChat lays out from the top, so any height
+                beyond the conversation is visible as dead space. */}
+            <div style={{ height: "19rem" }}>
               <CopilotChat
                 instructions={`${instructions}\n\nThis conversation's id is ${conversationId}; pass it as conversation_id when you prepare a request.`}
                 labels={{
@@ -228,8 +261,13 @@ export default function AnalysisIntake({
           </div>
         )}
 
-        <details style={{ marginTop: "1rem" }}>
-          <summary>Prepare a request without the assistant</summary>
+        {/* Open by default when there is no assistant to fall back on, and
+            when nothing has been prepared yet. It is a peer of the
+            conversation, not a footnote to it — the request is a structured
+            object, and talking is one way to fill it in rather than the only
+            one. */}
+        <details style={{ marginTop: "1rem" }} open={!modelConfigured || !request}>
+          <summary>Fill the request in directly</summary>
           <ManualForm
             datasets={datasets}
             studyDesigns={studyDesigns}
@@ -240,12 +278,68 @@ export default function AnalysisIntake({
       </section>
 
       <section className="panel" data-testid="draft-card">
-        <h2 style={{ marginTop: 0 }}>Proposed analysis</h2>
+        <div className="intake-head">
+          <h2>Proposed analysis</h2>
+          <span className="step-chip" data-active={Boolean(request) && !started}>
+            step 2
+          </span>
+        </div>
         {!request && (
-          <p className="subtle" data-testid="draft-empty">
-            Nothing prepared yet. Describe what you want, or use the form, and the request will
-            appear here for you to check before anything runs.
-          </p>
+          <div data-testid="draft-empty">
+            <p className="subtle" style={{ marginTop: 0 }}>
+              Nothing prepared yet. What you describe on the left appears here as a checkable
+              request — <strong>nothing runs until you press Confirm</strong>.
+            </p>
+
+            {/* An empty panel is a wasted half of the page, and the questions a
+                first-time user has are exactly the ones this space can answer:
+                what data is there, what will this actually do, and where will
+                it stop and ask me. Answering them here also sets expectations
+                before a request exists, which is cheaper than correcting them
+                after one does. */}
+            <h3 style={{ fontSize: "0.95rem", marginBottom: "0.4rem" }}>
+              Data this server can analyse
+            </h3>
+            {datasets.length === 0 ? (
+              <p className="subtle" style={{ marginTop: 0 }}>
+                None configured yet — see <code>services/controller/README.md</code>.
+              </p>
+            ) : (
+              <ul className="intake-list">
+                {datasets.map((d) => (
+                  <li key={d.input_ref}>
+                    <strong>{d.display_name}</strong>{" "}
+                    <span className="subtle">
+                      {d.kind}
+                      {d.species_hint ? ` · ${d.species_hint}` : ""}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            <h3 style={{ fontSize: "0.95rem", marginBottom: "0.4rem" }}>What this workflow does</h3>
+            <p className="subtle" style={{ marginTop: 0 }}>
+              Quality control and filtering · doublet detection · normalisation and highly-variable
+              genes · PCA · optional Harmony batch correction · Leiden clustering · UMAP and t-SNE ·
+              marker genes · CellTypist annotation · a marker-database cross-check · a report.
+            </p>
+
+            <h3 style={{ fontSize: "0.95rem", marginBottom: "0.4rem" }}>What it does not do</h3>
+            <p className="subtle" style={{ marginTop: 0 }}>
+              Trajectory inference or pseudotime · RNA velocity · differential expression testing ·
+              cell–cell communication · copy-number inference. Ask for one and the request will say
+              so rather than quietly leaving it out.
+            </p>
+
+            <h3 style={{ fontSize: "0.95rem", marginBottom: "0.4rem" }}>
+              It will stop and ask you
+            </h3>
+            <p className="subtle" style={{ marginTop: 0, marginBottom: 0 }}>
+              Wherever a choice is yours — QC thresholds, which CellTypist model, which tissue to
+              cross-check against. The run pauses at a human gate and waits; it does not guess.
+            </p>
+          </div>
         )}
 
         {request && (
@@ -465,7 +559,7 @@ function ManualForm({
           setBusy(false);
         }
       }}
-      style={{ display: "grid", gap: "0.6rem", marginTop: "0.8rem" }}
+      className="intake-form"
     >
       <label>
         Data
@@ -526,5 +620,31 @@ function ManualForm({
         {busy ? "Checking…" : "Prepare request"}
       </button>
     </form>
+  );
+}
+
+
+/**
+ * One-click openers for the intake conversation.
+ *
+ * Has to live inside `<CopilotKit>`: `useCopilotChat` reads the provider's
+ * context, and `appendMessage` is what actually sends a turn — the same shape
+ * `AssistantPanel` uses for its run suggestions.
+ */
+function Openers() {
+  const { appendMessage, isLoading } = useCopilotChat();
+  return (
+    <div className="suggestions" style={{ marginBottom: "0.75rem" }}>
+      {OPENERS.map((text) => (
+        <button
+          key={text}
+          type="button"
+          disabled={isLoading}
+          onClick={() => void appendMessage(new TextMessage({ role: Role.User, content: text }))}
+        >
+          {text}
+        </button>
+      ))}
+    </div>
   );
 }

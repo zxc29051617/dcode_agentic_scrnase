@@ -127,6 +127,86 @@ cpk-web-inspector {
   display: none !important;
 }
 
+/* --- the intake page ------------------------------------------------------
+   Two panels that are read as a pair: describe on the left, check on the
+   right. The step chips number them because the order is real — nothing can
+   be confirmed before it has been prepared — and a reader who lands here
+   mid-task needs to see which half is waiting on them. */
+.intake-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.9rem;
+}
+.intake-head h2 { margin: 0; }
+
+.step-chip {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0.15rem 0.45rem;
+  border-radius: 3px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  white-space: nowrap;
+}
+/* Only the step actually waiting on the reader is emphasised. Highlighting
+   both would be the same as highlighting neither. */
+.step-chip[data-active="true"] {
+  border-color: var(--accent, #2563eb);
+  color: var(--accent, #2563eb);
+  font-weight: 600;
+}
+
+.intake-list {
+  margin: 0 0 1.1rem;
+  padding-left: 1.05rem;
+  font-size: 0.92rem;
+  line-height: 1.55;
+}
+.intake-list li { margin-bottom: 0.2rem; }
+
+/* The form is the same request the conversation produces, filled in by hand.
+   Labels sit above their field rather than beside it: the names here are
+   phrases ("Clustering resolution", "Research question"), and inline labels of
+   uneven length left the inputs in a ragged column with the text running into
+   the box. */
+.intake-form {
+  display: grid;
+  gap: 0.85rem;
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+}
+.intake-form label {
+  display: grid;
+  gap: 0.25rem;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+.intake-form input,
+.intake-form select {
+  width: 100%;
+  padding: 0.45rem 0.55rem;
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.intake-form input:focus-visible,
+.intake-form select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.intake-form button[type="submit"] {
+  justify-self: start;
+  margin-top: 0.2rem;
+}
+
 .shell-aside {
   grid-area: aside;
   border-left: 1px solid var(--line);
