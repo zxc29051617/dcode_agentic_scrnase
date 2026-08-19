@@ -8,6 +8,7 @@ import {
 import OpenAI from "openai";
 import { READ_ONLY_ACTIONS } from "@/lib/assistantActions";
 import { INTAKE_ACTIONS } from "@/lib/intakeActions";
+import { GATE_ADVISOR_ACTIONS } from "@/lib/gateAdvisorActions";
 import { getAssistantModelConfig, scrubSecrets, type AssistantModelConfig } from "@/lib/assistantModel";
 import { SESSION_COOKIE, assistantSessions } from "@/lib/assistantSession";
 
@@ -24,8 +25,9 @@ import { SESSION_COOKIE, assistantSessions } from "@/lib/assistantSession";
  *
  * ## Two assistants, two action sets, never merged
  *
- * `?mode=intake` gives the four intake actions; anything else gives the five
- * read-only ones. They are separate on purpose and the union is never offered:
+ * `?mode=intake` gives the four intake actions, `?mode=gate` the three an
+ * advisor needs beside a paused decision, and anything else the five read-only
+ * ones. They are separate on purpose and the union is never offered:
  *
  * - The run assistant explains recorded results. Handing it
  *   `prepare_analysis_request` would let a conversation about an existing run
@@ -35,8 +37,12 @@ import { SESSION_COOKIE, assistantSessions } from "@/lib/assistantSession";
  *   assistant's guarantee — "no function that writes was put within its reach"
  *   — is only legible if the two sets stay distinct.
  *
- * Neither set contains a confirm or a gate answer. There is no action anywhere
- * in this app that can start a run or answer `accept`, `revise` or `stop`.
+ * - The gate advisor argues for an option at a paused gate. Everything it can
+ *   reach is a GET; it reads the candidates the person is looking at and the
+ *   evidence that bears on them, and that is all.
+ *
+ * No set contains a confirm or a gate answer. There is no action anywhere in
+ * this app that can start a run or answer `accept`, `revise` or `stop`.
  */
 
 //: Which action set a request gets. Read from the URL rather than a header so
@@ -44,7 +50,9 @@ import { SESSION_COOKIE, assistantSessions } from "@/lib/assistantSession";
 //: missing parameter is the safe case rather than the powerful one.
 function actionsFor(request: NextRequest) {
   const mode = request.nextUrl.searchParams.get("mode");
-  return mode === "intake" ? INTAKE_ACTIONS : READ_ONLY_ACTIONS;
+  if (mode === "intake") return INTAKE_ACTIONS;
+  if (mode === "gate") return GATE_ADVISOR_ACTIONS;
+  return READ_ONLY_ACTIONS;
 }
 
 // `CopilotRuntime`'s `actions` callback infers one `Action<P>` type parameter

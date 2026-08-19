@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import type { GateState } from "@/lib/controllerTypes";
 import { candidatesFor, filterCandidates, type GateCandidate } from "@/lib/gateCandidates";
+import GateAdvisor from "@/components/GateAdvisor";
 
 /**
  * The accept / revise / stop control for a run waiting at a human gate.
@@ -39,7 +40,19 @@ const DECISIONS = [
 
 type Decision = (typeof DECISIONS)[number]["value"];
 
-export default function GateDecisionCard({ state }: { state: GateState }) {
+export default function GateDecisionCard({
+  state,
+  advisorInstructions,
+  modelConfigured = false,
+  modelReason = null,
+}: {
+  state: GateState;
+  /** The advisor's brief. Passed in from the server so this component never
+   *  reads an environment variable. */
+  advisorInstructions?: string;
+  modelConfigured?: boolean;
+  modelReason?: string | null;
+}) {
   const router = useRouter();
   const gate = state.pending_gate;
   const [decision, setDecision] = useState<Decision>("accept");
@@ -247,10 +260,21 @@ export default function GateDecisionCard({ state }: { state: GateState }) {
         </p>
       )}
 
+      {advisorInstructions && (
+        <GateAdvisor
+          runId={state.scientific_run_id}
+          step={gate.step}
+          parameter={offered[0] ?? null}
+          instructions={advisorInstructions}
+          modelConfigured={modelConfigured}
+          modelReason={modelReason}
+        />
+      )}
+
       <p className="subtle" style={{ marginBottom: 0, marginTop: "0.8rem" }}>
-        The assistant can explain this evidence. It cannot answer for you, and it cannot change a
-        threshold — <code>accept</code>, <code>revise</code> and <code>stop</code> are recorded
-        against a person.
+        The assistant can explain this evidence and argue for an option. It cannot answer for you
+        — <code>accept</code>, <code>revise</code> and <code>stop</code> are recorded against a
+        person.
       </p>
     </div>
   );

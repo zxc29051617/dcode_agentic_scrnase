@@ -8,6 +8,8 @@ import { getRunSnapshot } from "@/lib/gateway";
 import { controllerConfigured, getGateState } from "@/lib/controller";
 import type { GateState } from "@/lib/controllerTypes";
 import { formatTime, stepTone } from "@/lib/verdict";
+import { describeAssistantModel } from "@/lib/assistantModel";
+import { GATE_ADVISOR_INSTRUCTIONS } from "@/lib/gateAdvisorActions";
 
 export const dynamic = "force-dynamic";
 
@@ -41,6 +43,9 @@ export default async function RunOverviewPage({ params }: { params: Promise<{ id
   if (!snapshot) notFound();
 
   const gate = await answerableGate(id);
+  // Read here rather than inside the card: the card is a Client Component and
+  // must never see an environment value, only the boolean derived from one.
+  const assistantModel = describeAssistantModel();
   const done = snapshot.steps.filter((s) => s.status !== "unknown").length;
   const base = `/runs/${encodeURIComponent(id)}`;
 
@@ -91,7 +96,12 @@ export default async function RunOverviewPage({ params }: { params: Promise<{ id
           page says what it always said — the terminal is where this is
           answered — because that path is unchanged and still works. */}
       {gate ? (
-        <GateDecisionCard state={gate} />
+        <GateDecisionCard
+          state={gate}
+          advisorInstructions={GATE_ADVISOR_INSTRUCTIONS}
+          modelConfigured={assistantModel.configured}
+          modelReason={assistantModel.configured ? null : assistantModel.reason}
+        />
       ) : (
         snapshot.pending_gate && (
           <div className="panel" data-tone="warn">
