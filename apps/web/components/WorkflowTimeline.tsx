@@ -4,6 +4,8 @@ import { useState } from "react";
 import Badge from "@/components/Badge";
 import UpstreamQC from "@/components/UpstreamQC";
 import { stepTone, stepToneLabel } from "@/lib/verdict";
+import { stepLabel, VERDICT_WORDS } from "@/lib/stepLabels";
+import { humanDuration } from "@/lib/duration";
 import type { StepRecord } from "@/lib/gatewayTypes";
 
 /**
@@ -42,6 +44,7 @@ export default function WorkflowTimeline({
         const notes = step.notes ?? [];
         const settings = step.settings ?? {};
         const figures = step.figures ?? [];
+        const label = stepLabel(step.step);
         return (
           <div key={step.step}>
             <button
@@ -50,8 +53,21 @@ export default function WorkflowTimeline({
               onClick={() => setOpen(expanded ? null : step.step)}
             >
               <span className="tl-dot" data-tone={tone} />
-              <span className="tl-name">{step.step}</span>
+              {/* The readable name is what the eye lands on; the executor's
+                  own name stays beside it because that is what `audit.jsonl`,
+                  `--resume-from` and every error message use. Dropping it
+                  would make this screen useless to whoever is debugging. */}
+              <span className="tl-name">
+                {label.title}
+                <code className="tl-id">{step.step}</code>
+              </span>
               <span style={{ display: "flex", gap: "0.4rem", alignItems: "center" }}>
+                {/* What this step cost. It is the number somebody re-running
+                    the analysis is planning around, and it was on disk from
+                    the first run. */}
+                {humanDuration(step.duration_seconds) && (
+                  <span className="subtle">{humanDuration(step.duration_seconds)}</span>
+                )}
                 {problems > 0 && (
                   <span className="subtle">
                     {problems} note{problems === 1 ? "" : "s"}
@@ -63,6 +79,22 @@ export default function WorkflowTimeline({
 
             {expanded && (
               <div className="tl-detail">
+                {label.what && (
+                  <p className="subtle" style={{ marginTop: 0 }}>
+                    {label.what}
+                  </p>
+                )}
+                {/* `warn` is the word that misleads: the judge returns it on a
+                    step that ran soundly, and a reader at a gate takes it as
+                    "something went wrong" and decides differently than the
+                    evidence supports. */}
+                {step.verdict?.verdict && VERDICT_WORDS[step.verdict.verdict] && (
+                  <p className="subtle" style={{ marginTop: 0 }}>
+                    <strong>{VERDICT_WORDS[step.verdict.verdict].word}</strong>
+                    {" — "}
+                    {VERDICT_WORDS[step.verdict.verdict].meaning}
+                  </p>
+                )}
                 <dl className="kv">
                   <dt>status</dt>
                   <dd>{step.status}</dd>

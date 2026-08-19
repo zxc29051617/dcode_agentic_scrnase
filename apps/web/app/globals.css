@@ -337,7 +337,21 @@ button[data-variant="primary"] { background: var(--accent); color: #fff; border-
 .tl-dot[data-tone="fail"]   { background: var(--fail); }
 .tl-dot[data-tone="reused"] { background: var(--reused); }
 .tl-dot[data-tone="muted"]  { background: var(--line); }
-.tl-name { font-family: ui-monospace, Menlo, monospace; overflow: hidden; text-overflow: ellipsis; }
+/* The readable name in the page's own face, the executor's name beside it in
+   monospace and dimmed. The row used to be monospace throughout, which made 26
+   function names look like a log file rather than a list of things that
+   happened to the data. */
+.tl-name {
+  display: flex; align-items: baseline; gap: 0.5rem;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tl-id {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 0.75rem; color: var(--muted); opacity: 0.75;
+  overflow: hidden; text-overflow: ellipsis;
+}
+/* Below the width where both fit, the readable one is the one that survives. */
+@media (max-width: 40rem) { .tl-id { display: none; } }
 .tl-detail {
   margin: 0 0 0.4rem 2.2rem;
   padding: 0.7rem 0.9rem;
