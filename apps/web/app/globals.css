@@ -416,3 +416,64 @@ button[data-variant="primary"] { background: var(--accent); color: #fff; border-
   .report-layout { grid-template-columns: minmax(0, 1fr); }
   .report-toc { position: static; max-height: none; }
 }
+/* --- the landing page ------------------------------------------------------
+   One primary action, stated once, in the one place a first-time reader looks.
+   `.hero` is not a marketing band: it is the answer to "what do I do", and it
+   is a panel like everything else so the page keeps one visual language. */
+.lede { font-size: 1.05rem; max-width: 62ch; }
+.hero { border-color: var(--accent); }
+.btn-primary {
+  display: inline-block; padding: 0.6rem 1.1rem; border-radius: 8px;
+  background: var(--accent); color: #fff;
+  font-weight: 600; text-decoration: none;
+}
+.btn-primary:hover { filter: brightness(1.08); text-decoration: none; }
+.plain-list { list-style: none; padding: 0; margin: 0.4rem 0 0; }
+.plain-list li { padding: 0.35rem 0; border-top: 1px solid var(--line); }
+.plain-list li:first-child { border-top: 0; }
+
+/* --- the run document ------------------------------------------------------
+   One run used to be six tabs. Tabs answer "where can I go" and never "what is
+   there", so the reader had to already know which one held the part they
+   wanted. One document says the whole shape at once; the rail is what keeps it
+   navigable once it is long. */
+.doc { display: grid; grid-template-columns: minmax(0, 1fr) 13rem; gap: 2.5rem; align-items: start; }
+.doc-body { min-width: 0; }
+.doc-head { margin-bottom: 1.4rem; }
+.doc-head h1 { font-family: ui-monospace, Menlo, monospace; font-size: 1.35rem; margin-bottom: 0.3rem; }
+
+/* Each section opens with a rule, so the eye can find the boundaries when
+   scrolling fast without the headings having to shout. */
+.doc-body > section { padding-top: 1.6rem; margin-top: 1.6rem; border-top: 1px solid var(--line); }
+.doc-body > section > h2 { margin-top: 0; }
+/* Anchored navigation lands below the sticky header rather than under it. */
+.doc-body > section { scroll-margin-top: 4.5rem; }
+
+.doc-toc { position: sticky; top: 4.5rem; font-size: 0.85rem; }
+.doc-toc ul { list-style: none; margin: 0; padding: 0; border-left: 2px solid var(--line); }
+.doc-toc a {
+  display: block; padding: 0.34rem 0 0.34rem 0.8rem;
+  margin-left: -2px; border-left: 2px solid transparent;
+  color: var(--muted); text-decoration: none;
+}
+.doc-toc a:hover { color: var(--fg); }
+.doc-toc a[data-active="true"] { color: var(--fg); border-left-color: var(--accent); font-weight: 600; }
+
+/* Below the width where a rail fits, it becomes a strip above the document
+   rather than disappearing — a long page with no contents is the thing this
+   whole layout exists to avoid. */
+@media (max-width: 62rem) {
+  .doc { grid-template-columns: 1fr; gap: 0.8rem; }
+  .doc-toc { position: static; order: -1; }
+  .doc-toc ul { display: flex; flex-wrap: wrap; gap: 0.2rem; border-left: 0; }
+  .doc-toc a { padding: 0.3rem 0.6rem; border: 1px solid var(--line); border-radius: 999px; }
+  .doc-toc a[data-active="true"] { border-color: var(--accent); }
+}
+
+/* The execution plan, before anything starts. A numbered list rather than a
+   wrap of code chips: the order is the point — it is what will happen, in
+   sequence — and a chip cloud reads as a set. */
+.plan-steps { margin: 0.4rem 0 0; padding-left: 1.4rem; }
+.plan-steps li { padding: 0.15rem 0; }
+.plan-steps .tl-id { margin-left: 0.45rem; }
+

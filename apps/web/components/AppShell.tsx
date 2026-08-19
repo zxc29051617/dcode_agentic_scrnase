@@ -107,15 +107,23 @@ export default function AppShell({
     });
   }, []);
 
+  // Anchors into one document, not six pages. The labels are what the
+  // sections are called on the page, so the rail there and this list agree —
+  // two names for one section is how a reader ends up believing there are two.
+  //
+  // The in-page contents rail is the primary way to move around a run; this
+  // stays because the shell is where somebody looks when they arrive from
+  // elsewhere, and because it is the only navigation visible before the
+  // document has finished rendering.
   const base = run ? `/runs/${encodeURIComponent(run.id)}` : null;
   const links: { href: string; label: string; enabled: boolean }[] = base
     ? [
-        { href: base, label: "Overview", enabled: true },
-        { href: `${base}/workflow`, label: "Workflow", enabled: true },
-        { href: `${base}/qc`, label: "QC", enabled: true },
-        { href: `${base}/report`, label: "Report", enabled: run!.hasReport },
-        { href: `${base}/artifacts`, label: "Artifacts", enabled: true },
-        { href: `${base}/provenance`, label: "Provenance", enabled: true },
+        { href: `${base}#findings`, label: "What it found", enabled: true },
+        { href: `${base}#report`, label: "Report", enabled: run!.hasReport },
+        { href: `${base}#quality`, label: "Quality control", enabled: true },
+        { href: `${base}#how`, label: "How it ran", enabled: true },
+        { href: `${base}#provenance`, label: "Provenance", enabled: true },
+        { href: `${base}#files`, label: "Files", enabled: true },
       ]
     : [];
 

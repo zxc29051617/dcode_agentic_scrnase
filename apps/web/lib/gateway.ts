@@ -64,6 +64,7 @@ export type {
   ArtifactEntry,
 } from "./gatewayTypes.ts";
 import type {
+  StepTimings,
   RunSummary,
   RunSnapshot,
   StepRecord,
@@ -102,6 +103,10 @@ export async function getStepRecords(runId: string): Promise<StepRecord[] | null
 
 export async function getReport(runId: string): Promise<ReportView | null> {
   return getJson<ReportView>(`/v1/scientific-runs/${encodeURIComponent(runId)}/report`);
+}
+
+export async function getStepTimings(): Promise<StepTimings | null> {
+  return getJson<StepTimings>("/v1/step-timings");
 }
 
 export async function getProvenance(runId: string): Promise<Provenance | null> {
