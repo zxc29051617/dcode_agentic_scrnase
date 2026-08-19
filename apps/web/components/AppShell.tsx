@@ -36,6 +36,7 @@ export default function AppShell({
   assistantReason,
   assistantModel,
   assistantEndpoint,
+  assistantModelOrigin = null,
   instructions,
   canStartAnalyses = false,
   children,
@@ -47,6 +48,12 @@ export default function AppShell({
   assistantModel: string | null;
   /** Endpoint with credentials already stripped by `describeAssistantModel`. */
   assistantEndpoint: string | null;
+  /**
+   * Why this model and not the server's default — `null` when it *is* the
+   * default. Shown beside the name so a visitor who supplied their own key can
+   * see that it took, which the header previously gave no sign of at all.
+   */
+  assistantModelOrigin?: string | null;
   instructions: string;
   /**
    * Whether an analysis controller is configured.
@@ -132,8 +139,19 @@ export default function AppShell({
             never here; `describeAssistantModel` strips credentials from the
             endpoint before it reaches this component. */}
         {assistantConfigured && assistantModel ? (
-          <span className="subtle" title={assistantEndpoint ?? undefined}>
+          <span
+            className="subtle"
+            title={
+              assistantModelOrigin
+                ? `${assistantModelOrigin} · ${assistantEndpoint ?? ""}`
+                : (assistantEndpoint ?? undefined)
+            }
+            data-testid="assistant-model-label"
+          >
             model <code>{assistantModel}</code>
+            {assistantModelOrigin && (
+              <Badge tone="reused">{assistantModelOrigin}</Badge>
+            )}
           </span>
         ) : (
           // Server-rendered, so the absence is visible before anyone clicks.

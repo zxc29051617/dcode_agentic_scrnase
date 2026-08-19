@@ -1,7 +1,9 @@
+import { cookies } from "next/headers";
 import AppShell, { type ShellRun } from "@/components/AppShell";
 import { describeAssistantModel } from "@/lib/assistantModel";
 import { READ_ONLY_INSTRUCTIONS } from "@/lib/assistantActions";
 import { controllerConfigured } from "@/lib/controller";
+import { SESSION_COOKIE, assistantSessions } from "@/lib/assistantSession";
 
 /**
  * Server-side wrapper that reads the assistant's configuration and hands the
@@ -17,21 +19,74 @@ import { controllerConfigured } from "@/lib/controller";
  * page's own panel with its own action set — see `app/api/copilotkit/route.ts`
  * for why the two sets are never merged.
  */
-export default function RunShell({
+
+/**
+ * The model that would actually answer this request, and where it came from.
+ *
+ * The header used to render `describeAssistantModel()` unconditionally, which
+ * reads the environment. A visitor who set their own OpenAI key in the
+ * settings panel therefore saw the *server's* default model in the header
+ * afterwards, and the only prominent indicator on the page went on saying
+ * `gpt-oss:120b`. The setting had taken effect — `/api/copilotkit` resolves
+ * the session per request and always did — but nothing on screen said so, so
+ * it looked exactly like nothing had happened.
+ *
+ * Resolved here rather than in the client because the session store is
+ * server-side memory keyed by an `httpOnly` cookie, which page JavaScript
+ * cannot read by design. Only the model name and its origin cross into the
+ * tree; the key never leaves this function's scope, and is not read from the
+ * store at all.
+ */
+async function effectiveModel() {
+  const fallback = describeAssistantModel();
+  const sessionId = (await cookies()).get(SESSION_COOKIE)?.value;
+  const session = assistantSessions.get(sessionId);
+
+  if (session?.provider === "openai") {
+    return {
+      configured: true as const,
+      model: session.model,
+      endpoint: "api.openai.com",
+      origin: "your OpenAI key" as const,
+      reason: null,
+    };
+  }
+  if (session?.provider === "local" && fallback.configured) {
+    return {
+      configured: true as const,
+      model: session.model,
+      endpoint: fallback.endpoint,
+      origin: "your choice on the lab endpoint" as const,
+      reason: null,
+    };
+  }
+  return fallback.configured
+    ? {
+        configured: true as const,
+        model: fallback.model,
+        endpoint: fallback.endpoint,
+        origin: null,
+        reason: null,
+      }
+    : { configured: false as const, model: null, endpoint: null, origin: null, reason: fallback.reason };
+}
+
+export default async function RunShell({
   run,
   children,
 }: {
   run: ShellRun;
   children: React.ReactNode;
 }) {
-  const model = describeAssistantModel();
+  const model = await effectiveModel();
   return (
     <AppShell
       run={run}
       assistantConfigured={model.configured}
       assistantReason={model.configured ? null : model.reason}
-      assistantModel={model.configured ? model.model : null}
-      assistantEndpoint={model.configured ? model.endpoint : null}
+      assistantModel={model.model}
+      assistantEndpoint={model.endpoint}
+      assistantModelOrigin={model.origin}
       instructions={READ_ONLY_INSTRUCTIONS}
       canStartAnalyses={controllerConfigured()}
     >
