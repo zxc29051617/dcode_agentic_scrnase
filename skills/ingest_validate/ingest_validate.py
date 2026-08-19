@@ -56,6 +56,7 @@ FILTERED_TOKENS = (
     "filtered_gene_bc_matrices",
     "filtered_feature_bc_matrix.h5",
 )
+IGNORED_H5_NAMES = {"molecule_info.h5"}
 
 #: Above this many barcodes a matrix is almost certainly an unfiltered barcode list.
 RAW_BARCODE_THRESHOLD = 100_000
@@ -163,12 +164,23 @@ def _classify_dir(directory: Path) -> list[Detection]:
     for child in sorted(directory.iterdir()):
         if child.is_dir() and _is_mtx_dir(child):
             found.append(Detection(str(child), "matrix", "mtx_dir", _matrix_kind_from_name(child)))
-        elif child.is_file() and (child.name.endswith(".h5ad") or child.name.endswith(".h5")):
+        elif child.is_file() and child.name.lower() not in IGNORED_H5_NAMES and (
+            child.name.lower().endswith(".h5ad") or child.name.lower().endswith(".h5")
+        ):
             detection = _classify_file(child)
             if detection is not None:
                 found.append(detection)
 
-    return found
+    h5_names = {
+        Path(item.path).stem.lower()
+        for item in found
+        if item.artifact_kind == "tenx_h5"
+    }
+    return [
+        item
+        for item in found
+        if not (item.artifact_kind == "mtx_dir" and Path(item.path).name.lower() in h5_names)
+    ]
 
 
 def _fastq_layout(paths: list[Path]) -> tuple[dict[str, dict[str, Any]], list[str]]:

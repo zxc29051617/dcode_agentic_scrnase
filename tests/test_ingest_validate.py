@@ -55,6 +55,27 @@ def test_cellranger_outs_routes_on_filtered_and_says_so():
     assert len(result["detected"]) == 2
 
 
+def test_cellranger_outs_ignores_molecule_info_h5():
+    with tempfile.TemporaryDirectory() as tmp:
+        outs = fixtures.make_cellranger_outs(Path(tmp))
+        (outs / "molecule_info.h5").touch()
+        result = _run([outs])
+    assert result["errors"] == []
+    assert len(result["detected"]) == 2
+    assert all("molecule_info.h5" not in item["path"] for item in result["detected"])
+
+
+def test_cellranger_outs_prefers_h5_over_duplicate_mtx_dirs():
+    with tempfile.TemporaryDirectory() as tmp:
+        outs = fixtures.make_cellranger_outs(Path(tmp))
+        (outs / "filtered_feature_bc_matrix.h5").touch()
+        (outs / "raw_feature_bc_matrix.h5").touch()
+        result = _run([outs])
+    assert result["errors"] == []
+    assert len(result["detected"]) == 2
+    assert all(item["artifact_kind"] == "tenx_h5" for item in result["detected"])
+
+
 def test_unnamed_matrix_is_left_unknown_not_guessed():
     with tempfile.TemporaryDirectory() as tmp:
         result = _run([fixtures.make_mtx_dir(Path(tmp), "counts")])

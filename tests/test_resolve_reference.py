@@ -197,7 +197,7 @@ def test_real_t2t_reference_if_linked():
     assert result["errors"] == []
     assert result["species_verified"] is True
     assert result["reference_genomes"] == ["T2T_CHM13v2_RefSeqLiftoff_v5_3"]
-    assert result["reference_version"] == "T2T-CHM13v2.0_RefSeqLiftoff-v5.3"
+    assert result["reference_version"] == "t2t-chm13v2.0-refseq-liftoff-v5.3+chrm"
 
 
 def main() -> int:
