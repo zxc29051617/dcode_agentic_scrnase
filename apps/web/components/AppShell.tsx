@@ -1,11 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import dynamic from "next/dynamic";
 import Badge from "@/components/Badge";
 import { runTone } from "@/lib/verdict";
+
+/** Where this browser's choice about the assistant panel is remembered. */
+const ASIDE_PREFERENCE_KEY = "scrna.assistant.aside";
 
 /**
  * The assistant is loaded only when somebody opens it.
@@ -57,8 +60,45 @@ export default function AppShell({
   canStartAnalyses?: boolean;
   children: React.ReactNode;
 }) {
-  const [asideOpen, setAsideOpen] = useState(false);
   const pathname = usePathname();
+
+  /**
+   * The assistant panel starts open on a run page and closed on the run list,
+   * and whatever a person chooses afterwards wins on every page from then on.
+   *
+   * The split keeps the bundle decision above intact rather than discarding
+   * it. Opening the panel is what pulls 755 kB of `@copilotkit/react-ui`, and
+   * `/runs` is the page that must stay quick — it is the first thing anyone
+   * loads and nobody arrives there to ask a question. A run page is the
+   * opposite: the assistant is there to explain the evidence on screen, and
+   * having to click for it every time was the friction this removes.
+   *
+   * Read in an effect rather than during render because `localStorage` does
+   * not exist on the server. Reading it in `useState`'s initialiser would make
+   * the server and the client disagree about the very first frame, which is
+   * exactly the hydration error this app has already been bitten by once.
+   */
+  const [asideOpen, setAsideOpen] = useState(false);
+  useEffect(() => {
+    const stored = window.localStorage.getItem(ASIDE_PREFERENCE_KEY);
+    setAsideOpen(stored === null ? Boolean(run) : stored === "open");
+    // Mount only. Re-running on navigation would overrule a person who closed
+    // the panel on the previous page.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const toggleAside = useCallback(() => {
+    setAsideOpen((open) => {
+      const next = !open;
+      try {
+        window.localStorage.setItem(ASIDE_PREFERENCE_KEY, next ? "open" : "closed");
+      } catch {
+        // Private browsing and full quotas both throw here. The panel still
+        // opens; only the memory of it is lost, which is not worth failing on.
+      }
+      return next;
+    });
+  }, []);
 
   const base = run ? `/runs/${encodeURIComponent(run.id)}` : null;
   const links: { href: string; label: string; enabled: boolean }[] = base
@@ -111,7 +151,7 @@ export default function AppShell({
           {canStartAnalyses ? "read + start" : "read-only"}
         </span>
         <button
-          onClick={() => setAsideOpen((open) => !open)}
+          onClick={toggleAside}
           data-variant={asideOpen || !assistantConfigured ? undefined : "primary"}
           aria-expanded={asideOpen}
         >
@@ -161,7 +201,7 @@ export default function AppShell({
           <div className="aside-head">
             <strong>Assistant</strong>
             <span className="spacer" />
-            <button onClick={() => setAsideOpen(false)} aria-label="Close assistant">
+            <button onClick={toggleAside} aria-label="Close assistant">
               ×
             </button>
           </div>

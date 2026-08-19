@@ -66,7 +66,14 @@ export default function AssistantPanel({
     : instructions;
 
   return (
-    <CopilotKit runtimeUrl="/api/copilotkit">
+    // `showDevConsole={false}` turns off CopilotKit's own floating badge, which
+    // is not a debugging aid so much as an announcement surface: it renders a
+    // banner over the top-right corner advertising the vendor's other products,
+    // and that corner is where this app's own controls live — it covered the
+    // "Close assistant" button outright. A scientific run page should not carry
+    // somebody else's marketing, and a control a person cannot click is a bug
+    // regardless of who put the thing on top of it.
+    <CopilotKit runtimeUrl="/api/copilotkit" showDevConsole={false}>
       {/* Reads and writes this browser's own session — see
           lib/assistantSession.ts. Nothing here needs to force the chat
           below to remount: each chat turn is its own POST to

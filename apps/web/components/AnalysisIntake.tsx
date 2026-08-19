@@ -200,7 +200,8 @@ export default function AnalysisIntake({
       <section className="panel" data-testid="intake-conversation">
         <h2 style={{ marginTop: 0 }}>Describe the analysis</h2>
         {modelConfigured ? (
-          <CopilotKit runtimeUrl="/api/copilotkit?mode=intake">
+          {/* No vendor badge here either — see the note in AssistantPanel. */}
+          <CopilotKit runtimeUrl="/api/copilotkit?mode=intake" showDevConsole={false}>
             <div style={{ height: "32rem" }}>
               <CopilotChat
                 instructions={`${instructions}\n\nThis conversation's id is ${conversationId}; pass it as conversation_id when you prepare a request.`}

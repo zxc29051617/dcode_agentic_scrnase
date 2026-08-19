@@ -24,7 +24,12 @@
   --reused-bg: #eef0f3;
 
   --shell-nav: 220px;
-  --shell-aside: 400px;
+  /* Wide enough to hold a conversation rather than a column of two-word lines:
+     the assistant is asked to explain evidence, and its answers quote step
+     names, gene symbols and thresholds that wrap badly in a narrow rail.
+     Clamped against the viewport so it never squeezes the run content beside
+     it on a laptop screen. */
+  --shell-aside: clamp(400px, 32vw, 620px);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -102,6 +107,26 @@ code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.92em
   padding: 0.75rem 0.5rem;
 }
 .shell-main { grid-area: main; padding: 1.25rem 1.5rem 3rem; min-width: 0; }
+/* CopilotKit injects a `<cpk-web-inspector>` custom element at
+   `z-index: 2147483646` — one below the maximum a browser allows — and on
+   localhost it appears whether or not you asked for it: its `"auto"` mode
+   checks `window.location.hostname` against localhost and 127.0.0.1, which is
+   every developer's machine and this whole deployment.
+
+   It has to go because of where it lands, not because of what it is. It
+   renders a banner across the top-right corner, which is where this app's own
+   header controls live, and it covered the "Close assistant" button outright —
+   a control a person cannot click is broken regardless of who put the thing on
+   top of it.
+
+   `showDevConsole={false}` is passed at both mount points and is the right way
+   to do this; it has no effect on the v1 `CopilotKit` export this app uses, so
+   the prop stays as a statement of intent and this rule is what actually
+   holds. Revisit if this app moves to the v2 component, where the prop works. */
+cpk-web-inspector {
+  display: none !important;
+}
+
 .shell-aside {
   grid-area: aside;
   border-left: 1px solid var(--line);
