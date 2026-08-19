@@ -63,6 +63,28 @@ export default async function RunOverviewPage({ params }: { params: Promise<{ id
         ]}
       />
 
+      {/* A run whose process disappeared mid-step. Not a scientific failure —
+          every step before this one is on disk and still valid — so the page
+          names the step and the command that picks up from it, rather than
+          leaving somebody to work out why a run has been "running" since
+          yesterday. */}
+      {snapshot.status === "interrupted" && (
+        <div className="panel" data-tone="warn" data-testid="interrupted-panel">
+          <h2 style={{ marginTop: 0 }}>This run stopped without finishing</h2>
+          <p style={{ marginTop: 0 }}>
+            It was inside{" "}
+            <code>{snapshot.unfinished_step ?? "a step"}</code> when it last wrote anything
+            {snapshot.last_activity_at && `, at ${formatTime(snapshot.last_activity_at)}`}. The
+            process is gone; the steps that finished before it are intact.
+          </p>
+          <p className="subtle" style={{ marginBottom: 0 }}>
+            Pick it up from the first step it can no longer trust:
+            <br />
+            <code>python -m src.run --resume-from {id} --input &lt;same input&gt;</code>
+          </p>
+        </div>
+      )}
+
       {/* Two renderings of one fact, and which one appears depends on whether
           this deployment has a controller. With one, the decision can be made
           here and is validated and attributed server-side. Without one, the

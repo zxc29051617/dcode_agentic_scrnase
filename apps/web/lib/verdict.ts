@@ -32,9 +32,25 @@ export function stepToneLabel(status: string, verdict: string | null | undefined
   return verdict ?? tone;
 }
 
-/** A whole run's tone, from the status the gateway derived. */
+/**
+ * A whole run's tone, from the status the gateway derived.
+ *
+ * Three of these want a person to do something and one does not, which is the
+ * distinction the colour is carrying:
+ *
+ * - `needs_review` waits for a decision. It used to arrive as `halted`, the
+ *   executor's word for a run somebody *stopped*, so "waiting for you" and
+ *   "ended by you" were one colour and one word.
+ * - `interrupted` is a run whose process is gone mid-step. It is a failure of
+ *   the machinery rather than of the science, so it is warned about rather
+ *   than marked failed — the work up to that step is still on disk and
+ *   `--resume-from` can pick it up.
+ * - `running` is muted on purpose: nothing is being asked of anybody.
+ */
 export function runTone(status: string): Tone {
   if (status === "completed") return "pass";
+  if (status === "needs_review") return "warn";
+  if (status === "interrupted") return "warn";
   if (status === "halted") return "warn";
   if (status === "failed") return "fail";
   if (status === "running") return "muted";

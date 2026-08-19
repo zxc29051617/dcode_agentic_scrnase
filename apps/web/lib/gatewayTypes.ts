@@ -12,6 +12,14 @@ export type RunSummary = {
   scientific_run_id: string;
   status: string;
   started_at: string | null;
+  /**
+   * When this run last wrote anything, UTC ISO-8601, or null.
+   *
+   * The evidence behind a `running` or `interrupted` verdict. The gateway
+   * cannot see processes — it reads files — so it reports what it judged on
+   * rather than asking to be taken at its word.
+   */
+  last_activity_at: string | null;
   steps_recorded: number;
   cells: number | null;
   clusters: number | null;
@@ -44,6 +52,10 @@ export type RunSnapshot = {
   species: string | null;
   steps: StepEntry[];
   pending_gate: PendingGate;
+  last_activity_at: string | null;
+  /** The step a run stopped inside, when it stopped inside one. Where
+   *  `--resume-from` would pick it up. */
+  unfinished_step: string | null;
   has_report: boolean;
   warn_count: number;
   fail_count: number;

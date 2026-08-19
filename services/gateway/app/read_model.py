@@ -19,7 +19,10 @@ into a browser response.
 from __future__ import annotations
 
 import json
+import os
 import re
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -102,14 +105,108 @@ def _pending_gate(events: list[dict[str, Any]]) -> dict[str, Any] | None:
     return {k: v for k, v in open_request.items() if k not in {"ts", "event"}}
 
 
-def _derive_status(events: list[dict[str, Any]], *, has_report: bool) -> str:
+#: The step that started and never finished, or None.
+#:
+#: A run writes `step_start` and then `step_end` for the same step. One without
+#: the other means the run was inside that step when the record stops — either
+#: because it is still working, or because whatever was working is gone.
+def _unfinished_step(events: list[dict[str, Any]]) -> str | None:
+    open_step: str | None = None
+    for event in events:
+        name = event.get("step")
+        if not isinstance(name, str):
+            continue
+        if event.get("event") == "step_start":
+            open_step = name
+        elif event.get("event") in {"step_end", "step_skipped"} and name == open_step:
+            open_step = None
+    return open_step
+
+
+#: How long a run may write nothing before "in progress" stops being the honest
+#: reading of it.
+#:
+#: This is a threshold and therefore a judgement, so it is named, generous, and
+#: reported alongside its evidence rather than applied silently — `last_activity_at`
+#: travels in the projection so a reader can see what the call was made on.
+#:
+#: Generous because the executor legitimately goes quiet: `cellranger_count` on
+#: a real library runs for tens of minutes, and an audit log only gains an entry
+#: when a step begins or ends. Too short a threshold would libel a working run,
+#: which is the worse error of the two — a run wrongly called interrupted invites
+#: somebody to start a second one on top of it.
+#:
+#: `GATEWAY_STALE_AFTER_SECONDS` overrides it for a deployment whose steps are
+#: slower than this one's.
+DEFAULT_STALE_AFTER_SECONDS = 90 * 60
+
+
+def stale_after_seconds() -> float:
+    raw = os.environ.get("GATEWAY_STALE_AFTER_SECONDS")
+    try:
+        value = float(raw) if raw else DEFAULT_STALE_AFTER_SECONDS
+    except ValueError:
+        return DEFAULT_STALE_AFTER_SECONDS
+    return value if value > 0 else DEFAULT_STALE_AFTER_SECONDS
+
+
+def _last_activity(run_dir: Path) -> float | None:
+    """When this run last wrote anything, as a POSIX timestamp.
+
+    `audit.jsonl` is the heartbeat: every step boundary and every verdict
+    appends to it, so its mtime is the last moment the executor was
+    demonstrably alive. The run directory's own mtime is taken too, because a
+    step that creates its output folder touches the parent before it has
+    anything to record.
+
+    Two stats, not a walk. A finished run holds gigabytes of `.h5ad` and this
+    function runs on every request for every run in the list.
+    """
+    newest: float | None = None
+    for candidate in (run_dir / "audit.jsonl", run_dir):
+        try:
+            stamp = candidate.stat().st_mtime
+        except OSError:
+            continue
+        newest = stamp if newest is None else max(newest, stamp)
+    return newest
+
+
+def _derive_status(
+    events: list[dict[str, Any]],
+    *,
+    has_report: bool,
+    last_activity: float | None = None,
+    now: float | None = None,
+) -> str:
+    """Where this run stands, in the executor's own vocabulary.
+
+    The words match `src/state.py::RunStatus` on purpose. This used to return
+    `halted` for a run waiting at a gate, which is the executor's word for a
+    run a person *stopped* — so the two situations a reader most needs to tell
+    apart shared a name, and the app's "needs attention" counter, which looks
+    for `needs_review`, could never find one.
+
+    `interrupted` is this projection's own word, and it is the one thing here
+    that is inferred rather than recorded. The gateway reads files; it cannot
+    see processes, and the run it is describing may not even be on this
+    machine. So it says what it can defend: this run stopped mid-step and has
+    written nothing since, for longer than any step here takes. A caller that
+    wants to judge for itself gets `last_activity_at` in the same response.
+    """
     if has_report:
         return "completed"
     if _pending_gate(events) is not None:
-        return "halted"
-    if events:
-        return "running"
-    return "unknown"
+        return "needs_review"
+    if not events:
+        return "unknown"
+
+    unfinished = _unfinished_step(events)
+    if unfinished is not None and last_activity is not None:
+        elapsed = (now if now is not None else time.time()) - last_activity
+        if elapsed > stale_after_seconds():
+            return "interrupted"
+    return "running"
 
 
 def _judge_verdicts(events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -211,6 +308,14 @@ def _headline(run_dir: Path) -> dict[str, int | None]:
     return summary
 
 
+def _iso(stamp: float | None) -> str | None:
+    """A POSIX timestamp as UTC ISO-8601, or None. Rendered rather than raw so
+    a browser is not asked to know which epoch the number came from."""
+    if stamp is None:
+        return None
+    return datetime.fromtimestamp(stamp, tz=timezone.utc).isoformat(timespec="seconds")
+
+
 def _has_report(run_dir: Path) -> bool:
     return (
         _find_report(run_dir, "report.md") is not None
@@ -229,10 +334,17 @@ def list_runs(runs_root: Path) -> list[dict[str, Any]]:
             continue  # not a run directory this service recognises
         events = _read_audit(child)
         has_report = _has_report(child)
+        activity = _last_activity(child)
         rows.append({
             "scientific_run_id": child.name,
-            "status": _derive_status(events, has_report=has_report),
+            "status": _derive_status(
+                events, has_report=has_report, last_activity=activity
+            ),
             "started_at": (metadata.get("runtime") or {}).get("started_at"),
+            # The evidence behind a `running` or `interrupted` verdict, so the
+            # threshold that produced it can be second-guessed by whoever is
+            # looking at the row rather than only trusted.
+            "last_activity_at": _iso(activity),
             "steps_recorded": len(_step_order(events)),
             **_headline(child),
         })
@@ -248,12 +360,19 @@ def get_run_snapshot(runs_root: Path, run_id: str) -> dict[str, Any] | None:
         return None
     events = _read_audit(run_dir)
     has_report = _has_report(run_dir)
+    activity = _last_activity(run_dir)
     step_order = _step_order(events)
     step_status = _step_status(events)
     verdicts = _judge_verdicts(events)
     return {
         "scientific_run_id": run_id,
-        "status": _derive_status(events, has_report=has_report),
+        "status": _derive_status(
+            events, has_report=has_report, last_activity=activity
+        ),
+        "last_activity_at": _iso(activity),
+        # Named so a reader of an `interrupted` run knows where it stopped, and
+        # so `--resume-from` has somewhere to start from.
+        "unfinished_step": _unfinished_step(events),
         "started_at": (metadata.get("runtime") or {}).get("started_at"),
         "species": (metadata.get("source") or {}).get("config", {}).get("species"),
         "steps": [

@@ -78,7 +78,11 @@ def test_list_runs_returns_every_fixture_run(client):
 def test_list_runs_reports_correct_status(client):
     rows = {row["scientific_run_id"]: row for row in client.get("/v1/scientific-runs").json()}
     assert rows["demo-2026-0001"]["status"] == "completed"
-    assert rows["demo-2026-0002"]["status"] == "halted"
+    # `needs_review`, not `halted`. The executor's vocabulary reserves `halted`
+    # for a run a person stopped; a run waiting at a gate has not been stopped,
+    # it is waiting. They were the same word here, so the app's "needs
+    # attention" counter — which looks for `needs_review` — could never find one.
+    assert rows["demo-2026-0002"]["status"] == "needs_review"
 
 
 # --- run detail -----------------------------------------------------------------
@@ -93,11 +97,11 @@ def test_run_detail_completed_has_no_pending_gate(client):
     assert len(body["steps"]) > 0
 
 
-def test_run_detail_halted_exposes_pending_gate(client):
+def test_run_detail_waiting_exposes_pending_gate(client):
     r = client.get("/v1/scientific-runs/demo-2026-0002")
     assert r.status_code == 200
     body = r.json()
-    assert body["status"] == "halted"
+    assert body["status"] == "needs_review"
     assert body["pending_gate"] is not None
     assert body["pending_gate"]["step"] == "apply_cell_qc_filter"
     assert body["has_report"] is False
@@ -308,3 +312,154 @@ def test_absolute_path_run_id_is_rejected_by_the_router(traversal_client):
     r = client.get(f"/v1/scientific-runs/{secret}")
     assert r.status_code == 404
     assert "leak" not in r.text
+
+
+# --- liveness: telling a working run from a dead one -----------------------------
+#
+# Four runs sat in this project's `runs/` reporting `running` for hours after
+# the processes writing them had been killed, and nothing distinguished them
+# from a run that was genuinely working. The cost was not cosmetic: the wrong
+# status produced a wrong diagnosis — a real investigation went looking for a
+# bug in `fastq_qc`, which had never failed. It had been killed.
+
+
+import json
+import time
+
+import pytest
+
+
+def _write_run(root, run_id, events, *, age_seconds=0.0, report=False):
+    """A synthetic run directory whose audit log is `age_seconds` old."""
+    run = root / run_id
+    run.mkdir(parents=True, exist_ok=True)
+    (run / "run_metadata.json").write_text(
+        json.dumps({"runtime": {"started_at": "2026-01-01T00:00:00Z"}, "source": {}}),
+        encoding="utf-8",
+    )
+    (run / "audit.jsonl").write_text(
+        "\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8"
+    )
+    if report:
+        (run / "report.md").write_text("# report", encoding="utf-8")
+    stamp = time.time() - age_seconds
+    for path in (run / "audit.jsonl", run):
+        os.utime(path, (stamp, stamp))
+    return run
+
+
+import os  # noqa: E402  (used by _write_run above)
+
+
+@pytest.fixture
+def liveness_client(tmp_path, monkeypatch):
+    root = tmp_path / "runs"
+    root.mkdir()
+    monkeypatch.setenv("GATEWAY_RUNS_ROOT", str(root))
+    from app.config import get_settings
+    get_settings.cache_clear()
+    from app.main import app
+    with TestClient(app) as c:
+        yield c, root
+    get_settings.cache_clear()
+
+
+MID_STEP = [
+    {"event": "step_start", "step": "ingest_validate"},
+    {"event": "step_end", "step": "ingest_validate", "status": "ok"},
+    {"event": "step_start", "step": "fastq_qc"},
+]
+
+
+def test_a_run_writing_right_now_is_running(liveness_client):
+    client, root = liveness_client
+    _write_run(root, "fresh-run", MID_STEP, age_seconds=5)
+    rows = {r["scientific_run_id"]: r for r in client.get("/v1/scientific-runs").json()}
+    assert rows["fresh-run"]["status"] == "running"
+
+
+def test_a_run_killed_mid_step_is_interrupted_not_running(liveness_client, monkeypatch):
+    """The bug this whole section exists for."""
+    client, root = liveness_client
+    monkeypatch.setenv("GATEWAY_STALE_AFTER_SECONDS", "60")
+    _write_run(root, "killed-run", MID_STEP, age_seconds=3600)
+    rows = {r["scientific_run_id"]: r for r in client.get("/v1/scientific-runs").json()}
+    assert rows["killed-run"]["status"] == "interrupted"
+
+
+def test_an_interrupted_run_names_the_step_it_died_in(liveness_client, monkeypatch):
+    client, root = liveness_client
+    monkeypatch.setenv("GATEWAY_STALE_AFTER_SECONDS", "60")
+    _write_run(root, "killed-run", MID_STEP, age_seconds=3600)
+    body = client.get("/v1/scientific-runs/killed-run").json()
+    assert body["status"] == "interrupted"
+    assert body["unfinished_step"] == "fastq_qc"
+
+
+def test_the_evidence_for_the_verdict_travels_with_it(liveness_client):
+    """A threshold is a judgement, so what it was applied to is reported too."""
+    client, root = liveness_client
+    _write_run(root, "some-run", MID_STEP, age_seconds=120)
+    row = client.get("/v1/scientific-runs").json()[0]
+    assert row["last_activity_at"] is not None
+    assert row["last_activity_at"].endswith("+00:00")
+
+
+def test_a_long_silent_step_is_not_libelled_as_interrupted(liveness_client):
+    """`cellranger_count` runs for tens of minutes and writes no audit events.
+
+    Calling a working run interrupted is the worse error of the two: it invites
+    somebody to start a second analysis on top of a live one. So the default
+    threshold is generous, and this asserts it stays that way.
+    """
+    client, root = liveness_client
+    _write_run(root, "slow-run", MID_STEP, age_seconds=45 * 60)
+    rows = {r["scientific_run_id"]: r for r in client.get("/v1/scientific-runs").json()}
+    assert rows["slow-run"]["status"] == "running"
+
+
+def test_a_run_between_steps_is_never_interrupted(liveness_client, monkeypatch):
+    """No step is open, so there is nothing to have been interrupted in.
+
+    A run that finished a step and stopped is idle, not broken mid-work, and
+    the two want different words.
+    """
+    client, root = liveness_client
+    monkeypatch.setenv("GATEWAY_STALE_AFTER_SECONDS", "60")
+    _write_run(root, "between", MID_STEP[:2], age_seconds=3600)
+    rows = {r["scientific_run_id"]: r for r in client.get("/v1/scientific-runs").json()}
+    assert rows["between"]["status"] == "running"
+
+
+def test_a_finished_run_is_completed_however_old(liveness_client, monkeypatch):
+    client, root = liveness_client
+    monkeypatch.setenv("GATEWAY_STALE_AFTER_SECONDS", "60")
+    _write_run(root, "old-done", MID_STEP, age_seconds=10 * 86400, report=True)
+    rows = {r["scientific_run_id"]: r for r in client.get("/v1/scientific-runs").json()}
+    assert rows["old-done"]["status"] == "completed"
+
+
+def test_a_pending_gate_beats_staleness(liveness_client, monkeypatch):
+    """A run waiting for a person has not been interrupted — it is waiting.
+
+    This is the case the old code got wrong twice over: it called it `halted`,
+    and staleness would now be tempted to call it `interrupted`. Neither is
+    true, and a gate waiting a week is still a gate waiting.
+    """
+    client, root = liveness_client
+    monkeypatch.setenv("GATEWAY_STALE_AFTER_SECONDS", "60")
+    _write_run(root, "waiting", MID_STEP + [
+        {"event": "human_gate_open", "gate": "human_gate", "step": "fastq_qc",
+         "verdict": "warn", "reasons": [], "revisable": []},
+    ], age_seconds=7 * 86400)
+    rows = {r["scientific_run_id"]: r for r in client.get("/v1/scientific-runs").json()}
+    assert rows["waiting"]["status"] == "needs_review"
+
+
+def test_an_unreadable_threshold_falls_back_to_the_default(liveness_client, monkeypatch):
+    """A typo in configuration must not silently disable the check."""
+    client, root = liveness_client
+    monkeypatch.setenv("GATEWAY_STALE_AFTER_SECONDS", "not-a-number")
+    _write_run(root, "typo-env", MID_STEP, age_seconds=10 * 86400)
+    rows = {r["scientific_run_id"]: r for r in client.get("/v1/scientific-runs").json()}
+    assert rows["typo-env"]["status"] == "interrupted"
