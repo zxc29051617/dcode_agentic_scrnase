@@ -64,6 +64,8 @@ def _looks_like(path: Path | None) -> str:
 def _registry_steps() -> tuple[list[str], list[str], str | None]:
     """`(all_steps, mainline, error)` read from the executor's own registry."""
     try:
+        from .scientific import ensure_importable
+        ensure_importable()
         from src.registry import MAINLINE, REGISTRY  # type: ignore[import-not-found]
     except Exception as exc:  # noqa: BLE001
         return [], [], f"the step registry is not importable here ({type(exc).__name__})"

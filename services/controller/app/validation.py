@@ -32,6 +32,10 @@ from .domain import (
 
 #: Species the executor can resolve constants and a reference for. Read from the
 #: scientific package rather than restated, so this list cannot fall behind it.
+from .scientific import ensure_importable
+
+ensure_importable()
+
 try:  # pragma: no cover - exercised by whichever import path is live
     from src.species import known as _known_species  # type: ignore[import-not-found]
 
@@ -66,6 +70,7 @@ def validate_species(species: Any) -> tuple[str | None, list[str], list[dict[str
         # miss here is checked against the canonical names before it is called
         # an error.
         try:
+            ensure_importable()
             from src.species import canonical  # type: ignore[import-not-found]
 
             if canonical(text):

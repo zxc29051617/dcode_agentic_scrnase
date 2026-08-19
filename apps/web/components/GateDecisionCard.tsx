@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import type { GateState } from "@/lib/controllerTypes";
+import { candidatesFor, filterCandidates, type GateCandidate } from "@/lib/gateCandidates";
 
 /**
  * The accept / revise / stop control for a run waiting at a human gate.
@@ -141,7 +142,13 @@ export default function GateDecisionCard({ state }: { state: GateState }) {
 
       {gate.evidence && Object.keys(gate.evidence).length > 0 && (
         <details data-testid="gate-evidence">
-          <summary>Evidence this decision is about</summary>
+          {/* Kept, and deliberately not the interface. Sixty-one models
+              rendered as raw JSON above an empty text box left the reading,
+              remembering and retyping to a person, for a decision the system
+              had already enumerated every option for. The picker below is
+              where the choice is made; this stays for checking what the
+              executor actually recorded. */}
+          <summary>Full recorded evidence (JSON, for checking)</summary>
           <pre style={{ overflowX: "auto", fontSize: "0.75rem" }}>
             {JSON.stringify(gate.evidence, null, 2)}
           </pre>
@@ -185,19 +192,34 @@ export default function GateDecisionCard({ state }: { state: GateState }) {
               <p className="subtle" style={{ marginTop: 0 }}>
                 Changing <code>{gate.revise_target}</code> onward. Blank keeps the current value.
               </p>
-              {offered.map((name) => (
-                <label key={name} style={{ display: "block", padding: "0.15rem 0" }}>
-                  <code>{name}</code>{" "}
-                  <input
-                    name={name}
-                    data-testid={`override-${name}`}
+              {offered.map((name) => {
+                // The executor listed the options for this parameter, so pick
+                // from them. Where it did not, a text box is the honest
+                // control — inventing a menu would be inventing choices.
+                const enumerated = candidatesFor(name, gate.evidence);
+                return enumerated ? (
+                  <CandidatePicker
+                    key={name}
+                    group={enumerated}
                     value={overrides[name] ?? ""}
-                    onChange={(event) =>
-                      setOverrides((current) => ({ ...current, [name]: event.target.value }))
+                    onChange={(next) =>
+                      setOverrides((current) => ({ ...current, [name]: next }))
                     }
                   />
-                </label>
-              ))}
+                ) : (
+                  <label key={name} style={{ display: "block", padding: "0.15rem 0" }}>
+                    <code>{name}</code>{" "}
+                    <input
+                      name={name}
+                      data-testid={`override-${name}`}
+                      value={overrides[name] ?? ""}
+                      onChange={(event) =>
+                        setOverrides((current) => ({ ...current, [name]: event.target.value }))
+                      }
+                    />
+                  </label>
+                );
+              })}
             </>
           )}
         </div>
@@ -230,6 +252,199 @@ export default function GateDecisionCard({ state }: { state: GateState }) {
         threshold — <code>accept</code>, <code>revise</code> and <code>stop</code> are recorded
         against a person.
       </p>
+    </div>
+  );
+}
+
+/**
+ * Pick one option the executor enumerated, from the executor's own list.
+ *
+ * Three things this has to get right, and the third is the one that bites.
+ *
+ * **The descriptions survive.** Sixty-one filenames in a bare `<select>` would
+ * replace "read JSON to find a name" with "guess from a name", which is not an
+ * improvement for a decision whose whole difficulty is knowing what the options
+ * mean. `Adult_Human_PBMC` and `Immune_All_Low` are distinguishable only by
+ * what they were trained on, and that sentence is in the evidence.
+ *
+ * **Availability is stated before the choice, not after.** Two of the sixty-one
+ * models are cached locally. Choosing one of the other fifty-nine is a decision
+ * to wait for a download, and finding that out afterwards is the experience
+ * this grouping exists to prevent. Nothing here downloads anything — the same
+ * rule as everywhere else in this app: it reports, a person decides.
+ *
+ * **Selecting is not deciding.** This writes to the same `overrides` state the
+ * text box wrote to. `accept` / `revise` / `stop` and the submit path are
+ * untouched; a picked value is still only a proposal until somebody presses
+ * Submit.
+ */
+function CandidatePicker({
+  group,
+  value,
+  onChange,
+}: {
+  group: NonNullable<ReturnType<typeof candidatesFor>>;
+  value: string;
+  onChange: (next: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const matches = filterCandidates(group.candidates, query);
+  const local = matches.filter((c) => c.local === true);
+  const remote = matches.filter((c) => c.local === false);
+  const plain = matches.filter((c) => c.local === null);
+  const chosen = group.candidates.find((c) => c.value === value) ?? null;
+
+  return (
+    <div data-testid={`picker-${group.parameter}`} style={{ marginTop: "0.5rem" }}>
+      <div style={{ display: "flex", gap: "0.6rem", alignItems: "baseline", flexWrap: "wrap" }}>
+        <code>{group.parameter}</code>
+        <span className="subtle">
+          {group.candidates.length} option{group.candidates.length === 1 ? "" : "s"} recorded by{" "}
+          this step
+        </span>
+      </div>
+
+      <input
+        type="search"
+        placeholder="Filter by name or description…"
+        value={query}
+        data-testid={`picker-search-${group.parameter}`}
+        onChange={(event) => setQuery(event.target.value)}
+        style={{ width: "100%", margin: "0.4rem 0 0.5rem", padding: "0.4rem 0.5rem" }}
+      />
+
+      {/* The value actually being submitted, restated. The list scrolls, and a
+          choice made and then scrolled past is a choice a person cannot check
+          before pressing Submit. */}
+      <p className="subtle" style={{ margin: "0 0 0.5rem" }} data-testid={`picker-chosen-${group.parameter}`}>
+        {chosen ? (
+          <>
+            selected <code>{chosen.value}</code>
+            {chosen.local === false && (
+              <strong> — not downloaded on this machine</strong>
+            )}
+          </>
+        ) : (
+          <>nothing selected — the current value is kept</>
+        )}
+      </p>
+
+      <div
+        style={{
+          maxHeight: "22rem",
+          overflowY: "auto",
+          border: "1px solid var(--line)",
+          borderRadius: "6px",
+          padding: "0.35rem",
+        }}
+      >
+        {matches.length === 0 && (
+          <p className="subtle" style={{ margin: "0.5rem" }}>
+            Nothing matches “{query}”.
+          </p>
+        )}
+        {local.length > 0 && (
+          <CandidateGroup
+            heading="Available now"
+            note="already downloaded on this machine"
+            items={local}
+            parameter={group.parameter}
+            value={value}
+            onChange={onChange}
+          />
+        )}
+        {remote.length > 0 && (
+          <CandidateGroup
+            heading="Needs downloading first"
+            note="CellTypist fetches these on use; this page does not download anything"
+            items={remote}
+            parameter={group.parameter}
+            value={value}
+            onChange={onChange}
+          />
+        )}
+        {plain.length > 0 && (
+          <CandidateGroup
+            heading={null}
+            note={null}
+            items={plain}
+            parameter={group.parameter}
+            value={value}
+            onChange={onChange}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CandidateGroup({
+  heading,
+  note,
+  items,
+  parameter,
+  value,
+  onChange,
+}: {
+  heading: string | null;
+  note: string | null;
+  items: GateCandidate[];
+  parameter: string;
+  value: string;
+  onChange: (next: string) => void;
+}) {
+  return (
+    <div style={{ marginBottom: "0.5rem" }}>
+      {heading && (
+        <p
+          className="subtle"
+          style={{ margin: "0.35rem 0.4rem 0.3rem", fontSize: "0.75rem", letterSpacing: "0.04em" }}
+        >
+          <strong>{heading.toUpperCase()}</strong>
+          {note ? ` · ${note}` : ""}
+        </p>
+      )}
+      {items.map((item) => {
+        const selected = value === item.value;
+        return (
+          <label
+            key={item.value}
+            data-testid={`option-${item.value}`}
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1.1rem 1fr",
+              gap: "0.5rem",
+              alignItems: "start",
+              padding: "0.4rem 0.45rem",
+              borderRadius: "5px",
+              cursor: "pointer",
+              background: selected ? "var(--reused-bg)" : undefined,
+            }}
+          >
+            <input
+              type="radio"
+              name={`candidate-${parameter}`}
+              checked={selected}
+              onChange={() => onChange(item.value)}
+              style={{ marginTop: "0.25rem" }}
+            />
+            <span>
+              <code>{item.value}</code>
+              {item.local === false && (
+                <span className="subtle"> · not downloaded</span>
+              )}
+              {item.description && (
+                <span
+                  className="subtle"
+                  style={{ display: "block", fontSize: "0.85rem", lineHeight: 1.45 }}
+                >
+                  {item.description}
+                </span>
+              )}
+            </span>
+          </label>
+        );
+      })}
     </div>
   );
 }

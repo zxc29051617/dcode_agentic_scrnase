@@ -584,6 +584,8 @@ def _coerce(raw: dict[str, Any], offered: list[str]) -> tuple[dict[str, Any], li
     accept nothing and say why.
     """
     try:
+        from .scientific import ensure_importable
+        ensure_importable()
         from src.registry import coerce_overrides  # type: ignore[import-not-found]
     except Exception as exc:  # noqa: BLE001
         if not raw:
