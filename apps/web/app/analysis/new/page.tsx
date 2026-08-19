@@ -4,7 +4,11 @@ import SpeciesNotice from "@/components/SpeciesNotice";
 import { describeAssistantModel } from "@/lib/assistantModel";
 import { INTAKE_INSTRUCTIONS } from "@/lib/intakeActions";
 import { controllerConfigured, listCatalog, listSpecies } from "@/lib/controller";
+import { getStepTimings } from "@/lib/gateway";
 import { resolveOperator } from "@/lib/operator";
+import type {
+  StepTimings,
+} from "@/lib/gatewayTypes";
 import type {
   DatasetOption,
   SpeciesCatalogView,
@@ -81,6 +85,16 @@ export default async function NewAnalysisPage() {
     species = null;
   }
 
+  // What a run of this shape has actually cost on this machine. Read from the
+  // gateway rather than the controller: it is a fact about finished runs, and
+  // the gateway is what reads those.
+  let timings: StepTimings | null = null;
+  try {
+    timings = await getStepTimings();
+  } catch {
+    timings = null;
+  }
+
   return (
     <RunShell run={null}>
       <h1>New analysis</h1>
@@ -129,6 +143,7 @@ export default async function NewAnalysisPage() {
       <AnalysisIntake
         datasets={datasets}
         speciesOptions={species?.profiled ?? []}
+        timings={timings?.steps ?? {}}
         studyDesigns={studyDesigns}
         instructions={INTAKE_INSTRUCTIONS}
         operatorMode={operator.ok ? operator.mode : "unavailable"}

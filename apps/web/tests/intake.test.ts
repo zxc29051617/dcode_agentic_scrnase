@@ -17,6 +17,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import { INTAKE_ACTIONS, INTAKE_INSTRUCTIONS, intakeActionsAsOpenAITools } from "../lib/intakeActions.ts";
 import { READ_ONLY_ACTIONS, READ_ONLY_INSTRUCTIONS } from "../lib/assistantActions.ts";
@@ -186,4 +187,62 @@ test("the gate route never converts an override value", async () => {
   assert.ok(!/Number\(\s*(overrides|value)/.test(source));
   assert.ok(!source.includes("parseFloat"));
   assert.ok(source.includes("expected_generation"), "a decision must name the gate it answers");
+});
+
+// --- the form's shape ------------------------------------------------------
+//
+// Which fields the form marks `required` is not a judgement made in the
+// component: they are exactly the ones the controller returns as a required
+// `missing_question`. Two opinions about what is needed is how a form comes to
+// demand something the server does not, or — worse — to accept a request the
+// server will refuse after the person has filled it all in.
+//
+// Read as text. The alternative is rendering React in this runner, which would
+// buy nothing: what is being checked is which attributes are in the source.
+
+test("the form requires exactly what the controller calls a required question", () => {
+  const source = readFileSync(
+    new URL("../components/AnalysisIntake.tsx", import.meta.url),
+    "utf8",
+  );
+  const form = source.slice(source.indexOf('data-testid="manual-form"'));
+
+  // The controller's required questions: input_ref, species, research_question.
+  // `study_design_ref` is conditionally required and deliberately not marked.
+  for (const field of ["input_ref", "species_choice", "research_question"]) {
+    const decl = form.slice(form.indexOf(`name="${field}"`));
+    const upToClose = decl.slice(0, decl.indexOf(">"));
+    assert.ok(
+      upToClose.includes("required"),
+      `${field} is a required question on the controller and is not marked required on the form`,
+    );
+  }
+});
+
+test("no advanced setting is marked required", () => {
+  // Every one of these has a correct blank answer: the pipeline uses a default
+  // or stops at a gate. Marking one required would make the form demand a
+  // decision the run exists to defer.
+  const source = readFileSync(
+    new URL("../components/AnalysisIntake.tsx", import.meta.url),
+    "utf8",
+  );
+  const form = source.slice(source.indexOf('data-testid="manual-form"'));
+  for (const field of ["embedding_method", "integration_mode", "resolution", "study_design_ref"]) {
+    const decl = form.slice(form.indexOf(`name="${field}"`));
+    const upToClose = decl.slice(0, decl.indexOf(">"));
+    assert.ok(!upToClose.includes("required"), `${field} must not be a required field`);
+  }
+});
+
+test("the form says which decisions it deliberately does not carry", () => {
+  // A person who has used other tools expects to set QC thresholds and the
+  // annotation model up front. Their absence reads as an oversight unless the
+  // page says it is a choice — and the reason is the whole design of the gates.
+  const source = readFileSync(
+    new URL("../components/AnalysisIntake.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /Not on this form on purpose/);
+  assert.match(source, /CellTypist/);
 });

@@ -6,6 +6,8 @@ import { CopilotKit, useCopilotChat } from "@copilotkit/react-core";
 import { CopilotChat } from "@copilotkit/react-ui";
 import { Role, TextMessage } from "@copilotkit/runtime-client-gql";
 import "@copilotkit/react-ui/styles.css";
+import { stepLabel } from "@/lib/stepLabels";
+import { humanDuration, expectedDuration } from "@/lib/duration";
 import type {
   SpeciesProfileView,
   DatasetOption,
@@ -83,6 +85,7 @@ function AnalysisList({ analysis }: { analysis: Record<string, unknown> }) {
 export default function AnalysisIntake({
   datasets,
   speciesOptions = [],
+  timings = {},
   studyDesigns,
   instructions,
   operatorMode,
@@ -93,6 +96,10 @@ export default function AnalysisIntake({
   /** Empty when the controller is too old to serve /v1/species — the field
    *  then offers only "another species", which still works. */
   speciesOptions?: SpeciesProfileView[];
+  /** Measured per-step durations from this machine's finished runs. Empty when
+   *  too few have finished to draw one from — the page then says so rather
+   *  than showing a number nothing supports. */
+  timings?: Record<string, { n: number; median_seconds: number; min_seconds: number; max_seconds: number }>;
   studyDesigns: StudyDesignOption[];
   instructions: string;
   operatorMode: "local" | "configured" | "unavailable";
@@ -198,6 +205,17 @@ export default function AnalysisIntake({
     }
   }, [draft, confirming, refresh]);
 
+  // Summed from the plan's own steps rather than from a whole-run total: the
+  // route decides which steps run, and a FASTQ run and a matrix run differ by
+  // the most expensive step there is. Withheld entirely when fewer than half
+  // the planned steps have been measured — a partial sum reads as a total.
+  const planSteps = draft?.execution_plan?.steps ?? [];
+  const measured = planSteps.map((step) => timings[step]).filter(Boolean);
+  const planEstimate =
+    measured.length > 0 && measured.length >= planSteps.length / 2
+      ? humanDuration(measured.reduce((total, t) => total + t!.median_seconds, 0))
+      : null;
+
   const request = draft?.request;
   const liveStatus = status?.status ?? request?.status ?? null;
   const runId = status?.scientific_run_id ?? request?.scientific_run_id ?? null;
@@ -240,7 +258,7 @@ export default function AnalysisIntake({
                 band of empty panel under the composer before the form
                 below it. CopilotChat lays out from the top, so any height
                 beyond the conversation is visible as dead space. */}
-            <div style={{ height: "19rem" }}>
+            <div className="intake-chat" style={{ height: "19rem" }}>
               <CopilotChat
                 instructions={`${instructions}\n\nThis conversation's id is ${conversationId}; pass it as conversation_id when you prepare a request.`}
                 labels={{
@@ -379,20 +397,43 @@ export default function AnalysisIntake({
                   <strong>{draft.execution_plan.route}</strong> route.{" "}
                   {draft.execution_plan.note}
                 </p>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: "0.3rem" }}>
-                  {draft.execution_plan.steps.map((step) => (
-                    <code key={step} style={{ fontSize: "0.72rem" }}>
-                      {step}
-                    </code>
-                  ))}
-                </div>
+                {/* How long, from what this machine's own finished runs took —
+                    not from a written estimate. Absent rather than guessed
+                    when too few runs have finished to draw one from, because
+                    the number is what somebody decides to start or not on. */}
+                {planEstimate ? (
+                  <p style={{ marginTop: 0 }}>
+                    <strong>Roughly {planEstimate}</strong>
+                    <span className="subtle">
+                      {" "}
+                      of measured work, plus however long it waits at each gate for you.
+                    </span>
+                  </p>
+                ) : (
+                  <p className="subtle" style={{ marginTop: 0 }}>
+                    No time estimate yet — this machine has not finished enough runs to measure
+                    one. It will have one after a couple more.
+                  </p>
+                )}
+                <ol className="plan-steps">
+                  {draft.execution_plan.steps.map((step) => {
+                    const t = timings[step];
+                    return (
+                      <li key={step}>
+                        {stepLabel(step).title}
+                        <code className="tl-id">{step}</code>
+                        {t && <span className="subtle"> · {humanDuration(t.median_seconds)}</span>}
+                      </li>
+                    );
+                  })}
+                </ol>
                 {draft.execution_plan.gates.length > 0 && (
                   <>
                     <h3>Where it will stop and ask you</h3>
                     <ul style={{ marginTop: 0 }}>
                       {draft.execution_plan.gates.map((gate) => (
                         <li key={gate.step}>
-                          <code>{gate.step}</code> — {gate.why}
+                          <strong>{stepLabel(gate.step).title}</strong> — {gate.why}
                         </li>
                       ))}
                     </ul>
@@ -573,95 +614,173 @@ function ManualForm({
       }}
       className="intake-form"
     >
-      <label>
-        Data
-        <select name="input_ref" defaultValue="">
-          <option value="">choose a dataset…</option>
-          {datasets.map((d) => (
-            <option key={d.input_ref} value={d.input_ref}>
-              {d.display_name} ({d.kind})
-            </option>
-          ))}
-        </select>
-      </label>
-      {/* A list of what is actually installed, plus a way past it.
-          A free-text box alone made every species look equally available, and
-          the difference only surfaced at `resolve_reference`. A closed dropdown
-          would be the opposite mistake: this pipeline runs a species it has no
-          profile for, once told the constants, and a form that refuses one
-          would be lying about the executor. So: the installed ones by name,
-          and "another species" for the rest. */}
-      <label>
-        Species
-        <select
-          name="species_choice"
-          defaultValue=""
-          onChange={(e) => setSpeciesOther(e.target.value === "__other__")}
-        >
-          <option value="">choose…</option>
-          {speciesOptions.map((option: SpeciesProfileView) => (
-            <option
-              key={option.species}
-              value={option.species}
-              disabled={!option.reference_present}
-            >
-              {option.species}
-              {option.reference_present ? "" : " — reference not installed here"}
-            </option>
-          ))}
-          <option value="__other__">another species…</option>
-        </select>
-      </label>
-      {speciesOther && (
+      {/* Three fields, then everything else folded away.
+          The form used to be nine flat labels, and four of them —
+          study design, embedding, integration, clustering resolution —
+          are ones a person analysing their first dataset cannot answer and
+          should not have to. Worse, blank was the *right* answer for all
+          four and nothing said so, so a beginner reads nine empty boxes as
+          nine decisions they are unqualified to make.
+
+          Which three are required is not a judgement made here: they are
+          exactly the fields the controller returns as `missing_questions`
+          with `required: true`, so the form and the validator cannot
+          disagree about what is needed. */}
+      <fieldset className="form-group">
+        <legend>What you have</legend>
+
         <label>
-          Which species
-          <input name="species_other" placeholder="rat" />
+          Data
+          <select name="input_ref" defaultValue="" required>
+            <option value="">choose a dataset…</option>
+            {datasets.map((d) => (
+              <option key={d.input_ref} value={d.input_ref}>
+                {d.display_name} ({d.kind})
+              </option>
+            ))}
+          </select>
+        </label>
+
+        {/* A list of what is actually installed, plus a way past it.
+            A free-text box alone made every species look equally available,
+            and the difference only surfaced at `resolve_reference`. A closed
+            dropdown would be the opposite mistake: this pipeline runs a
+            species it has no profile for, once told the constants. */}
+        <label>
+          Species
+          <select
+            name="species_choice"
+            defaultValue=""
+            required
+            onChange={(e) => setSpeciesOther(e.target.value === "__other__")}
+          >
+            <option value="">choose…</option>
+            {speciesOptions.map((option: SpeciesProfileView) => (
+              <option
+                key={option.species}
+                value={option.species}
+                disabled={!option.reference_present}
+              >
+                {option.species}
+                {option.reference_present ? "" : " — reference not installed here"}
+              </option>
+            ))}
+            <option value="__other__">another species…</option>
+          </select>
           <span className="subtle">
-            It will run. Open the notice above for what its reference and QC constants need — the
-            pipeline asks for them rather than guessing.
+            It chooses the reference genome and the mitochondrial gene list QC measures against.
           </span>
         </label>
-      )}
-      <label>
-        Project name
-        <input name="project" placeholder="PBMC demonstration" />
-      </label>
-      <label>
-        Research question
-        <input name="research_question" placeholder="which cell types are present" />
-      </label>
-      <label>
-        Study design
-        <select name="study_design_ref" defaultValue="">
-          <option value="">none</option>
-          {studyDesigns.map((s) => (
-            <option key={s.study_design_ref} value={s.study_design_ref}>
-              {s.display_name}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label>
-        Embedding
-        <select name="embedding_method" defaultValue="">
-          <option value="">default (umap)</option>
-          <option value="umap">umap</option>
-          <option value="tsne">tsne</option>
-          <option value="both">both</option>
-        </select>
-      </label>
-      <label>
-        Integration
-        <select name="integration_mode" defaultValue="">
-          <option value="">unset — the run will say so at the gate</option>
-          <option value="none">none</option>
-          <option value="harmony">harmony (needs a study design)</option>
-        </select>
-      </label>
-      <label>
-        Clustering resolution
-        <input name="resolution" type="number" step="0.1" placeholder="1.0" />
-      </label>
+
+        {speciesOther && (
+          <label>
+            Which species
+            <input name="species_other" placeholder="rat" />
+            <span className="subtle">
+              It will run. Open the notice above for what its reference and QC constants need —
+              the pipeline asks for them rather than guessing.
+            </span>
+          </label>
+        )}
+      </fieldset>
+
+      <fieldset className="form-group">
+        <legend>What you want to know</legend>
+        <label>
+          Research question
+          <input
+            name="research_question"
+            placeholder="which cell types are present in these PBMCs"
+            required
+          />
+          <span className="subtle">
+            One sentence. It is recorded with the run, and it is what decides whether the settings
+            below are the right ones.
+          </span>
+        </label>
+        <label>
+          Project name <span className="subtle">optional</span>
+          <input name="project" placeholder="PBMC demonstration" />
+          <span className="subtle">A label for you. It changes nothing about the analysis.</span>
+        </label>
+      </fieldset>
+
+      {/* Conditionally required, so it is neither in the required group nor
+          hidden in the advanced one. The controller asks for it when the
+          question is about differences between samples, or when harmony is
+          selected — and the page says why before it is asked. */}
+      <details className="form-group">
+        <summary>
+          Study design <span className="subtle">— needed to compare samples, or to correct batches</span>
+        </summary>
+        <label>
+          Manifest
+          <select name="study_design_ref" defaultValue="">
+            <option value="">none</option>
+            {studyDesigns.map((s) => (
+              <option key={s.study_design_ref} value={s.study_design_ref}>
+                {s.display_name}
+              </option>
+            ))}
+          </select>
+          <span className="subtle">
+            One row per sequencing library, saying which sample, donor, condition and technical
+            batch it came from. Without it the run will not assume one library is one batch, and
+            the report cannot say which cells came from which sample.
+          </span>
+        </label>
+      </details>
+
+      <details className="form-group">
+        <summary>
+          Advanced settings <span className="subtle">— every one of these is safe to leave alone</span>
+        </summary>
+        <p className="subtle" style={{ marginTop: "0.6rem" }}>
+          Left blank, each uses the pipeline&rsquo;s default or stops at a gate to ask you with the
+          evidence in front of you. Blank is the normal answer.
+        </p>
+        <label>
+          Embedding
+          <select name="embedding_method" defaultValue="">
+            <option value="">default — UMAP</option>
+            <option value="umap">UMAP</option>
+            <option value="tsne">t-SNE</option>
+            <option value="both">both</option>
+          </select>
+          <span className="subtle">How the cells are laid out for viewing. Affects no numbers.</span>
+        </label>
+        <label>
+          Batch correction
+          <select name="integration_mode" defaultValue="">
+            <option value="">unset — the run will ask at a gate</option>
+            <option value="none">none</option>
+            <option value="harmony">harmony (needs a study design above)</option>
+          </select>
+          <span className="subtle">
+            Only meaningful with more than one library, and harmony corrects on the manifest&rsquo;s
+            technical batch and nothing else.
+          </span>
+        </label>
+        <label>
+          Clustering resolution
+          <input name="resolution" type="number" step="0.1" placeholder="1.0 (scanpy default)" />
+          <span className="subtle">
+            Higher splits cells into more, smaller clusters. It is a choice about granularity, not
+            a discovered truth — which is why there is no correct value to fill in here.
+          </span>
+        </label>
+      </details>
+
+      {/* Named rather than silently absent. Somebody who has used other tools
+          expects to set these up front, and their absence reads as an
+          oversight unless the page says it is deliberate. */}
+      <p className="subtle">
+        <strong>Not on this form on purpose:</strong> which cells to filter out, which CellTypist
+        model to label with, and which tissue to cross-check against. Each is destructive or
+        irreversible in a way that wants the data in front of you, so the run pauses and asks —
+        with the numbers it has just measured.
+      </p>
+
       <button type="submit" disabled={busy}>
         {busy ? "Checking…" : "Prepare request"}
       </button>

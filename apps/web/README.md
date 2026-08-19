@@ -222,3 +222,21 @@ into client-side JavaScript. `ANALYSIS_CONTROLLER_URL` is on the list
 controller is the one service that accepts a POST which can start an analysis,
 so a browser that learned its address could talk to it directly and bypass the
 route handlers where the operator identity is decided.
+
+## Third-party CSS
+
+Two techniques in `app/globals.css` are adapted from the
+[Uiverse.io collection](https://github.com/uiverse-io/galaxy), which is MIT
+licensed (Copyright (c) 2023 Uiverse.io). The notice is kept in the stylesheet
+beside them.
+
+What was taken is the method, not the appearance — both were restyled onto this
+app's own tokens:
+
+| | after | replaces |
+|---|---|---|
+| `.tip` | Dyls00's tooltip | `title=`, which waits a second, cannot wrap, and does not exist on touch |
+| `.working` | polidahiya's loading text | nothing; it exists for `cellranger_count`, which runs for tens of minutes writing nothing |
+
+Nothing else from that collection is used. It is overwhelmingly Tailwind-classed
+and gradient-filled, and this app is neither.

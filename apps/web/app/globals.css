@@ -30,6 +30,9 @@
      Clamped against the viewport so it never squeezes the run content beside
      it on a laptop screen. */
   --shell-aside: clamp(400px, 32vw, 620px);
+  /* The top bar's height. Sticky things below it are positioned against this,
+     so there is one number rather than three guesses. */
+  --shell-top-h: 3.4rem;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -93,6 +96,9 @@ code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.92em
 }
 .shell-top {
   grid-area: top;
+  position: sticky;
+  top: 0;
+  z-index: 15;
   display: flex;
   align-items: center;
   gap: 0.75rem;
@@ -207,6 +213,13 @@ cpk-web-inspector {
   margin-top: 0.2rem;
 }
 
+/* Bounded by the viewport, not by the document.
+   `.shell` is `min-height: 100vh`, so its second grid row is as tall as
+   whatever is in `main` — and once a run became one long document that is
+   several screens. A stretched aside gives the chat inside it no bounded box
+   to scroll in, so the conversation grew off the bottom of the page and the
+   composer went with it. Sticky + an explicit height is what makes the panel
+   its own scrollable region again, independent of how long the page is. */
 .shell-aside {
   grid-area: aside;
   border-left: 1px solid var(--line);
@@ -214,6 +227,10 @@ cpk-web-inspector {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  position: sticky;
+  top: var(--shell-top-h);
+  align-self: start;
+  height: calc(100vh - var(--shell-top-h));
 }
 
 .nav-group { margin-bottom: 1rem; }
@@ -407,8 +424,12 @@ button[data-variant="primary"] { background: var(--accent); color: #fff; border-
   }
   .shell-brand, .shell-nav { display: none; }
   .shell[data-aside="open"] .shell-aside {
+    /* A full-height overlay here, so the sticky offset and height the wide
+       layout uses have to be undone rather than half-applied. */
     position: fixed;
     inset: 0 0 0 auto;
+    top: 0;
+    height: 100vh;
     width: min(420px, 100%);
     z-index: 20;
     box-shadow: -8px 0 24px rgba(0, 0, 0, 0.18);
@@ -416,6 +437,8 @@ button[data-variant="primary"] { background: var(--accent); color: #fff; border-
   .report-layout { grid-template-columns: minmax(0, 1fr); }
   .report-toc { position: static; max-height: none; }
 }
+
+
 /* --- the landing page ------------------------------------------------------
    One primary action, stated once, in the one place a first-time reader looks.
    `.hero` is not a marketing band: it is the answer to "what do I do", and it
@@ -447,9 +470,9 @@ button[data-variant="primary"] { background: var(--accent); color: #fff; border-
 .doc-body > section { padding-top: 1.6rem; margin-top: 1.6rem; border-top: 1px solid var(--line); }
 .doc-body > section > h2 { margin-top: 0; }
 /* Anchored navigation lands below the sticky header rather than under it. */
-.doc-body > section { scroll-margin-top: 4.5rem; }
+.doc-body > section { scroll-margin-top: calc(var(--shell-top-h) + 1rem); }
 
-.doc-toc { position: sticky; top: 4.5rem; font-size: 0.85rem; }
+.doc-toc { position: sticky; top: calc(var(--shell-top-h) + 1rem); font-size: 0.85rem; }
 .doc-toc ul { list-style: none; margin: 0; padding: 0; border-left: 2px solid var(--line); }
 .doc-toc a {
   display: block; padding: 0.34rem 0 0.34rem 0.8rem;
@@ -477,3 +500,142 @@ button[data-variant="primary"] { background: var(--accent); color: #fff; border-
 .plan-steps li { padding: 0.15rem 0; }
 .plan-steps .tl-id { margin-left: 0.45rem; }
 
+/* --- the intake form -------------------------------------------------------
+   Grouped, not flat. Nine equal-weight labels asked a beginner to make nine
+   decisions; three of them are real and the rest have a correct blank answer.
+   The grouping is what says which is which before anything is read. */
+.form-group {
+  border: 1px solid var(--line); border-radius: 10px;
+  padding: 0.9rem 1rem; margin: 0 0 0.9rem;
+}
+.form-group > legend, .form-group > summary {
+  padding: 0 0.4rem; font-weight: 600; font-size: 0.9rem;
+}
+.form-group > summary { cursor: pointer; padding: 0; }
+.form-group > summary::marker { color: var(--muted); }
+/* A required field is marked by its group, not by an asterisk on the label —
+   the two required groups are the first two, and they are open. */
+.intake-form fieldset.form-group { border-color: var(--accent); }
+.intake-form label > span.subtle { display: block; margin-top: 0.2rem; font-size: 0.78rem; }
+
+
+/* --- CopilotKit: the height its own stylesheet leaves out -------------------
+   `@copilotkit/react-ui` ships `.copilotKitChat` with `height: 100%`
+   commented out, so the chat root has no height at all and grows to fit its
+   messages. Its child `.copilotKitChatBody` is `flex: 1 1 0%; min-height: 0`
+   — correctly set up to be the scroll region — but that only bounds anything
+   if an ancestor is bounded first.
+
+   Left alone the conversation runs off the bottom of the page, taking the
+   composer with it, and there is no inner scrollbar because nothing ever
+   overflowed: the element simply became as tall as its contents.
+
+   Both places this app mounts a chat give it a definite box, so this makes the
+   chat fill whichever one it is in. */
+.copilotKitChat {
+  flex: 1 1 0%;
+  min-height: 0;
+  height: 100%;
+}
+.aside-body .copilotKitChat,
+.intake-chat .copilotKitChat { height: 100%; }
+.intake-chat { display: flex; flex-direction: column; min-height: 0; }
+
+/* --- borrowed from Uiverse.io (MIT) ----------------------------------------
+   Two techniques, restyled onto this app's tokens. The Uiverse collection is
+   MIT licensed — Copyright (c) 2023 Uiverse.io — and the notice is kept here
+   because that is what the licence asks for.
+   https://github.com/uiverse-io/galaxy
+
+   What was taken is the *method*, not the appearance. Almost everything in
+   that collection is neon, gradient-filled or Tailwind-classed, and pasting
+   any of it in would fight the visual language of the rest of this app. These
+   two are pure CSS, need no JavaScript, and each replaces something this app
+   was doing worse.
+
+   1. `.tip` — after Dyls00's tooltip: an absolutely positioned label plus a
+      rotated `::before` arrow, revealed on hover and focus.
+
+      It replaces `title=`, which the summary cards used. A native tooltip
+      takes about a second to appear, cannot be styled, wraps badly, and never
+      appears at all on a touch screen — so every explanation this app had
+      attached to a number was, for a lot of readers, not there. Adding
+      `:focus-visible` makes it reachable from the keyboard too, which the
+      original does not do.
+
+   2. `.working` — after polidahiya's loading text: an `::after` whose
+      `content` cycles through "", ".", "..", "..." on a keyframe.
+
+      It replaces nothing, and it exists for `cellranger_count`, which runs for
+      tens of minutes writing nothing. A spinner would be the obvious choice
+      and is the wrong one: a spinner says "wait" and this needs to say "still
+      working", which is a sentence with moving punctuation rather than a
+      moving graphic. It is also the quieter of the two, which suits a page
+      somebody is going to leave open for half an hour. */
+
+.tip {
+  position: relative;
+  border-bottom: 1px dotted var(--muted);
+  cursor: help;
+}
+.tip > .tip-text {
+  position: absolute;
+  bottom: calc(100% + 0.55rem);
+  left: 50%;
+  transform: translateX(-50%) translateY(0.2rem);
+  z-index: 40;
+  width: max-content;
+  max-width: 22rem;
+  padding: 0.45rem 0.65rem;
+  border-radius: 8px;
+  background: var(--fg);
+  color: var(--bg);
+  font-size: 0.78rem;
+  font-weight: 400;
+  line-height: 1.45;
+  text-align: left;
+  white-space: normal;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.16s ease, transform 0.16s ease, visibility 0.16s;
+}
+.tip > .tip-text::before {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  width: 0.5rem;
+  height: 0.5rem;
+  background: var(--fg);
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+.tip:hover > .tip-text,
+.tip:focus-visible > .tip-text {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0);
+}
+/* Near the left or right edge the centred tooltip would be clipped by the
+   panel it sits in, so a card can ask for it to hang from one side instead. */
+.tip[data-align="start"] > .tip-text { left: 0; transform: translateX(0) translateY(0.2rem); }
+.tip[data-align="start"]:hover > .tip-text,
+.tip[data-align="start"]:focus-visible > .tip-text { transform: translateX(0) translateY(0); }
+.tip[data-align="start"] > .tip-text::before { left: 1.2rem; }
+
+.working::after {
+  content: "";
+  animation: working-dots 2.4s infinite steps(1);
+}
+@keyframes working-dots {
+  0%   { content: ""; }
+  25%  { content: "."; }
+  50%  { content: ".."; }
+  75%  { content: "..."; }
+  100% { content: ""; }
+}
+/* Somebody who has asked for less motion gets the honest static form rather
+   than nothing: the sentence still reads correctly with three dots on it. */
+@media (prefers-reduced-motion: reduce) {
+  .working::after { content: "..."; animation: none; }
+}
