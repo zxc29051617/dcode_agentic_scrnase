@@ -280,3 +280,94 @@ def validate_manifest_ref(
     except RefError as exc:
         return None, None, [str(exc)]
     return study_design_ref, path, []
+
+
+# --- what a species costs, for the intake to say before anybody commits --------
+
+
+#: What a GTF has to satisfy for a species this project has no profile for.
+#: The first four are 10x's requirements; the last three are what the T2T build
+#: found, and each of those fails *silently* — a run completes and the number it
+#: reports is wrong. They are listed to a person choosing a species because that
+#: is the last moment the cost is cheap to learn.
+GTF_REQUIREMENTS: tuple[dict[str, str], ...] = (
+    {"requirement": "an `exon` feature in column three",
+     "why": "Cell Ranger assigns UMIs by exon; without them nothing is counted."},
+    {"requirement": "`gene_id` in the attributes",
+     "why": "Cell Ranger keys every count on it."},
+    {"requirement": "`gene_name` in the attributes",
+     "why": "Without it every marker and every cell-type label is an accession "
+            "like ENSRNOG00000012345, and annotation is worthless."},
+    {"requirement": "contig names identical to the FASTA",
+     "why": "`chr1` against `1` is the usual mistake, and it produces zero counts, "
+            "not an error."},
+    {"requirement": "chrM actually annotated",
+     "why": "Liftovers and non-model assemblies drop it. Mitochondrial QC then "
+            "measures nothing rather than failing, so a run looks clean because "
+            "it checked nothing."},
+    {"requirement": "a biotype vocabulary matched to the source",
+     "why": "Ensembl, RefSeq and GENCODE spell them differently. A filter written "
+            "for one silently deletes whole gene classes from another — the T2T "
+            "build lost every immune receptor segment this way."},
+    {"requirement": "unique `gene_id`s",
+     "why": "Liftover tools emit duplicates (`LOC124905335` and `LOC124905335_1`) "
+            "and `mkref` will not tell you which one a count came from."},
+)
+
+
+def species_catalog() -> dict[str, Any]:
+    """Which species a name alone can drive, and what the others need supplied.
+
+    Read from `src/species.py` rather than restated here. That table is what the
+    executor actually consults, so a second copy in a browser would be a second
+    answer to "is this species supported" — and the one a person reads would be
+    the one that is not enforced.
+
+    `reference_present` is checked against `reference/<dirname>` on this machine,
+    because "supported" and "installed" are different questions and an intake
+    page that conflates them promises a run that cannot start.
+    """
+    ensure_importable()
+    try:
+        from src.species import (  # type: ignore[import-not-found]
+            SPECIES_ALIASES,
+            SPECIES_PROFILES,
+        )
+    except Exception:  # noqa: BLE001
+        # Fail closed and say so, rather than rendering an empty list that reads
+        # as "no species are supported".
+        return {"available": False, "profiled": [], "recognised": [],
+                "gtf_requirements": list(GTF_REQUIREMENTS)}
+
+    from .scientific import REPO_ROOT
+
+    profiled = []
+    for name in sorted(SPECIES_PROFILES):
+        p = SPECIES_PROFILES[name]
+        ref = p.reference
+        profiled.append({
+            "species": name,
+            "reference_dirname": ref.dirname,
+            "reference_present": (REPO_ROOT / "reference" / ref.dirname).exists(),
+            "note": ref.note,
+            "how": "prebuilt" if ref.url else "build",
+            "download_gb": ref.download_gb,
+            "disk_gb": ref.disk_gb,
+            "marker_db": p.marker_db,
+            "qc_defaults_native": p.qc_defaults_native,
+        })
+
+    # Names the pipeline recognises but has no vetted gene lists for. Kept
+    # distinct from "unknown": a run for one of these is supported, it just has
+    # to be told the constants instead of being able to look them up.
+    recognised = sorted({
+        canonical for canonical in SPECIES_ALIASES.values()
+        if canonical not in SPECIES_PROFILES
+    })
+
+    return {
+        "available": True,
+        "profiled": profiled,
+        "recognised": recognised,
+        "gtf_requirements": list(GTF_REQUIREMENTS),
+    }

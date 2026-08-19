@@ -580,3 +580,57 @@ def test_the_controller_writes_nothing_into_the_run_directory(client, store, run
     client.get(f"/v1/analysis-requests/{request_id}")
     after = {p: p.stat().st_mtime_ns for p in (runs_root / run_id).rglob("*")}
     assert before == after
+
+
+# --- the species notice ---------------------------------------------------------
+#
+# The intake has to tell somebody what a species costs *before* they commit to
+# it, and it has to be the truth the executor uses rather than a second list
+# that drifts. These assert the projection stays tied to `src/species.py`, and
+# that "supported" is never allowed to read as "installed".
+
+
+def test_the_species_list_comes_from_the_scientific_package(client):
+    body = client.get("/v1/species").json()
+    assert body["available"] is True, "the scientific package was not importable"
+    from src.species import SPECIES_PROFILES
+
+    assert {row["species"] for row in body["profiled"]} == set(SPECIES_PROFILES)
+
+
+def test_supported_and_installed_are_different_questions(client):
+    """A species with a profile still needs its reference on this machine.
+
+    Conflating the two promises a run that cannot start, and the person finds
+    out at `resolve_reference` instead of at the intake form.
+    """
+    body = client.get("/v1/species").json()
+    for row in body["profiled"]:
+        assert "reference_present" in row
+        assert isinstance(row["reference_present"], bool)
+
+
+def test_a_recognised_species_is_not_reported_as_profiled(client):
+    """`rat` is understood and has no vetted gene lists. Those are different
+    states, and collapsing them is what would make the run invent constants."""
+    body = client.get("/v1/species").json()
+    profiled = {row["species"] for row in body["profiled"]}
+    assert "rat" in body["recognised"]
+    assert not profiled & set(body["recognised"])
+
+
+def test_the_gtf_requirements_are_stated_with_their_consequence(client):
+    """Each one fails silently, so a requirement without its consequence is
+    just a checklist somebody skims."""
+    body = client.get("/v1/species").json()
+    assert len(body["gtf_requirements"]) >= 7
+    for item in body["gtf_requirements"]:
+        assert item["requirement"] and item["why"]
+
+
+def test_the_species_notice_names_no_path_on_this_machine(client):
+    """It is rendered in a browser, like every other projection here."""
+    import json as _json
+
+    text = _json.dumps(client.get("/v1/species").json())
+    assert "/home/" not in text and "/tmp/" not in text

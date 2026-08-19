@@ -16,6 +16,7 @@ import "server-only";
 
 import type {
   CatalogView,
+  SpeciesCatalogView,
   ConfirmResponse,
   DatasetOption,
   DecisionResponse,
@@ -29,6 +30,8 @@ export type {
   AnalysisRequest,
   AnalysisSettings,
   CatalogView,
+  SpeciesCatalogView,
+  SpeciesProfileView,
   ConfirmResponse,
   DatasetOption,
   DecisionResponse,
@@ -212,4 +215,8 @@ export async function submitGateDecision(
 
 export async function listCatalog(): Promise<CatalogView> {
   return call<CatalogView>("/v1/datasets");
+}
+
+export async function listSpecies(): Promise<SpeciesCatalogView> {
+  return call<SpeciesCatalogView>("/v1/species");
 }

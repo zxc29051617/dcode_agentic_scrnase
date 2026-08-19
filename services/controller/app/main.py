@@ -149,6 +149,23 @@ def list_datasets(catalog: Catalog = Depends(get_catalog)) -> dict:
     }
 
 
+@app.get("/v1/species")
+def list_species() -> dict:
+    """Which species a name alone can drive, and what the rest need supplied.
+
+    Projected from `src/species.py`, which is the table the executor consults.
+    A browser-side copy of this list would be a second answer to "is this
+    species supported", and the copy a person reads would be the one nothing
+    enforces.
+
+    `available: false` means the scientific package could not be imported here.
+    It is reported rather than rendered as an empty list, because an empty list
+    reads as "no species are supported" and would be a lie about a working
+    pipeline.
+    """
+    return validation.species_catalog()
+
+
 # --- preview ------------------------------------------------------------------
 
 

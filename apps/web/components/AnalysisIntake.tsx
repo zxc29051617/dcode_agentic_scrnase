@@ -7,6 +7,7 @@ import { CopilotChat } from "@copilotkit/react-ui";
 import { Role, TextMessage } from "@copilotkit/runtime-client-gql";
 import "@copilotkit/react-ui/styles.css";
 import type {
+  SpeciesProfileView,
   DatasetOption,
   PreviewResponse,
   RequestStatusView,
@@ -81,6 +82,7 @@ function AnalysisList({ analysis }: { analysis: Record<string, unknown> }) {
 
 export default function AnalysisIntake({
   datasets,
+  speciesOptions = [],
   studyDesigns,
   instructions,
   operatorMode,
@@ -88,6 +90,9 @@ export default function AnalysisIntake({
   modelReason,
 }: {
   datasets: DatasetOption[];
+  /** Empty when the controller is too old to serve /v1/species — the field
+   *  then offers only "another species", which still works. */
+  speciesOptions?: SpeciesProfileView[];
   studyDesigns: StudyDesignOption[];
   instructions: string;
   operatorMode: "local" | "configured" | "unavailable";
@@ -270,6 +275,7 @@ export default function AnalysisIntake({
           <summary>Fill the request in directly</summary>
           <ManualForm
             datasets={datasets}
+            speciesOptions={speciesOptions}
             studyDesigns={studyDesigns}
             onSubmit={previewFromForm}
             requestId={request?.request_id ?? null}
@@ -520,16 +526,19 @@ export default function AnalysisIntake({
  */
 function ManualForm({
   datasets,
+  speciesOptions,
   studyDesigns,
   onSubmit,
   requestId,
 }: {
   datasets: DatasetOption[];
+  speciesOptions: SpeciesProfileView[];
   studyDesigns: StudyDesignOption[];
   onSubmit: (body: Record<string, unknown>) => Promise<void>;
   requestId: string | null;
 }) {
   const [busy, setBusy] = useState(false);
+  const [speciesOther, setSpeciesOther] = useState(false);
   return (
     <form
       data-testid="manual-form"
@@ -549,7 +558,10 @@ function ManualForm({
           await onSubmit({
             request_id: requestId,
             input_ref: String(form.get("input_ref") || "") || null,
-            species: String(form.get("species") || "") || null,
+            species:
+              (String(form.get("species_choice") || "") === "__other__"
+                ? String(form.get("species_other") || "")
+                : String(form.get("species_choice") || "")) || null,
             project: String(form.get("project") || "") || null,
             research_question: String(form.get("research_question") || "") || null,
             study_design_ref: String(form.get("study_design_ref") || "") || null,
@@ -572,10 +584,44 @@ function ManualForm({
           ))}
         </select>
       </label>
+      {/* A list of what is actually installed, plus a way past it.
+          A free-text box alone made every species look equally available, and
+          the difference only surfaced at `resolve_reference`. A closed dropdown
+          would be the opposite mistake: this pipeline runs a species it has no
+          profile for, once told the constants, and a form that refuses one
+          would be lying about the executor. So: the installed ones by name,
+          and "another species" for the rest. */}
       <label>
         Species
-        <input name="species" placeholder="human" />
+        <select
+          name="species_choice"
+          defaultValue=""
+          onChange={(e) => setSpeciesOther(e.target.value === "__other__")}
+        >
+          <option value="">choose…</option>
+          {speciesOptions.map((option: SpeciesProfileView) => (
+            <option
+              key={option.species}
+              value={option.species}
+              disabled={!option.reference_present}
+            >
+              {option.species}
+              {option.reference_present ? "" : " — reference not installed here"}
+            </option>
+          ))}
+          <option value="__other__">another species…</option>
+        </select>
       </label>
+      {speciesOther && (
+        <label>
+          Which species
+          <input name="species_other" placeholder="rat" />
+          <span className="subtle">
+            It will run. Open the notice above for what its reference and QC constants need — the
+            pipeline asks for them rather than guessing.
+          </span>
+        </label>
+      )}
       <label>
         Project name
         <input name="project" placeholder="PBMC demonstration" />

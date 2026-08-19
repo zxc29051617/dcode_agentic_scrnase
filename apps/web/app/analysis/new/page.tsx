@@ -1,10 +1,15 @@
 import RunShell from "@/components/RunShell";
 import AnalysisIntake from "@/components/AnalysisIntake";
+import SpeciesNotice from "@/components/SpeciesNotice";
 import { describeAssistantModel } from "@/lib/assistantModel";
 import { INTAKE_INSTRUCTIONS } from "@/lib/intakeActions";
-import { controllerConfigured, listCatalog } from "@/lib/controller";
+import { controllerConfigured, listCatalog, listSpecies } from "@/lib/controller";
 import { resolveOperator } from "@/lib/operator";
-import type { DatasetOption, StudyDesignOption } from "@/lib/controllerTypes";
+import type {
+  DatasetOption,
+  SpeciesCatalogView,
+  StudyDesignOption,
+} from "@/lib/controllerTypes";
 
 export const dynamic = "force-dynamic";
 
@@ -55,6 +60,7 @@ export default async function NewAnalysisPage() {
   let datasets: DatasetOption[] = [];
   let studyDesigns: StudyDesignOption[] = [];
   let rejected: { name: string; reason: string }[] = [];
+  let species: SpeciesCatalogView | null = null;
   let catalogError: string | null = null;
   try {
     const catalog = await listCatalog();
@@ -65,6 +71,14 @@ export default async function NewAnalysisPage() {
     // The controller being down is the most likely reason this page is empty,
     // and an empty dataset list would say nothing about it.
     catalogError = error instanceof Error ? error.message : String(error);
+  }
+
+  // Fetched apart from the catalog on purpose. A controller too old to serve
+  // /v1/species should cost this page its notice, not its form.
+  try {
+    species = await listSpecies();
+  } catch {
+    species = null;
   }
 
   return (
@@ -108,8 +122,13 @@ export default async function NewAnalysisPage() {
         </div>
       )}
 
+      {/* Above the form, not beside the species field: the cost of a species
+          is what decides whether the rest of the form is worth filling in. */}
+      <SpeciesNotice catalog={species} />
+
       <AnalysisIntake
         datasets={datasets}
+        speciesOptions={species?.profiled ?? []}
         studyDesigns={studyDesigns}
         instructions={INTAKE_INSTRUCTIONS}
         operatorMode={operator.ok ? operator.mode : "unavailable"}

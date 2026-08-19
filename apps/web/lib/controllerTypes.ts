@@ -177,3 +177,41 @@ export type CatalogView = {
   study_designs: StudyDesignOption[];
   rejected: { name: string; reason: string }[];
 };
+
+/**
+ * One species the pipeline has vetted constants for.
+ *
+ * `reference_present` and the profile are deliberately separate. "This
+ * pipeline knows human" and "this machine has the human reference" are
+ * different facts, and an intake form that shows only the first offers a run
+ * that will stop at `resolve_reference` with nothing to resolve.
+ */
+export type SpeciesProfileView = {
+  species: string;
+  reference_dirname: string;
+  reference_present: boolean;
+  note: string;
+  /** `prebuilt` when 10x ships a tarball, `build` when it has to be made. */
+  how: "prebuilt" | "build";
+  download_gb: number | null;
+  disk_gb: number | null;
+  /** PanglaoDB column, or null — the marker cross-check degrades without one. */
+  marker_db: string | null;
+  /** False means the QC starting points were read off another species' data. */
+  qc_defaults_native: boolean;
+};
+
+/**
+ * What the intake may say about species before anybody commits to one.
+ *
+ * `available: false` means the controller could not import the scientific
+ * package, so this is "unknown", not "nothing is supported". The UI has to say
+ * which, because those call for opposite actions.
+ */
+export type SpeciesCatalogView = {
+  available: boolean;
+  profiled: SpeciesProfileView[];
+  /** Names the pipeline understands but has no vetted gene lists for. */
+  recognised: string[];
+  gtf_requirements: { requirement: string; why: string }[];
+};
