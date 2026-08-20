@@ -20,10 +20,15 @@ added since: `apply_cell_qc_filter`, `cell_calling_review`, `find_markers`,
 three runs per arm. The results are not uniform and the differences are the
 point: `find_markers` changed verdict, `apply_cell_qc_filter` gained a stable
 score where the base prompt wandered, `cell_calling_review` gained the reading
-a person decides from, and `cellranger_count` showed no effect on the only
-payload available — which is a gap in the evidence, not a verdict on the file.
-The numbers, the run ids and what is still owed are in
-`docs/judge_prompt_plan.md`.
+a person decides from, and `cellranger_count` showed nothing on a clean library
+and then caught three planted metric conflicts out of three — with no false
+alarm on the clean control. The numbers, the run ids and what is still owed are
+in `docs/judge_prompt_plan.md`.
+
+One method note that generalises: a prompt whose claim is *"these numbers
+disagree"* cannot be evaluated on data where they agree. Measure it against a
+payload built to violate it, and keep a clean one beside it in the same
+session.
 
 Do not describe this layer as finished.
 

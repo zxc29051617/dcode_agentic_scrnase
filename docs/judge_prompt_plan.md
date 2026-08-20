@@ -221,7 +221,7 @@ session per step, payload byte-identical between arms.
 | `find_markers` | `20260820T073829Z-cf7210c7` | pass 95, 95, 95 | **warn 70, 70, 70** | verdict flipped |
 | `apply_cell_qc_filter` | `20260819T083431Z-579a8e5e` | warn 60, 55, 65 | warn 70, 70, 70 | same verdict, before unstable |
 | `cell_calling_review` | `20260820T073822Z-d02509d1` | warn 70, 70, 70 | warn 80, 80, 80 | same verdict, new content |
-| `cellranger_count` | `20260819T083431Z-579a8e5e` | pass 95, 95, 95 | pass 95, 95, 95 | **no effect** |
+| `cellranger_count` | `20260819T083431Z-579a8e5e` | pass 95, 95, 95 | pass 95, 95, 95 | no effect — clean payload, see below |
 
 **`find_markers` is the result.** The before arm never read a cluster's genes
 as a set: it reported that the step ran, counted the clusters, and offered
@@ -246,15 +246,66 @@ pooled median of 7.75 removes 1,141 of 1,219 cells). Given the stability
 finding below, three identical runs inside one session is weaker evidence than
 it looks; three *differing* ones are not, and that is what the before arm gave.
 
-**`cellranger_count` showed no effect, and the payload is why.** Identical
-verdict and identical score in all six runs. The available run is a clean
-library — 95.5% reads in cells, 80.5% confidently mapped, 3,204 median genes —
-so there is no inconsistency for the prompt to catch, and both arms correctly
-said so. The two arms reason differently (before reaches for a remembered
-"~20k typical minimum"; after leads with the pairings the prompt names) and
-arrive in the same place. **What this prompt claims remains untested**: it is
-written to catch metrics that disagree with each other, and nothing here
-disagreed. It needs a defective payload, which this project does not yet have.
+**`cellranger_count` showed no effect on the real run, because that library is
+clean.** Identical verdict and identical score in all six runs — 95.5% reads in
+cells, 80.5% confidently mapped, 3,204 median genes, nothing to catch, and both
+arms correctly said so. That measured the prompt's restraint and not its
+reading, so it was measured again against payloads built to disagree with
+themselves.
+
+#### `cellranger_count` against defective payloads
+
+Three defects, one per pairing the prompt names, each a copy of the real run
+with only that defect applied — plus the clean run re-measured in the same
+session as a control, because a prompt that flags everything is
+indistinguishable from one that works unless something clean is measured beside
+it. `warnings` and `errors` stayed empty in all four: the step does not inspect
+these numbers, so a real defective run says nothing is wrong and the judge has
+only the metrics.
+
+| payload | what was made to disagree | before ×3 | after ×3 |
+|---|---|---|---|
+| clean control | nothing | pass 95, 95, 95 | pass 95, 95, 95 |
+| ambient | `Fraction Reads in Cells` 95.5% → **38.2%** beside `Estimated Number of Cells` 1,219 → **24,918**; depth and gene counts lowered to stay arithmetically consistent with the same 66.6M reads | pass 95, 95, 95 | **warn 60, 60, 42** |
+| complexity-limited | `Mean Reads per Cell` 54,636 → **148,320** against `Median Genes per Cell` 3,204 → **812**, with saturation 70.8% → 96.4% and the read total moved to match | pass 95, 95, 95 | **warn 80, 70, 70** |
+| reference mismatch | `Reads Mapped Confidently to Transcriptome` 80.5% → **31.4%** with genome mapping and every Q30 untouched, exonic 58.1% → 22.7% and intergenic 4.1% → 42.6% | pass 95, 95, 95 | **warn 65, 70, 70** |
+
+**Three for three, and no false alarm on the control.**
+
+The base prompt did not merely miss them. It **praised the defective numbers**,
+which is the worse failure and is what a gate is for:
+
+- ambient — *"Fraction Reads in Cells is 38.2%, a healthy proportion of reads
+  assigned to cells"*, *"Median Genes per Cell is 412, showing sufficient
+  transcriptome coverage"*, *"Mean Reads per Cell is 2,673, well above typical
+  minimums"*. All three are the opposite of true.
+- complexity-limited — it never mentioned `Median Genes per Cell` at all in the
+  first run, listing every other number instead, and read `Sequencing
+  Saturation` 96.4% as *"confirming high library quality"* when saturation that
+  high is the symptom.
+- reference mismatch — *"Reads Mapped Confidently to Transcriptome is 31.4%,
+  within expected range for 10x v3 chemistry"*, said twice, about the one
+  failure here that nothing downstream can recover from.
+
+With the file the judge did the reading the prompt asks for, including the
+elimination step:
+
+- ambient — tied 38.2% to the 24,918 cell count, and *ruled out* the reference
+  by noting transcriptome mapping was still 80.5%.
+- complexity-limited — *"148,320, a very deep sequencing depth, yet Median
+  Genes per Cell is only 812, suggesting the library is complexity-limited
+  rather than under-sequenced"*, corroborated by the saturation the before arm
+  had misread.
+- reference mismatch — *"31.4% despite Reads Mapped Confidently to Genome being
+  93.7%"*. That is the pairing rather than the lone number, and it is what
+  distinguishes a bad reference from bad reads.
+
+**Verified, and for these three conflicts only.** What the prompt also claims
+and this did not test: comparing two libraries against each other
+(`n_libraries` here is 1), the caveat that a `disposition` of `reused` means
+the numbers predate the run, and the instruction that values are strings rather
+than numbers — the judge quoted them correctly throughout, but nothing in these
+payloads would have punished it for doing arithmetic.
 
 **Do not read three identical runs as reliability.** The stability finding
 below applies: repeats inside one session are correlated, and every arm here
@@ -347,13 +398,18 @@ vocabulary question to the prompt.
    `cell_calling_review`, and the filtered one with
    `--min-genes 200 --max-pct-mito 15 --headless-decision accept` carries
    through `find_markers`.
-7. **Next**: a `cellranger_count` payload whose metrics disagree, or accept
-   that this one prompt is unverified. Everything it is written to catch —
-   reads-in-cells against the cell count, depth against genes recovered, a
-   mapping rate that indicts the reference — needs numbers that contradict each
-   other, and the only library on hand is one where they all agree. A
-   hand-edited `metrics_summary` would settle it in one run and is the cheapest
-   thing left on this list.
+7. ~~A `cellranger_count` payload whose metrics disagree~~ — done, and it
+   settled it: three defective payloads, one per pairing, caught 3/3 with no
+   false alarm on the clean control. Recorded above. Building them was a copy
+   of one real `output.json` with a handful of `metrics_summary` columns
+   changed, which is why this was the cheapest item on the list and should have
+   been done sooner than it was.
+
+   **Reuse this shape for any prompt whose claim is "these numbers disagree".**
+   A clean payload can only ever show restraint; the reading itself is
+   invisible until something is wrong. Four of the eight prompts make a
+   claim of this kind, and only this one has been tested against a payload
+   that violates it.
 8. Then the twelve remaining A steps, or stop: a prompt is only worth writing
    where the base prompt would miss something, and for a structural check with
    six numbers in its payload it probably would not.
@@ -366,7 +422,11 @@ test caught, and the four that followed needed none either.
 
 Measuring them was not a formality, and it did not return one answer. One
 changed the verdict, one replaced a wandering score with a stable one, one
-added the reading a person actually decides from, and one did nothing that
-could be seen on the payload available. Three of those four are worth the file;
-the fourth is not yet known either way, which is a different thing from being
-worthless and is recorded as such.
+added the reading a person actually decides from, and one did nothing at all —
+until it was given a payload with something in it to find, at which point it
+caught three planted conflicts out of three and left the clean control alone.
+
+That last one is the lesson worth carrying forward. A prompt written to catch
+disagreement cannot be evaluated on data that agrees: the first measurement of
+`cellranger_count` looked like a null result and was actually a null *test*.
+The difference took one afternoon and a copied `output.json` to establish.
