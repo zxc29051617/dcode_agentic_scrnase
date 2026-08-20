@@ -1,17 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { stepLabel } from "@/lib/stepLabels";
 import { humanDuration, expectedDuration } from "@/lib/duration";
+import { applyPoll, shouldPoll, type LiveProgress as Live } from "@/lib/runProgress";
 
 type Timing = { n: number; median_seconds: number; min_seconds: number; max_seconds: number };
-
-type Live = {
-  status: string;
-  unfinished_step: string | null;
-  current_step_elapsed_seconds: number | null;
-  steps: { step: string; status: string }[];
-};
 
 /**
  * What a running analysis is doing right now, and whether that is normal.
@@ -42,6 +37,21 @@ type Live = {
  * polling in the UI and in `docs/copilotkit_product_architecture.md` §3.3
  * rather than dressed up. Polling stops when the run is no longer running, so
  * a finished run costs nothing.
+ *
+ * ## Why it refreshes the page and not only itself
+ *
+ * A status change is the moment an entire section of the document appears or
+ * disappears — the gate card, the halt notice, the report — and all of those
+ * are server-rendered. Refreshing only this panel meant a run that reached a
+ * human gate showed the person "Running now", then nothing, and no sign
+ * anywhere that it was now waiting on them indefinitely. The one state this
+ * product exists to make visible was the one state the page could not reach
+ * without a manual reload.
+ *
+ * `router.refresh()` re-runs the server component, so the decision about what
+ * the page should now contain stays where every other such decision is —
+ * `app/runs/[id]/page.tsx`, reading the gateway and the controller. This
+ * component decides only *when* to ask again, never what the answer means.
  */
 const POLL_MS = 15_000;
 
@@ -54,10 +64,11 @@ export default function Progress({
   initial: Live;
   timings: Record<string, Timing>;
 }) {
+  const router = useRouter();
   const [live, setLive] = useState<Live>(initial);
 
   useEffect(() => {
-    if (live.status !== "running" && live.status !== "queued") return;
+    if (!shouldPoll(live.status)) return;
     let cancelled = false;
     const tick = async () => {
       try {
@@ -65,8 +76,15 @@ export default function Progress({
           cache: "no-store",
         });
         if (!res.ok) return;
-        const next = (await res.json()) as Live;
-        if (!cancelled) setLive(next);
+        const incoming = (await res.json()) as Live;
+        if (cancelled) return;
+        const outcome = applyPoll(live.status, incoming);
+        setLive(outcome.live);
+        // The status moved, so the rest of the page is describing a run that
+        // no longer exists in that state. Asking the server again is what puts
+        // the gate card — or the halt notice, or the report — on the screen
+        // without anybody reloading.
+        if (outcome.refreshPage) router.refresh();
       } catch {
         // A failed poll is not worth telling anybody about: the next one is
         // fifteen seconds away, and an error banner that appears because a
@@ -78,9 +96,9 @@ export default function Progress({
       cancelled = true;
       clearInterval(id);
     };
-  }, [runId, live.status]);
+  }, [runId, live.status, router]);
 
-  if (live.status !== "running" && live.status !== "queued") return null;
+  if (!shouldPoll(live.status)) return null;
 
   const step = live.unfinished_step;
   const label = step ? stepLabel(step) : null;
