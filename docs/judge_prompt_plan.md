@@ -191,14 +191,6 @@ These are the seven where the reasoning is hardest, which is why they were the
 candidates for a different model. They keep the shared one, and **all seven now
 have their own prompt**.
 
-The four written last — `apply_cell_qc_filter`, `cell_calling_review`,
-`find_markers`, `cellranger_count` — are **written but not measured**. They
-follow the shape the first three established and pass the anti-drift test, which
-says every field they cite exists; it does not say the instruction changes what
-the judge does. Until `scripts/measure_step_prompt.py` has been run against them
-on a real payload, that remains the untested half, and this document should not
-be read as claiming otherwise.
-
 Each was written around the reading its own metrics cannot perform:
 
 | step | what its prompt asks that the base prompt does not |
@@ -207,6 +199,67 @@ Each was written around the reading its own metrics cannot perform:
 | `cell_calling_review` | that the knee and the inflection disagree on purpose, and the gap between them is the range being chosen within, not two competing answers |
 | `find_markers` | that significance tracks cluster size, so the expression fractions carry the biology and the p-values only say the difference was not noise |
 | `cellranger_count` | that the meaning is in how the metrics sit against each other, and that every value arrives as the string Cell Ranger wrote to CSV — `"1,219"`, `"95.5%"` — never as a number |
+
+#### All four measured
+
+`gpt-oss:120b`, three runs per arm, before and after interleaved inside one
+session per step, payload byte-identical between arms.
+
+> **Export both variables before running any of this.**
+> `scripts/check_judge_endpoint.py` reports `structured output failed:
+> APIConnectionError` on a perfectly healthy endpoint unless
+> `SCRNA_JUDGE_BASE_URL` *and* `SCRNA_JUDGE_MODEL` are set. It lists the served
+> models from its own `DEFAULT_URL`, then builds `LocalLLMJudge()` with no
+> arguments — which reads the environment and falls back to `localhost:11434`
+> and `qwen2.5:7b-instruct`, a model this server does not serve. So the check
+> can say the model is served and fail one line later against a different host
+> and a different model. With both exported, structured output parses and the
+> raw-JSON fallback in `LocalLLMJudge.judge` was never reached.
+
+| step | run | before ×3 | after ×3 | |
+|---|---|---|---|---|
+| `find_markers` | `20260820T073829Z-cf7210c7` | pass 95, 95, 95 | **warn 70, 70, 70** | verdict flipped |
+| `apply_cell_qc_filter` | `20260819T083431Z-579a8e5e` | warn 60, 55, 65 | warn 70, 70, 70 | same verdict, before unstable |
+| `cell_calling_review` | `20260820T073822Z-d02509d1` | warn 70, 70, 70 | warn 80, 80, 80 | same verdict, new content |
+| `cellranger_count` | `20260819T083431Z-579a8e5e` | pass 95, 95, 95 | pass 95, 95, 95 | **no effect** |
+
+**`find_markers` is the result.** The before arm never read a cluster's genes
+as a set: it reported that the step ran, counted the clusters, and offered
+`n_significant_per_cluster` as evidence of quality — "each cluster has a
+substantial number of significant genes … exceeding the reporting threshold of
+25 genes per cluster", which also misreads `n_genes_reported` as a
+significance threshold. The after arm went cluster by cluster on
+`pct_in_cluster` against `pct_in_rest`, named the coherent lineages, and
+flagged four clusters that do not cohere — 4 (`ARHGAP15` at 1.0 against 0.971
+in the rest, so not enrichment at all), 8 (myeloid mixed with `TCF7L2`), 11
+(ribosomal-dominated), 12 (`CLEC4C` with `APP`). That is the reading the prompt
+asks for, it is the reading the base prompt did not produce in three tries, and
+it changes the verdict a person is shown.
+
+**`apply_cell_qc_filter` bought stability rather than a different verdict.**
+Both arms said `warn`, but the before arm scored 60, 55 and 65 on three runs of
+one payload *inside one session*, and its reasons moved with the score — the
+third run dropped the threshold-cost reading entirely and listed medians. The
+after arm returned the same three reasons and the same score every time, always
+anchoring the threshold to this run's own median (`max_pct_mito` 5 against a
+pooled median of 7.75 removes 1,141 of 1,219 cells). Given the stability
+finding below, three identical runs inside one session is weaker evidence than
+it looks; three *differing* ones are not, and that is what the before arm gave.
+
+**`cellranger_count` showed no effect, and the payload is why.** Identical
+verdict and identical score in all six runs. The available run is a clean
+library — 95.5% reads in cells, 80.5% confidently mapped, 3,204 median genes —
+so there is no inconsistency for the prompt to catch, and both arms correctly
+said so. The two arms reason differently (before reaches for a remembered
+"~20k typical minimum"; after leads with the pairings the prompt names) and
+arrive in the same place. **What this prompt claims remains untested**: it is
+written to catch metrics that disagree with each other, and nothing here
+disagreed. It needs a defective payload, which this project does not yet have.
+
+**Do not read three identical runs as reliability.** The stability finding
+below applies: repeats inside one session are correlated, and every arm here
+was measured in one session. What survives is the before/after comparison,
+which was interleaved.
 
 ### C — prompt and a tool (2)
 
@@ -271,17 +324,15 @@ vocabulary question to the prompt.
    needed a structural change, and the drift test caught one thing —
    `needs_human_review` is a `JudgeResult` field rather than a step's, so it
    joined `suggested_action` in the test's `NOT_A_FIELD` set.
-6. **Next**: measure those four.
-   `python scripts/measure_step_prompt.py <step> --run <run_dir>` over a saved
-   payload, with and without the file, the model held fixed and the arms
-   interleaved inside one session — the stability finding above is why the
-   interleaving matters and why repeats inside a session prove less than they
-   appear to. Four prompts that pass the drift test are four prompts whose
-   effect nobody has measured.
+6. ~~Measure those four~~ — done, and recorded above. One verdict flip
+   (`find_markers`), one gain in stability (`apply_cell_qc_filter`), one gain
+   in content at the same verdict (`cell_calling_review`), one no-effect
+   (`cellranger_count`, on the only payload available).
 
-   **The four need three different runs between them**, which is the part to
-   plan for rather than discover. The harness reads
-   `<run_dir>/<step>/output.json`, so a step that never ran has no payload:
+   **The four need three different runs between them**, which stays written
+   down because it is the part that has to be planned rather than discovered.
+   The harness reads `<run_dir>/<step>/output.json`, so a step that never ran
+   has no payload:
 
    | step | the run it needs |
    |---|---|
@@ -290,10 +341,20 @@ vocabulary question to the prompt.
    | `cell_calling_review` | a **raw**-route run; the filtered route never visits this step |
    | `find_markers` | a run carried past clustering, which means answering the QC and cell-count gates first |
 
-   The first two come free with any FASTQ run that stops at the QC gate. The
-   last two do not, and `find_markers` in particular cannot be measured without
-   driving a run to completion.
-7. Then the twelve remaining A steps, or stop: a prompt is only worth writing
+   The last two were produced for this measurement out of matrices an earlier
+   FASTQ run had already written, which is minutes rather than a recount:
+   `--input` at that run's `raw_feature_bc_matrix.h5` stops at
+   `cell_calling_review`, and the filtered one with
+   `--min-genes 200 --max-pct-mito 15 --headless-decision accept` carries
+   through `find_markers`.
+7. **Next**: a `cellranger_count` payload whose metrics disagree, or accept
+   that this one prompt is unverified. Everything it is written to catch —
+   reads-in-cells against the cell count, depth against genes recovered, a
+   mapping rate that indicts the reference — needs numbers that contradict each
+   other, and the only library on hand is one where they all agree. A
+   hand-edited `metrics_summary` would settle it in one run and is the cheapest
+   thing left on this list.
+8. Then the twelve remaining A steps, or stop: a prompt is only worth writing
    where the base prompt would miss something, and for a structural check with
    six numbers in its payload it probably would not.
 
@@ -301,7 +362,11 @@ Seven rather than twenty-five, for the reason the last few commits keep
 running into: writing all of them before checking the shape means rewriting all
 of them when the shape is wrong. The shape held — the first three needed no
 structural revision after measurement, only the one field-name fix the drift
-test caught, and the four that followed needed none either. What has not been
-established is that the four *work*, which is step 6 and not a formality: the
-one arm that mattered in the original measurement was the one that added data
-and changed nothing.
+test caught, and the four that followed needed none either.
+
+Measuring them was not a formality, and it did not return one answer. One
+changed the verdict, one replaced a wandering score with a stable one, one
+added the reading a person actually decides from, and one did nothing that
+could be seen on the payload available. Three of those four are worth the file;
+the fourth is not yet known either way, which is a different thing from being
+worthless and is recorded as such.

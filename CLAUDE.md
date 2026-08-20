@@ -16,10 +16,13 @@ The LangGraph mainline is complete and runs end to end on real data.
 added since: `apply_cell_qc_filter`, `cell_calling_review`, `find_markers`,
 `cellranger_count`. The other 17 use the shared base prompt.
 
-**Four of the eight are written but not measured.** The first four were
-measured against a real endpoint; the four added since pass the anti-drift test
-— every field they cite exists — which is not the same claim. The plan, the
-measurement that justified doing this at all, and what is still owed are in
+**All eight have been measured against a real endpoint**, before and after,
+three runs per arm. The results are not uniform and the differences are the
+point: `find_markers` changed verdict, `apply_cell_qc_filter` gained a stable
+score where the base prompt wandered, `cell_calling_review` gained the reading
+a person decides from, and `cellranger_count` showed no effect on the only
+payload available — which is a gap in the evidence, not a verdict on the file.
+The numbers, the run ids and what is still owed are in
 `docs/judge_prompt_plan.md`.
 
 Do not describe this layer as finished.
