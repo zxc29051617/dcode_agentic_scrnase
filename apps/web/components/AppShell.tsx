@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import dynamic from "next/dynamic";
 import Badge from "@/components/Badge";
+import ThemeToggle from "@/components/ThemeToggle";
 import { runTone } from "@/lib/verdict";
 
 /** Where this browser's choice about the assistant panel is remembered. */
@@ -176,6 +177,7 @@ export default function AppShell({
         }>
           {canStartAnalyses ? "read + start" : "read-only"}
         </span>
+        <ThemeToggle />
         <button
           onClick={toggleAside}
           data-variant={asideOpen || !assistantConfigured ? undefined : "primary"}

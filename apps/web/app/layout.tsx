@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import "./globals.css";
+import { THEME_BOOTSTRAP } from "@/lib/theme";
 
 export const metadata = {
   title: "DeepAgents-scRNA — scientific runs",
@@ -20,6 +21,13 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     // differences on this one element and does not cascade to any child, so a
     // genuine hydration bug anywhere in the tree is still reported.
     <html lang="en" suppressHydrationWarning>
+      <head>
+        {/* Runs before the first paint, so a dark-theme reader never sees a
+            white frame on the way in. It only ever sets `data-theme`; the
+            absence of that attribute is the "follow the system" state, and is
+            what every page had before this existed. See `lib/theme.ts`. */}
+        <script dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP }} />
+      </head>
       <body>{children}</body>
     </html>
   );
