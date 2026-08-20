@@ -40,8 +40,16 @@ FIELD_TOKEN = re.compile(r"`([a-z][a-z0-9_]*(?:[._][a-z0-9_]+)+)`")
 
 #: Words that look like fields but belong to the judge's own vocabulary or the
 #: pipeline's, not to any one step's output.
+#:
+#: `suggested_action`, `needs_human_review` and `suggested_value` are the
+#: multi-word fields of `JudgeResult` and `Advice` in `src/judge.py` — what the
+#: judge writes, not what a step produced. A prompt naming one is telling the
+#: judge how to fill in its own reply, which is exactly what these files are
+#: for; they would otherwise be reported as drift against a step that has no
+#: such field and never will.
 NOT_A_FIELD = {
-    "suggested_action", "output_is_abridged", "run_dir", "step_results",
+    "suggested_action", "needs_human_review", "suggested_value",
+    "output_is_abridged", "run_dir", "step_results",
     "judge_results", "human_decisions", "local_judge_base.md", "run_metadata.json",
     "audit.jsonl", "markers.csv", "output.json", "adata.h5ad", "report.html",
 }

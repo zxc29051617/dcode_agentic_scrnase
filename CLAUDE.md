@@ -11,10 +11,15 @@ never writes an analysis result.
 The LangGraph mainline is complete and runs end to end on real data.
 
 **Judge specialisation is partial and being extended.** Of 26 registry steps,
-25 are judged, and **4 have their own step prompt** — `run_qc_metrics`,
-`detect_doublets`, `run_clustering`, `cross_check_annotation`. The other 21 use
-the shared base prompt. Adding more is ongoing work, one measured step at a
-time; the plan and the reasoning for which steps need what are in
+25 are judged, and **8 have their own step prompt** — `run_qc_metrics`,
+`detect_doublets`, `run_clustering`, `cross_check_annotation`, and the four
+added since: `apply_cell_qc_filter`, `cell_calling_review`, `find_markers`,
+`cellranger_count`. The other 17 use the shared base prompt.
+
+**Four of the eight are written but not measured.** The first four were
+measured against a real endpoint; the four added since pass the anti-drift test
+— every field they cite exists — which is not the same claim. The plan, the
+measurement that justified doing this at all, and what is still owed are in
 `docs/judge_prompt_plan.md`.
 
 Do not describe this layer as finished.

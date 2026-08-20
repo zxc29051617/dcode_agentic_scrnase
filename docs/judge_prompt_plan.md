@@ -5,10 +5,11 @@ prompt has to contain, and the evidence for doing this at all.
 
 ## The evidence
 
-One step prompt exists, and it was measured against the real endpoint before
-being kept. The question was whether the judge would notice that CellTypist and
-the marker database name different cell types for the same cluster — a fact
-sitting in plain sight in the payload.
+Eight step prompts exist. The first was measured against the real endpoint
+before any of the others were written, and it is the reason the rest have the
+shape they do. The question it settled was whether the judge would notice that
+CellTypist and the marker database name different cell types for the same
+cluster — a fact sitting in plain sight in the payload.
 
 | arm | runs that found it |
 |---|---|
@@ -187,8 +188,25 @@ and near a boundary is where a gate opens or does not.
 | `cellranger_count` | the metrics summary is 20 numbers whose interactions carry the meaning |
 
 These are the seven where the reasoning is hardest, which is why they were the
-candidates for a different model. They keep the shared one. What they still
-need is their own prompts: three are written, four are not.
+candidates for a different model. They keep the shared one, and **all seven now
+have their own prompt**.
+
+The four written last — `apply_cell_qc_filter`, `cell_calling_review`,
+`find_markers`, `cellranger_count` — are **written but not measured**. They
+follow the shape the first three established and pass the anti-drift test, which
+says every field they cite exists; it does not say the instruction changes what
+the judge does. Until `scripts/measure_step_prompt.py` has been run against them
+on a real payload, that remains the untested half, and this document should not
+be read as claiming otherwise.
+
+Each was written around the reading its own metrics cannot perform:
+
+| step | what its prompt asks that the base prompt does not |
+|---|---|
+| `apply_cell_qc_filter` | that the preview rows are each criterion *alone*, so they overlap and must never be added — 26 + 72 was 74 removals on the real object, because 24 cells failed both |
+| `cell_calling_review` | that the knee and the inflection disagree on purpose, and the gap between them is the range being chosen within, not two competing answers |
+| `find_markers` | that significance tracks cluster size, so the expression fractions carry the biology and the p-values only say the difference was not noise |
+| `cellranger_count` | that the meaning is in how the metrics sit against each other, and that every value arrives as the string Cell Ranger wrote to CSV — `"1,219"`, `"95.5%"` — never as a number |
 
 ### C — prompt and a tool (2)
 
@@ -247,15 +265,43 @@ vocabulary question to the prompt.
    provenance turned up.
 4. ~~Decide whether the remaining steps get A, B or C~~ — B measured and not
    adopted; C scoped above and not started.
-5. **Next**: four more A prompts, for the group-B steps that have none —
+5. ~~Four more A prompts, for the group-B steps that have none~~ — written:
    `apply_cell_qc_filter`, `cell_calling_review`, `find_markers`,
-   `cellranger_count`. The shape is settled now, so these are cheap.
-6. Then the twelve remaining A steps, or stop: a prompt is only worth writing
+   `cellranger_count`. The shape was settled, and it held: none of the four
+   needed a structural change, and the drift test caught one thing —
+   `needs_human_review` is a `JudgeResult` field rather than a step's, so it
+   joined `suggested_action` in the test's `NOT_A_FIELD` set.
+6. **Next**: measure those four.
+   `python scripts/measure_step_prompt.py <step> --run <run_dir>` over a saved
+   payload, with and without the file, the model held fixed and the arms
+   interleaved inside one session — the stability finding above is why the
+   interleaving matters and why repeats inside a session prove less than they
+   appear to. Four prompts that pass the drift test are four prompts whose
+   effect nobody has measured.
+
+   **The four need three different runs between them**, which is the part to
+   plan for rather than discover. The harness reads
+   `<run_dir>/<step>/output.json`, so a step that never ran has no payload:
+
+   | step | the run it needs |
+   |---|---|
+   | `cellranger_count` | any FASTQ-route run |
+   | `apply_cell_qc_filter` | any run that reached the QC gate — a filtered-matrix run stopping there is enough |
+   | `cell_calling_review` | a **raw**-route run; the filtered route never visits this step |
+   | `find_markers` | a run carried past clustering, which means answering the QC and cell-count gates first |
+
+   The first two come free with any FASTQ run that stops at the QC gate. The
+   last two do not, and `find_markers` in particular cannot be measured without
+   driving a run to completion.
+7. Then the twelve remaining A steps, or stop: a prompt is only worth writing
    where the base prompt would miss something, and for a structural check with
    six numbers in its payload it probably would not.
 
-Three rather than twenty-five, for the reason the last few commits keep
+Seven rather than twenty-five, for the reason the last few commits keep
 running into: writing all of them before checking the shape means rewriting all
-of them when the shape is wrong. The shape held — the three prompts needed no
+of them when the shape is wrong. The shape held — the first three needed no
 structural revision after measurement, only the one field-name fix the drift
-test caught.
+test caught, and the four that followed needed none either. What has not been
+established is that the four *work*, which is step 6 and not a formality: the
+one arm that mattered in the original measurement was the one that added data
+and changed nothing.
