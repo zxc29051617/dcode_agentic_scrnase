@@ -52,7 +52,8 @@ export default function Provenance({ provenance }: { provenance: Provenance | nu
     { title: "Packages", body: provenance.packages },
     { title: "Seeds", body: provenance.seeds },
     { title: "Study design", body: provenance.study_design, note: "counts and digests only; never rows" },
-    { title: "Judge sessions", body: provenance.judge_sessions },
+    { title: "Reviewer sessions", body: provenance.judge_sessions,
+      note: "recorded as `judge_sessions` on disk — the executor's own name for it" },
     { title: "Revisions", body: provenance.revisions },
   ];
 

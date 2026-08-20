@@ -12,7 +12,7 @@ import type { StepRecord } from "@/lib/gatewayTypes";
  * The run's steps in recorded order, each expandable.
  *
  * Collapsed, a row is the one thing a reader scans for: did this step pass.
- * Expanded, it shows the judge's own reasons, the step's warnings and errors,
+ * Expanded, it shows the reviewer's own reasons, the step's warnings and errors,
  * and its recorded metrics as labelled rows — not a pasted JSON blob, which
  * is unreadable and hides exactly the fields somebody is looking for.
  */
@@ -84,7 +84,7 @@ export default function WorkflowTimeline({
                     {label.what}
                   </p>
                 )}
-                {/* `warn` is the word that misleads: the judge returns it on a
+                {/* `warn` is the word that misleads: the reviewer returns it on a
                     step that ran soundly, and a reader at a gate takes it as
                     "something went wrong" and decides differently than the
                     evidence supports. */}
@@ -100,7 +100,7 @@ export default function WorkflowTimeline({
                   <dd>{step.status}</dd>
                   {step.verdict && (
                     <>
-                      <dt>judge</dt>
+                      <dt>reviewer</dt>
                       <dd>
                         {step.verdict.verdict} · score {step.verdict.score}
                       </dd>
@@ -111,7 +111,7 @@ export default function WorkflowTimeline({
                 {step.verdict?.reasons?.length ? (
                   <>
                     <p className="subtle" style={{ margin: "0.6rem 0 0.2rem" }}>
-                      judge reasons
+                      reviewer reasons
                     </p>
                     <ul style={{ margin: 0, paddingLeft: "1.1rem" }}>
                       {step.verdict.reasons.map((reason, i) => (
@@ -148,8 +148,8 @@ export default function WorkflowTimeline({
                 )}
 
                 {/* The step's own reservations, above the numbers rather than
-                    below them. A judge can return `pass` on a step that
-                    recorded a doubt — the judge is asked whether the step ran
+                    below them. A reviewer can return `pass` on a step that
+                    recorded a doubt — the reviewer is asked whether the step ran
                     soundly, and a cluster of 8 cells is a sound run of an
                     unsound-looking result. Burying that under the metrics
                     would be filing it where nobody reads. */}

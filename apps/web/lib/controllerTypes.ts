@@ -215,3 +215,20 @@ export type SpeciesCatalogView = {
   recognised: string[];
   gtf_requirements: { requirement: string; why: string }[];
 };
+
+/**
+ * The most recent job the controller ran against a scientific run.
+ *
+ * Exists for one gap: a run that closed its gate and produced no report is
+ * ambiguous from the audit log alone — it could be working, or the executor
+ * could have refused to proceed and said exactly why. `error` is that reason,
+ * recorded by the worker itself rather than inferred from files on disk.
+ */
+export type JobStatus = {
+  job_id: string;
+  kind: "start" | "continue";
+  status: string;
+  scientific_run_id: string;
+  error: string | null;
+  updated_at: string;
+};

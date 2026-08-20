@@ -473,6 +473,25 @@ def _allocate_run_id() -> str:
 # --- human gate ---------------------------------------------------------------
 
 
+@app.get("/v1/scientific-runs/{scientific_run_id}/job")
+def get_job(scientific_run_id: str, store: Store = Depends(get_store)) -> dict:
+    """The most recent job that acted on this run, and whether it ended badly.
+
+    `apply_cell_qc_filter` demonstrated the gap this closes: a person accepted
+    a step whose `filter_state` was still `needs_review`, the executor refused
+    to proceed and said exactly why, and nothing on the page could show it — a
+    closed gate and no report look identical whether the run is quietly
+    working or has already stopped for a reason recorded two services away.
+    `gate_state` reads only the audit log the executor writes; this reads the
+    controller's own record of what it asked the worker to do and what came
+    back, which is the only place the reason lives.
+    """
+    job = store.latest_job_for_run(scientific_run_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"no job recorded for {scientific_run_id!r}")
+    return job
+
+
 @app.get("/v1/scientific-runs/{scientific_run_id}/gate")
 def get_gate(scientific_run_id: str, settings: Settings = Depends(get_settings)) -> dict:
     """What this run is waiting on, if anything, and what may be changed."""

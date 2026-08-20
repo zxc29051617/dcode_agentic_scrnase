@@ -162,6 +162,26 @@ class Store:
         ).fetchone()
         return json.loads(row["document"]) if row else None
 
+    def latest_job_for_run(self, scientific_run_id: str) -> dict[str, Any] | None:
+        """The most recently updated job that touched this run, or None.
+
+        This is what a `needs_review` gate closing and the run going quiet
+        with no report actually means: `gate_state` alone cannot distinguish
+        "still working" from "the executor refused to proceed and said why" —
+        both look like "no pending gate, no report" from the audit log. The
+        reason lives here, in `error`, because it is the worker's own account
+        of what happened, not an inference from files it wrote.
+        """
+        row = self.connection.execute(
+            # `rowid DESC` breaks ties `updated_at` cannot: two jobs finished in
+            # the same second sort equally by timestamp, and insertion order —
+            # which rowid gives for free — is what actually happened second.
+            "SELECT job_id, kind, status, scientific_run_id, error, updated_at "
+            "FROM jobs WHERE scientific_run_id = ? ORDER BY updated_at DESC, rowid DESC LIMIT 1",
+            (scientific_run_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
     def set_request_status(
         self, request_id: str, status: str, *, scientific_run_id: str | None = None
     ) -> dict[str, Any] | None:
