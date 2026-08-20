@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { CopilotKit, useCopilotChat } from "@copilotkit/react-core";
 import { CopilotChat } from "@copilotkit/react-ui";
 import { Role, TextMessage } from "@copilotkit/runtime-client-gql";
@@ -27,20 +27,70 @@ import "@copilotkit/react-ui/styles.css";
  * gates are `accept` on a warning somebody already understands.
  */
 
-function Openers({ runId, step, parameter }: { runId: string; step: string; parameter: string | null }) {
-  const { appendMessage, isLoading } = useCopilotChat();
-
-  // Questions worth asking about *this* gate, phrased as a person would.
-  // The run id rides in the text as well as in the system prompt, so a
-  // suggestion still resolves after somebody has scrolled the conversation.
-  const asks = [
-    parameter
-      ? `For run ${runId}, which ${parameter} should I choose and why?`
-      : `What is run ${runId} waiting for me to decide?`,
-    `What do the marker genes in run ${runId} say about what this tissue is?`,
-    `What is the second-best option for run ${runId}, and when would it be better?`,
-    `Is the recommended option for run ${runId} already downloaded?`,
+/**
+ * The questions worth asking at *this* gate.
+ *
+ * They used to be one list for every gate, written when the only gate with a
+ * picker was `annotate_cells` — so a person standing at the QC filter was
+ * offered "what do the marker genes say about what this tissue is", which is
+ * about a step that has not run yet. An irrelevant suggestion is worse than
+ * none: it is the page telling somebody they have misunderstood where they
+ * are.
+ */
+function asksFor(runId: string, step: string, parameters: string[]): string[] {
+  const first = parameters[0];
+  if (step === "apply_cell_qc_filter") {
+    return [
+      `For run ${runId}, read the threshold table and recommend values for ${parameters.join(", ")} — say what each one would cost and why you would draw the line there.`,
+      `For run ${runId}, what would accepting with no filtering at all cost me later?`,
+      `For run ${runId}, is a mitochondrial median of this size normal for the tissue?`,
+      `For run ${runId}, which of these cells would a reviewer object to keeping?`,
+    ];
+  }
+  if (step === "annotate_cells" || step === "cross_check_annotation") {
+    return [
+      first
+        ? `For run ${runId}, which ${first} should I choose and why?`
+        : `What is run ${runId} waiting for me to decide?`,
+      `What do the marker genes in run ${runId} say about what this tissue is?`,
+      `What is the second-best option for run ${runId}, and when would it be better?`,
+      `Is the recommended option for run ${runId} already downloaded?`,
+    ];
+  }
+  return [
+    first
+      ? `For run ${runId}, which ${first} should I choose and why?`
+      : `What is run ${runId} waiting for me to decide, and what are my options?`,
+    `For run ${runId}, what did the reviewer actually measure here?`,
+    `For run ${runId}, what happens if I just accept this?`,
   ];
+}
+
+function Openers({
+  runId,
+  step,
+  parameters,
+  autoAsk,
+}: {
+  runId: string;
+  step: string;
+  parameters: string[];
+  /** Send the first question as soon as the advisor opens. */
+  autoAsk: boolean;
+}) {
+  const { appendMessage, isLoading } = useCopilotChat();
+  const asks = asksFor(runId, step, parameters);
+  const [asked, setAsked] = useState(false);
+
+  // Opening the advisor is already the person asking for advice. Making them
+  // then choose a question before anything happens meant the panel opened
+  // empty, which reads as "the assistant has nothing to say" — the exact
+  // complaint this fixes. It fires once, and only on an explicit open.
+  useEffect(() => {
+    if (!autoAsk || asked || isLoading) return;
+    setAsked(true);
+    void appendMessage(new TextMessage({ role: Role.User, content: asks[0] }));
+  }, [autoAsk, asked, isLoading, appendMessage, asks]);
 
   return (
     <div className="suggestions" style={{ marginBottom: "0.6rem" }}>
@@ -61,15 +111,16 @@ function Openers({ runId, step, parameter }: { runId: string; step: string; para
 export default function GateAdvisor({
   runId,
   step,
-  parameter,
+  parameters,
   instructions,
   modelConfigured,
   modelReason,
 }: {
   runId: string;
   step: string;
-  /** The one thing this gate lets a person change, or null. */
-  parameter: string | null;
+  /** Everything this gate lets a person change. Empty is a real state — some
+   *  gates offer only accept or stop. */
+  parameters: string[];
   instructions: string;
   modelConfigured: boolean;
   modelReason: string | null;
@@ -90,10 +141,10 @@ export default function GateAdvisor({
     return (
       <div style={{ marginTop: "0.9rem" }}>
         <button type="button" onClick={() => setOpen(true)} data-testid="advisor-open">
-          Ask the assistant which to choose
+          Ask the assistant to read this evidence
         </button>
         <span className="subtle" style={{ marginLeft: "0.6rem" }}>
-          it can argue for an option — it cannot pick one
+          it answers straight away, argues for an option, and cannot pick one
         </span>
       </div>
     );
@@ -110,18 +161,17 @@ export default function GateAdvisor({
         </button>
       </div>
       <CopilotKit runtimeUrl="/api/copilotkit?mode=gate" showDevConsole={false}>
-        <Openers runId={runId} step={step} parameter={parameter} />
+        <Openers runId={runId} step={step} parameters={parameters} autoAsk />
         <div style={{ height: "24rem", border: "1px solid var(--line)", borderRadius: "6px" }}>
           <CopilotChat
             instructions={`${instructions}\n\nThe run in front of the user is ${runId}. It is paused at the ${step} gate${
-              parameter ? `, which lets them change ${parameter}` : ""
+              parameters.length ? `, which lets them change ${parameters.join(", ")}` : ""
             }. When they say "this run" or "this decision" they mean that one. Call get_gate_briefing with run_id "${runId}" before recommending anything.`}
             labels={{
               title: `${step} — which option?`,
               initial:
-                "Ask me which option fits your data. I will read the recorded evidence — the " +
-                "marker genes, the species, the cluster count — and argue for one. I cannot " +
-                "choose for you: you pick it above and press Submit.",
+                "I am reading what this step recorded. I will argue for an option and say what " +
+                "it would cost — I cannot choose for you: you pick it above and press Submit.",
             }}
           />
         </div>

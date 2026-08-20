@@ -223,23 +223,32 @@ export function stepLabel(step: string): StepLabel {
 }
 
 /**
- * The judge's verdict, in words that say what it means for the reader.
+ * The reviewer's verdict, in words that say what it means for the reader.
+ *
+ * "Reviewer" on screen, `judge` in the code and in every audit log. The two are
+ * deliberately different: `judge` is the executor's own name for it and appears
+ * in `judge_sessions`, in `judge_*` tool names and in the recorded events of
+ * every run that has already finished, so renaming the field would make this
+ * projection disagree with what is on disk. What a person reads is a separate
+ * decision from what the record calls it, and "judge" reads as a courtroom for
+ * something that is closer to peer review — it examines a result and says what
+ * it thinks, and it decides nothing.
  *
  * `pass` / `warn` / `fail` are the executor's vocabulary and stay in the data.
  * On screen they are ambiguous in a specific way: a person reads "warn" as
- * "something is wrong", when what the judge means is "this ran soundly and
+ * "something is wrong", when what the reviewer means is "this ran soundly and
  * here is something you should look at". The distinction matters because the
  * gate asks them to decide.
  */
 export const VERDICT_WORDS: Record<string, { word: string; meaning: string }> = {
-  pass: { word: "Looks sound", meaning: "The judge found nothing to raise." },
+  pass: { word: "Looks sound", meaning: "The reviewer found nothing to raise." },
   warn: {
     word: "Worth a look",
-    meaning: "The step ran soundly and the judge has something for you to see. It is not an error.",
+    meaning: "The step ran soundly and the reviewer has something for you to see. It is not an error.",
   },
   fail: {
     word: "Needs attention",
-    meaning: "The judge does not think this result should be built on as it stands.",
+    meaning: "The reviewer does not think this result should be built on as it stands.",
   },
 };
 

@@ -19,7 +19,7 @@ import {
   getStepTimings,
   listArtifacts,
 } from "@/lib/gateway";
-import { controllerConfigured, getGateState } from "@/lib/controller";
+import { controllerConfigured, getGateState, getLatestJob } from "@/lib/controller";
 import type { GateState } from "@/lib/controllerTypes";
 import { formatTime } from "@/lib/verdict";
 import { describeAssistantModel } from "@/lib/assistantModel";
@@ -80,6 +80,23 @@ async function answerableGate(runId: string): Promise<GateState | null> {
   }
 }
 
+/**
+ * The reason a run stopped, when there was one and nothing else on the page
+ * would say so.
+ *
+ * A closed gate and no report is ambiguous from the audit log: it could be
+ * genuinely still working, or the executor could have refused to proceed and
+ * recorded exactly why. `apply_cell_qc_filter` demonstrated it — accepted
+ * with no thresholds, the step stayed `needs_review`, and the run halted two
+ * seconds later. The reason lives in the controller's job record, not on the
+ * run directory, so it is fetched from there rather than inferred.
+ */
+async function haltReason(runId: string, hasGate: boolean, hasReport: boolean): Promise<string | null> {
+  if (!controllerConfigured() || hasGate || hasReport) return null;
+  const job = await getLatestJob(runId);
+  return job?.error ?? null;
+}
+
 export default async function RunPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const [snapshot, steps, artifacts, report, provenance, timings] = await Promise.all([
@@ -97,6 +114,7 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
   if (!snapshot) notFound();
 
   const gate = await answerableGate(id);
+  const halted = await haltReason(id, Boolean(gate ?? snapshot.pending_gate), snapshot.has_report);
   // Read here rather than inside the card: the card is a Client Component and
   // must never see an environment value, only the boolean derived from one.
   const assistantModel = describeAssistantModel();
@@ -143,6 +161,23 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
               {snapshot.species ? ` · species ${snapshot.species}` : " · species not recorded"}
             </p>
           </header>
+
+          {/* Ahead of the gate check: a run that halted has no pending gate to
+              show, and a "waiting for your decision" panel that never
+              appears is a worse silence than the one this replaces. */}
+          {halted && (
+            <div className="panel" data-tone="fail" data-testid="run-halted">
+              <h2 style={{ marginTop: 0 }}>This run stopped without producing a result</h2>
+              <p style={{ marginTop: 0 }}>{halted}</p>
+              <p className="subtle" style={{ marginBottom: 0 }}>
+                Every step before this one is intact. Resolve what it is asking for and resume:
+                <br />
+                <code>
+                  python -m src.run --continue-from {id} --input &lt;same input&gt; --interactive
+                </code>
+              </p>
+            </div>
+          )}
 
           {/* The state of the run decides what comes first, because a run that
               wants something from a person wants it more than they want its
@@ -226,8 +261,8 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
                 { label: "Clusters", value: snapshot.clusters, title: "from run_clustering" },
                 { label: "Cell types", value: snapshot.cell_types, title: "from annotate_cells" },
                 { label: "Steps recorded", value: snapshot.steps.length },
-                { label: "Judge warnings", value: snapshot.warn_count },
-                { label: "Judge failures", value: snapshot.fail_count },
+                { label: "Reviewer warnings", value: snapshot.warn_count },
+                { label: "Reviewer failures", value: snapshot.fail_count },
               ]}
             />
             {snapshot.reused_steps.length > 0 && (
@@ -289,7 +324,7 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
               {snapshot.steps.length} have an outcome
               {snapshot.reused_steps.length > 0 && `, ${snapshot.reused_steps.length} reused`}.
               Select one to see what it ran with, what it said about its own result, and the
-              judge&apos;s reasons.
+              reviewer&apos;s reasons.
             </p>
             <div className="panel">
               {steps ? (

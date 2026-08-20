@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import ThresholdPreview from "@/components/run/ThresholdPreview";
 import { useRouter } from "next/navigation";
 import type { GateState } from "@/lib/controllerTypes";
 import { candidatesFor, filterCandidates, type GateCandidate } from "@/lib/gateCandidates";
@@ -55,8 +56,13 @@ export default function GateDecisionCard({
 }) {
   const router = useRouter();
   const gate = state.pending_gate;
-  const [decision, setDecision] = useState<Decision>("accept");
-  const [rationale, setRationale] = useState("");
+  // Deterministic from this step's own contract: `apply_cell_qc_filter`
+  // records `filter_state: "needs_review"` if and only if no threshold was
+  // requested, and emits this exact phrase alongside it every time.
+  const acceptWouldHalt =
+    gate?.step === "apply_cell_qc_filter" &&
+    (gate?.reasons ?? []).some((r) => r.includes("no QC thresholds chosen"));
+  const [decision, setDecision] = useState<Decision>(acceptWouldHalt ? "revise" : "accept");
   const [overrides, setOverrides] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -73,7 +79,6 @@ export default function GateDecisionCard({
     try {
       const body: Record<string, unknown> = {
         decision,
-        rationale,
         expected_generation: state.generation,
       };
       if (decision === "revise") {
@@ -135,13 +140,24 @@ export default function GateDecisionCard({
       {gate.suggested_action && (
         <p className="subtle">
           Suggested: {gate.suggested_action}{" "}
-          <em>— a suggestion from the judge, not a decision. It is yours.</em>
+          <em>— a suggestion from the reviewer, not a decision. It is yours.</em>
+        </p>
+      )}
+
+      {/* An empty `advice` used to render nothing at all, so a gate where the
+          reviewer proposed no value looked identical to one where the block had
+          simply not loaded. "It did not propose one" is a fact about this
+          gate and belongs on the page. */}
+      {gate.revisable?.length > 0 && !(gate.advice?.length > 0) && (
+        <p className="subtle" data-testid="gate-no-advice">
+          The reviewer proposed no value here — it reported what it measured and left the choice
+          open. The evidence below is what it measured.
         </p>
       )}
 
       {gate.advice?.length > 0 && (
         <div data-testid="gate-advice">
-          <h3>The judge proposed</h3>
+          <h3>The reviewer proposed</h3>
           <ul>
             {gate.advice.map((entry, i) => (
               <li key={i}>
@@ -152,6 +168,20 @@ export default function GateDecisionCard({
           </ul>
         </div>
       )}
+
+      {/* The evidence, translated. It was already in the payload and already
+          on the page — as a two-hundred-line JSON blob behind a summary that
+          called itself "for checking". It is the entire answer to the question
+          this gate asks, so it is now a table. */}
+      <ThresholdPreview
+        preview={(gate.evidence as Record<string, unknown> | undefined)?.preview as
+          | Record<string, unknown>
+          | undefined}
+        distributions={(gate.evidence as Record<string, unknown> | undefined)?.distributions as
+          | Record<string, unknown>
+          | undefined}
+        nCells={(gate.evidence as Record<string, unknown> | undefined)?.n_cells as number | undefined}
+      />
 
       {gate.evidence && Object.keys(gate.evidence).length > 0 && (
         <details data-testid="gate-evidence">
@@ -177,6 +207,22 @@ export default function GateDecisionCard({
         </details>
       )}
 
+      {/* `apply_cell_qc_filter` demonstrated the gap this closes: Accept was
+          offered as an equal option here, and two seconds after somebody
+          pressed it the run halted — `filter_state` stays `needs_review`
+          whenever no threshold was set, and the executor refuses to build a
+          report on a step that never resolved. The reason text is part of
+          that step's contract (`apply_cell_qc_filter.py` emits it exactly
+          when, and only when, this is true), so it can be checked here
+          rather than discovered after the fact a second time. */}
+      {acceptWouldHalt && (
+        <p className="subtle" data-tone="warn" data-testid="accept-would-halt" style={{ marginTop: "0.8rem" }}>
+          <strong>Accept will not resolve this step.</strong> No threshold has been set, so the run
+          would halt right after — nothing was filtered for it to carry forward. Choose{" "}
+          <strong>Revise</strong> and set at least one value below.
+        </p>
+      )}
+
       <fieldset style={{ marginTop: "1rem", border: "none", padding: 0 }}>
         <legend className="subtle">Your decision</legend>
         {DECISIONS.map((option) => (
@@ -186,9 +232,13 @@ export default function GateDecisionCard({
               name="decision"
               value={option.value}
               checked={decision === option.value}
+              disabled={option.value === "accept" && acceptWouldHalt}
               onChange={() => setDecision(option.value)}
             />{" "}
-            <strong>{option.label}</strong> <span className="subtle">— {option.hint}</span>
+            <strong>{option.label}</strong>{" "}
+            <span className="subtle">
+              — {option.value === "accept" && acceptWouldHalt ? "would halt the run; see above" : option.hint}
+            </span>
           </label>
         ))}
       </fieldset>
@@ -238,18 +288,25 @@ export default function GateDecisionCard({
         </div>
       )}
 
-      <label style={{ display: "block", marginTop: "0.6rem" }}>
-        Why <span className="subtle">(recorded in the run&rsquo;s audit log)</span>
-        <input
-          data-testid="gate-rationale"
-          value={rationale}
-          onChange={(event) => setRationale(event.target.value)}
-        />
-      </label>
 
       <div style={{ marginTop: "0.8rem", display: "flex", gap: "0.6rem", alignItems: "center" }}>
-        <button type="button" onClick={submit} disabled={busy} data-testid="gate-submit">
-          {busy ? "Submitting…" : `Submit ${decision}`}
+        {/* "Submit stop" is not a sentence anybody says, and it gave the
+            destructive option the same weight and wording as the other two.
+            Each decision now names what it does, and stop is marked. */}
+        <button
+          type="button"
+          onClick={submit}
+          disabled={busy}
+          data-testid="gate-submit"
+          data-tone={decision === "stop" ? "fail" : undefined}
+        >
+          {busy
+            ? "Submitting…"
+            : decision === "accept"
+              ? "Accept and continue"
+              : decision === "revise"
+                ? "Re-run this step with these values"
+                : "Stop this run"}
         </button>
         {done && <span className="subtle" data-testid="gate-done">{done}</span>}
       </div>
@@ -264,7 +321,7 @@ export default function GateDecisionCard({
         <GateAdvisor
           runId={state.scientific_run_id}
           step={gate.step}
-          parameter={offered[0] ?? null}
+          parameters={offered}
           instructions={advisorInstructions}
           modelConfigured={modelConfigured}
           modelReason={modelReason}

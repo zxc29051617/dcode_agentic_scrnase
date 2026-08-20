@@ -15,6 +15,7 @@ import "server-only";
  */
 
 import type {
+  JobStatus,
   CatalogView,
   SpeciesCatalogView,
   ConfirmResponse,
@@ -27,6 +28,7 @@ import type {
 } from "./controllerTypes.ts";
 
 export type {
+  JobStatus,
   AnalysisRequest,
   AnalysisSettings,
   CatalogView,
@@ -186,6 +188,16 @@ export async function confirmAnalysisRequest(
 
 export async function getGateState(runId: string): Promise<GateState> {
   return call<GateState>(`/v1/scientific-runs/${encodeURIComponent(runId)}/gate`);
+}
+
+export async function getLatestJob(runId: string): Promise<JobStatus | null> {
+  try {
+    return await call<JobStatus>(`/v1/scientific-runs/${encodeURIComponent(runId)}/job`);
+  } catch {
+    // No job at all is a real state — a run watched from a gateway this
+    // controller never queued, or one from before this endpoint existed.
+    return null;
+  }
 }
 
 /**

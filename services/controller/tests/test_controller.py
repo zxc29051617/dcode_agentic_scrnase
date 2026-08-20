@@ -634,3 +634,63 @@ def test_the_species_notice_names_no_path_on_this_machine(client):
 
     text = _json.dumps(client.get("/v1/species").json())
     assert "/home/" not in text and "/tmp/" not in text
+
+
+# --- the job behind a run: what "no gate, no report" actually means --------------
+#
+# A run that closed its gate and produced no report is ambiguous from the audit
+# log alone: it could be working, or the executor could have refused to
+# proceed and said exactly why. `apply_cell_qc_filter` demonstrated it —
+# accepted with no thresholds set, the step stays `needs_review`, and the
+# executor halts rather than building a report on an unfiltered result. The
+# reason lives in the controller's own job record, not in anything the
+# executor writes to disk, because it is the worker's account of what it
+# asked for and what came back.
+
+
+def test_the_job_endpoint_reports_a_run_freshly_confirmed(client, store):
+    request_id, run_id = _confirmed_run(client, store, None)
+    job = store.latest_job_for_run(run_id)
+    assert job is not None
+    assert job["scientific_run_id"] == run_id
+    body = client.get(f"/v1/scientific-runs/{run_id}/job").json()
+    assert body["job_id"] == job["job_id"]
+    assert body["status"] == job["status"]
+
+
+def test_a_halted_job_carries_its_own_error(client, store):
+    request_id, run_id = _confirmed_run(client, store, None)
+    job = store.latest_job_for_run(run_id)
+    store.finish_job(
+        job["job_id"], "completed",
+        error="stopped without a report: apply_cell_qc_filter (filter_state is needs_review). "
+              "Supply the value and resume, or answer `revise` at the gate",
+    )
+    body = client.get(f"/v1/scientific-runs/{run_id}/job").json()
+    assert body["status"] == "completed"
+    assert "needs_review" in body["error"]
+
+
+def test_a_run_with_no_job_at_all_is_a_404_not_an_empty_object(client):
+    """An empty object here would read as "nothing is wrong", which is the
+    exact failure this endpoint exists to close."""
+    resp = client.get("/v1/scientific-runs/no-such-run/job")
+    assert resp.status_code == 404
+
+
+def test_the_most_recent_job_wins_when_a_run_has_more_than_one(client, store):
+    """A start job followed by a continue job: the continue is what happened
+    most recently, and that is the one somebody reading the run wants."""
+    request_id, run_id = _confirmed_run(client, store, None)
+    start_job = store.latest_job_for_run(run_id)
+    assert start_job["kind"] == "start"
+
+    continue_job_id = f"job_{'c' * 20}"
+    store.enqueue_continue(
+        job_id=continue_job_id, request_id=request_id, scientific_run_id=run_id,
+        generation=1, payload={"decision": "accept"},
+    )
+    store.finish_job(continue_job_id, "completed", error="a specific halt reason")
+    body = client.get(f"/v1/scientific-runs/{run_id}/job").json()
+    assert body["job_id"] == continue_job_id
+    assert body["error"] == "a specific halt reason"
