@@ -202,6 +202,7 @@ def capture_run_metadata(
             "command": list(command) if command is not None else list(sys.argv),
             "config": comparable_config(resolved),
             "config_sha256": config_digest(resolved),
+            "input_ref": (input_bundle or {}).get("input_ref"),
             "input_digest": input_digest(input_bundle),
         },
         "packages": package_versions(),

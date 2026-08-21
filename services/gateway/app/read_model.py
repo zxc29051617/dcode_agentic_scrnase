@@ -510,11 +510,13 @@ def list_runs(runs_root: Path) -> list[dict[str, Any]]:
         metadata = _read_json(child / "run_metadata.json")
         if metadata is None:
             continue  # not a run directory this service recognises
+        source = metadata.get("source") or {}
         audit = RunAudit(child)
         rows.append({
             "scientific_run_id": child.name,
             "status": audit.status(),
             "started_at": (metadata.get("runtime") or {}).get("started_at"),
+            "input_ref": source.get("input_ref"),
             # The evidence behind a `running` or `interrupted` verdict, so the
             # threshold that produced it can be second-guessed by whoever is
             # looking at the row rather than only trusted.
@@ -545,6 +547,7 @@ def get_run_snapshot(runs_root: Path, run_id: str) -> dict[str, Any] | None:
     metadata = _read_json(run_dir / "run_metadata.json")
     if metadata is None:
         return None
+    source = metadata.get("source") or {}
     audit = RunAudit(run_dir)
     verdicts = audit.verdicts
     # Derived once and read three times below. It used to be called three times
@@ -555,6 +558,7 @@ def get_run_snapshot(runs_root: Path, run_id: str) -> dict[str, Any] | None:
         "scientific_run_id": run_id,
         "status": audit.status(),
         "last_activity_at": _iso(audit.last_activity),
+        "input_ref": source.get("input_ref"),
         # Named so a reader of an `interrupted` run knows where it stopped, and
         # so `--resume-from` has somewhere to start from.
         "unfinished_step": audit.unfinished_step,
@@ -586,7 +590,7 @@ def get_run_snapshot(runs_root: Path, run_id: str) -> dict[str, Any] | None:
     }
 
 
-#: How many per-file FastQC rows a step detail may carry before it is cut.
+
 #: A 10x run is three reads per lane per sample, so this is generous for a
 #: handful of libraries and bounded for a large one. A cut is declared in the
 #: response rather than silently applied — the same rule `src/nodes.py` uses

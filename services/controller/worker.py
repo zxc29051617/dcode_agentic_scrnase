@@ -91,7 +91,10 @@ def run_start_job(store: Store, job: dict[str, Any], *, runs_dir: str) -> None:
             run_id=job["scientific_run_id"],
             project=payload.get("project") or job["request_id"],
             config=config,
-            input_bundle={"paths": list(payload.get("input_paths") or [])},
+            input_bundle={
+                "paths": list(payload.get("input_paths") or []),
+                "input_ref": payload.get("input_ref"),
+            },
             study_design=study_design,
             runs_dir=runs_dir,
             judge_backend=payload.get("judge_backend"),

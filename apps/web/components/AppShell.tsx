@@ -40,6 +40,7 @@ export default function AppShell({
   assistantEndpoint,
   assistantModelOrigin = null,
   instructions,
+  assistantDefaultOpen,
   canStartAnalyses = false,
   children,
 }: {
@@ -56,6 +57,7 @@ export default function AppShell({
    * see that it took, which the header previously gave no sign of at all.
    */
   assistantModelOrigin?: string | null;
+  assistantDefaultOpen?: boolean;
   instructions: string;
   /**
    * Whether an analysis controller is configured.
@@ -90,7 +92,7 @@ export default function AppShell({
   const [asideOpen, setAsideOpen] = useState(false);
   useEffect(() => {
     const stored = window.localStorage.getItem(ASIDE_PREFERENCE_KEY);
-    setAsideOpen(stored === null ? Boolean(run) : stored === "open");
+    setAsideOpen(stored === null ? (assistantDefaultOpen ?? Boolean(run)) : stored === "open");
     // Mount only. Re-running on navigation would overrule a person who closed
     // the panel on the previous page.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -194,6 +196,9 @@ export default function AppShell({
           <div className="nav-label">Browse</div>
           <Link className="nav-item" href="/runs" aria-current={pathname === "/runs" ? "page" : undefined}>
             Runs
+          </Link>
+          <Link className="nav-item" href="/compare" aria-current={pathname === "/compare" ? "page" : undefined}>
+            Compare
           </Link>
           {canStartAnalyses && (
             <Link

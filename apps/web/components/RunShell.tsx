@@ -73,9 +73,13 @@ async function effectiveModel() {
 
 export default async function RunShell({
   run,
+  instructions = READ_ONLY_INSTRUCTIONS,
+  assistantDefaultOpen,
   children,
 }: {
   run: ShellRun;
+  instructions?: string;
+  assistantDefaultOpen?: boolean;
   children: React.ReactNode;
 }) {
   const model = await effectiveModel();
@@ -87,7 +91,8 @@ export default async function RunShell({
       assistantModel={model.model}
       assistantEndpoint={model.endpoint}
       assistantModelOrigin={model.origin}
-      instructions={READ_ONLY_INSTRUCTIONS}
+      instructions={instructions}
+      assistantDefaultOpen={assistantDefaultOpen}
       canStartAnalyses={controllerConfigured()}
     >
       {children}

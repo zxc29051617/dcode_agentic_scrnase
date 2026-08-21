@@ -12,6 +12,7 @@ export type RunSummary = {
   scientific_run_id: string;
   status: string;
   started_at: string | null;
+  input_ref: string | null;
   /**
    * When this run last wrote anything, UTC ISO-8601, or null.
    *
@@ -57,6 +58,7 @@ export type RunSnapshot = {
   scientific_run_id: string;
   status: string;
   started_at: string | null;
+  input_ref: string | null;
   species: string | null;
   steps: StepEntry[];
   pending_gate: PendingGate;

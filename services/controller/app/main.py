@@ -430,6 +430,7 @@ def confirm(
     scientific_run_id = _allocate_run_id()
     payload = {
         "project": document.get("project") or request_id,
+        "input_ref": document.get("input_ref"),
         "input_paths": [str(input_path)],
         "sample_manifest": str(manifest_path) if manifest_path else None,
         "config": to_executor_config(document["analysis"], species=document["species"]),
