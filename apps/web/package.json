@@ -2,6 +2,7 @@
   "name": "scrna-copilotkit-web",
   "private": true,
   "version": "0.1.0",
+  "type": "module",
   "description": "Read-only observation UI over the scientific run gateway. Isolated from the scientific environment on purpose — see README.md.",
   "scripts": {
     "dev": "next dev",

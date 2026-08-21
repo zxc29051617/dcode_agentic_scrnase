@@ -5,6 +5,7 @@ const nextConfig = {
   // Server Components and Route Handlers only — see lib/gateway.ts and
   // app/api/copilotkit/route.ts. A key that must reach the bundle would need
   // the NEXT_PUBLIC_ prefix, and none of the values here carry it.
+  serverExternalPackages: ["@copilotkit/runtime", "@ai-sdk/google-vertex"],
 };
 
 export default nextConfig;
