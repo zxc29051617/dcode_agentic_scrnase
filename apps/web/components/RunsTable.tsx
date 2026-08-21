@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import Badge from "@/components/Badge";
 import { formatCount, formatTime, runTone } from "@/lib/verdict";
+import { statusWord, STATUS_WORDS } from "@/lib/stepLabels";
 import type { RunSummary } from "@/lib/gatewayTypes";
 
 /**
@@ -56,8 +57,8 @@ export default function RunsTable({ runs }: { runs: RunSummary[] }) {
         <select value={status} onChange={(e) => setStatus(e.target.value)} aria-label="Filter by status">
           <option value="all">All statuses</option>
           {statuses.map((s) => (
-            <option key={s} value={s}>
-              {s}
+            <option key={s} value={s} title={STATUS_WORDS[s]?.meaning ?? s}>
+              {statusWord(s)}
             </option>
           ))}
         </select>
@@ -93,7 +94,12 @@ export default function RunsTable({ runs }: { runs: RunSummary[] }) {
                     </Link>
                   </td>
                   <td>
-                    <Badge tone={runTone(r.status)}>{r.status}</Badge>
+                    <Badge
+                      tone={runTone(r.status)}
+                      title={STATUS_WORDS[r.status]?.meaning ?? r.status}
+                    >
+                      {statusWord(r.status)}
+                    </Badge>
                   </td>
                   <td className="subtle">{formatTime(r.started_at)}</td>
                   <td className="num">{r.steps_recorded}</td>
