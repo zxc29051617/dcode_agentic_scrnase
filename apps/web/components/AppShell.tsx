@@ -153,7 +153,7 @@ export default function AppShell({
             endpoint before it reaches this component. */}
         {assistantConfigured && assistantModel ? (
           <span
-            className="subtle"
+            className="shell-top-meta"
             title={
               assistantModelOrigin
                 ? `${assistantModelOrigin} · ${assistantEndpoint ?? ""}`
@@ -162,25 +162,17 @@ export default function AppShell({
             data-testid="assistant-model-label"
           >
             model <code>{assistantModel}</code>
-            {assistantModelOrigin && (
-              <Badge tone="reused">{assistantModelOrigin}</Badge>
-            )}
+            {assistantModelOrigin && <span>({assistantModelOrigin})</span>}
+            <span aria-hidden="true">·</span>
+            <span>{canStartAnalyses ? "read + start" : "read-only"}</span>
           </span>
         ) : (
-          // Server-rendered, so the absence is visible before anyone clicks.
-          // Discovering that chat does not work only after opening it is the
-          // thing the unconfigured branch exists to prevent.
-          <span className="badge" data-tone="muted" title={assistantReason ?? undefined}>
+          <span className="shell-top-meta" title={assistantReason ?? undefined}>
             Assistant model is not configured
+            <span aria-hidden="true">·</span>
+            <span>{canStartAnalyses ? "read + start" : "read-only"}</span>
           </span>
         )}
-        <span className="subtle" title={
-          canStartAnalyses
-            ? "an analysis controller is configured: this site can prepare and start runs, and answer human gates"
-            : "no analysis controller is configured: every page here only reads recorded runs"
-        }>
-          {canStartAnalyses ? "read + start" : "read-only"}
-        </span>
         <ThemeToggle />
         <button
           onClick={toggleAside}
