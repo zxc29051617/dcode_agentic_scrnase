@@ -11,11 +11,24 @@ never writes an analysis result.
 The LangGraph mainline is complete and runs end to end on real data.
 
 **Judge specialisation is partial and being extended.** Of 26 registry steps,
-25 are judged, and **4 have their own step prompt** — `run_qc_metrics`,
-`detect_doublets`, `run_clustering`, `cross_check_annotation`. The other 21 use
-the shared base prompt. Adding more is ongoing work, one measured step at a
-time; the plan and the reasoning for which steps need what are in
-`docs/judge_prompt_plan.md`.
+25 are judged, and **8 have their own step prompt** — `run_qc_metrics`,
+`detect_doublets`, `run_clustering`, `cross_check_annotation`, and the four
+added since: `apply_cell_qc_filter`, `cell_calling_review`, `find_markers`,
+`cellranger_count`. The other 17 use the shared base prompt.
+
+**All eight have been measured against a real endpoint**, before and after,
+three runs per arm. The results are not uniform and the differences are the
+point: `find_markers` changed verdict, `apply_cell_qc_filter` gained a stable
+score where the base prompt wandered, `cell_calling_review` gained the reading
+a person decides from, and `cellranger_count` showed nothing on a clean library
+and then caught three planted metric conflicts out of three — with no false
+alarm on the clean control. The numbers, the run ids and what is still owed are
+in `docs/judge_prompt_plan.md`.
+
+One method note that generalises: a prompt whose claim is *"these numbers
+disagree"* cannot be evaluated on data where they agree. Measure it against a
+payload built to violate it, and keep a clean one beside it in the same
+session.
 
 Do not describe this layer as finished.
 

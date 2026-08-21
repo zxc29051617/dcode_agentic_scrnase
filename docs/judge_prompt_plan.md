@@ -5,10 +5,11 @@ prompt has to contain, and the evidence for doing this at all.
 
 ## The evidence
 
-One step prompt exists, and it was measured against the real endpoint before
-being kept. The question was whether the judge would notice that CellTypist and
-the marker database name different cell types for the same cluster — a fact
-sitting in plain sight in the payload.
+Eight step prompts exist. The first was measured against the real endpoint
+before any of the others were written, and it is the reason the rest have the
+shape they do. The question it settled was whether the judge would notice that
+CellTypist and the marker database name different cell types for the same
+cluster — a fact sitting in plain sight in the payload.
 
 | arm | runs that found it |
 |---|---|
@@ -187,8 +188,129 @@ and near a boundary is where a gate opens or does not.
 | `cellranger_count` | the metrics summary is 20 numbers whose interactions carry the meaning |
 
 These are the seven where the reasoning is hardest, which is why they were the
-candidates for a different model. They keep the shared one. What they still
-need is their own prompts: three are written, four are not.
+candidates for a different model. They keep the shared one, and **all seven now
+have their own prompt**.
+
+Each was written around the reading its own metrics cannot perform:
+
+| step | what its prompt asks that the base prompt does not |
+|---|---|
+| `apply_cell_qc_filter` | that the preview rows are each criterion *alone*, so they overlap and must never be added — 26 + 72 was 74 removals on the real object, because 24 cells failed both |
+| `cell_calling_review` | that the knee and the inflection disagree on purpose, and the gap between them is the range being chosen within, not two competing answers |
+| `find_markers` | that significance tracks cluster size, so the expression fractions carry the biology and the p-values only say the difference was not noise |
+| `cellranger_count` | that the meaning is in how the metrics sit against each other, and that every value arrives as the string Cell Ranger wrote to CSV — `"1,219"`, `"95.5%"` — never as a number |
+
+#### All four measured
+
+`gpt-oss:120b`, three runs per arm, before and after interleaved inside one
+session per step, payload byte-identical between arms.
+
+> **Export both variables before running any of this.**
+> `scripts/check_judge_endpoint.py` reports `structured output failed:
+> APIConnectionError` on a perfectly healthy endpoint unless
+> `SCRNA_JUDGE_BASE_URL` *and* `SCRNA_JUDGE_MODEL` are set. It lists the served
+> models from its own `DEFAULT_URL`, then builds `LocalLLMJudge()` with no
+> arguments — which reads the environment and falls back to `localhost:11434`
+> and `qwen2.5:7b-instruct`, a model this server does not serve. So the check
+> can say the model is served and fail one line later against a different host
+> and a different model. With both exported, structured output parses and the
+> raw-JSON fallback in `LocalLLMJudge.judge` was never reached.
+
+| step | run | before ×3 | after ×3 | |
+|---|---|---|---|---|
+| `find_markers` | `20260820T073829Z-cf7210c7` | pass 95, 95, 95 | **warn 70, 70, 70** | verdict flipped |
+| `apply_cell_qc_filter` | `20260819T083431Z-579a8e5e` | warn 60, 55, 65 | warn 70, 70, 70 | same verdict, before unstable |
+| `cell_calling_review` | `20260820T073822Z-d02509d1` | warn 70, 70, 70 | warn 80, 80, 80 | same verdict, new content |
+| `cellranger_count` | `20260819T083431Z-579a8e5e` | pass 95, 95, 95 | pass 95, 95, 95 | no effect — clean payload, see below |
+
+**`find_markers` is the result.** The before arm never read a cluster's genes
+as a set: it reported that the step ran, counted the clusters, and offered
+`n_significant_per_cluster` as evidence of quality — "each cluster has a
+substantial number of significant genes … exceeding the reporting threshold of
+25 genes per cluster", which also misreads `n_genes_reported` as a
+significance threshold. The after arm went cluster by cluster on
+`pct_in_cluster` against `pct_in_rest`, named the coherent lineages, and
+flagged four clusters that do not cohere — 4 (`ARHGAP15` at 1.0 against 0.971
+in the rest, so not enrichment at all), 8 (myeloid mixed with `TCF7L2`), 11
+(ribosomal-dominated), 12 (`CLEC4C` with `APP`). That is the reading the prompt
+asks for, it is the reading the base prompt did not produce in three tries, and
+it changes the verdict a person is shown.
+
+**`apply_cell_qc_filter` bought stability rather than a different verdict.**
+Both arms said `warn`, but the before arm scored 60, 55 and 65 on three runs of
+one payload *inside one session*, and its reasons moved with the score — the
+third run dropped the threshold-cost reading entirely and listed medians. The
+after arm returned the same three reasons and the same score every time, always
+anchoring the threshold to this run's own median (`max_pct_mito` 5 against a
+pooled median of 7.75 removes 1,141 of 1,219 cells). Given the stability
+finding below, three identical runs inside one session is weaker evidence than
+it looks; three *differing* ones are not, and that is what the before arm gave.
+
+**`cellranger_count` showed no effect on the real run, because that library is
+clean.** Identical verdict and identical score in all six runs — 95.5% reads in
+cells, 80.5% confidently mapped, 3,204 median genes, nothing to catch, and both
+arms correctly said so. That measured the prompt's restraint and not its
+reading, so it was measured again against payloads built to disagree with
+themselves.
+
+#### `cellranger_count` against defective payloads
+
+Three defects, one per pairing the prompt names, each a copy of the real run
+with only that defect applied — plus the clean run re-measured in the same
+session as a control, because a prompt that flags everything is
+indistinguishable from one that works unless something clean is measured beside
+it. `warnings` and `errors` stayed empty in all four: the step does not inspect
+these numbers, so a real defective run says nothing is wrong and the judge has
+only the metrics.
+
+| payload | what was made to disagree | before ×3 | after ×3 |
+|---|---|---|---|
+| clean control | nothing | pass 95, 95, 95 | pass 95, 95, 95 |
+| ambient | `Fraction Reads in Cells` 95.5% → **38.2%** beside `Estimated Number of Cells` 1,219 → **24,918**; depth and gene counts lowered to stay arithmetically consistent with the same 66.6M reads | pass 95, 95, 95 | **warn 60, 60, 42** |
+| complexity-limited | `Mean Reads per Cell` 54,636 → **148,320** against `Median Genes per Cell` 3,204 → **812**, with saturation 70.8% → 96.4% and the read total moved to match | pass 95, 95, 95 | **warn 80, 70, 70** |
+| reference mismatch | `Reads Mapped Confidently to Transcriptome` 80.5% → **31.4%** with genome mapping and every Q30 untouched, exonic 58.1% → 22.7% and intergenic 4.1% → 42.6% | pass 95, 95, 95 | **warn 65, 70, 70** |
+
+**Three for three, and no false alarm on the control.**
+
+The base prompt did not merely miss them. It **praised the defective numbers**,
+which is the worse failure and is what a gate is for:
+
+- ambient — *"Fraction Reads in Cells is 38.2%, a healthy proportion of reads
+  assigned to cells"*, *"Median Genes per Cell is 412, showing sufficient
+  transcriptome coverage"*, *"Mean Reads per Cell is 2,673, well above typical
+  minimums"*. All three are the opposite of true.
+- complexity-limited — it never mentioned `Median Genes per Cell` at all in the
+  first run, listing every other number instead, and read `Sequencing
+  Saturation` 96.4% as *"confirming high library quality"* when saturation that
+  high is the symptom.
+- reference mismatch — *"Reads Mapped Confidently to Transcriptome is 31.4%,
+  within expected range for 10x v3 chemistry"*, said twice, about the one
+  failure here that nothing downstream can recover from.
+
+With the file the judge did the reading the prompt asks for, including the
+elimination step:
+
+- ambient — tied 38.2% to the 24,918 cell count, and *ruled out* the reference
+  by noting transcriptome mapping was still 80.5%.
+- complexity-limited — *"148,320, a very deep sequencing depth, yet Median
+  Genes per Cell is only 812, suggesting the library is complexity-limited
+  rather than under-sequenced"*, corroborated by the saturation the before arm
+  had misread.
+- reference mismatch — *"31.4% despite Reads Mapped Confidently to Genome being
+  93.7%"*. That is the pairing rather than the lone number, and it is what
+  distinguishes a bad reference from bad reads.
+
+**Verified, and for these three conflicts only.** What the prompt also claims
+and this did not test: comparing two libraries against each other
+(`n_libraries` here is 1), the caveat that a `disposition` of `reused` means
+the numbers predate the run, and the instruction that values are strings rather
+than numbers — the judge quoted them correctly throughout, but nothing in these
+payloads would have punished it for doing arithmetic.
+
+**Do not read three identical runs as reliability.** The stability finding
+below applies: repeats inside one session are correlated, and every arm here
+was measured in one session. What survives is the before/after comparison,
+which was interleaved.
 
 ### C — prompt and a tool (2)
 
@@ -247,15 +369,64 @@ vocabulary question to the prompt.
    provenance turned up.
 4. ~~Decide whether the remaining steps get A, B or C~~ — B measured and not
    adopted; C scoped above and not started.
-5. **Next**: four more A prompts, for the group-B steps that have none —
+5. ~~Four more A prompts, for the group-B steps that have none~~ — written:
    `apply_cell_qc_filter`, `cell_calling_review`, `find_markers`,
-   `cellranger_count`. The shape is settled now, so these are cheap.
-6. Then the twelve remaining A steps, or stop: a prompt is only worth writing
+   `cellranger_count`. The shape was settled, and it held: none of the four
+   needed a structural change, and the drift test caught one thing —
+   `needs_human_review` is a `JudgeResult` field rather than a step's, so it
+   joined `suggested_action` in the test's `NOT_A_FIELD` set.
+6. ~~Measure those four~~ — done, and recorded above. One verdict flip
+   (`find_markers`), one gain in stability (`apply_cell_qc_filter`), one gain
+   in content at the same verdict (`cell_calling_review`), one no-effect
+   (`cellranger_count`, on the only payload available).
+
+   **The four need three different runs between them**, which stays written
+   down because it is the part that has to be planned rather than discovered.
+   The harness reads `<run_dir>/<step>/output.json`, so a step that never ran
+   has no payload:
+
+   | step | the run it needs |
+   |---|---|
+   | `cellranger_count` | any FASTQ-route run |
+   | `apply_cell_qc_filter` | any run that reached the QC gate — a filtered-matrix run stopping there is enough |
+   | `cell_calling_review` | a **raw**-route run; the filtered route never visits this step |
+   | `find_markers` | a run carried past clustering, which means answering the QC and cell-count gates first |
+
+   The last two were produced for this measurement out of matrices an earlier
+   FASTQ run had already written, which is minutes rather than a recount:
+   `--input` at that run's `raw_feature_bc_matrix.h5` stops at
+   `cell_calling_review`, and the filtered one with
+   `--min-genes 200 --max-pct-mito 15 --headless-decision accept` carries
+   through `find_markers`.
+7. ~~A `cellranger_count` payload whose metrics disagree~~ — done, and it
+   settled it: three defective payloads, one per pairing, caught 3/3 with no
+   false alarm on the clean control. Recorded above. Building them was a copy
+   of one real `output.json` with a handful of `metrics_summary` columns
+   changed, which is why this was the cheapest item on the list and should have
+   been done sooner than it was.
+
+   **Reuse this shape for any prompt whose claim is "these numbers disagree".**
+   A clean payload can only ever show restraint; the reading itself is
+   invisible until something is wrong. Four of the eight prompts make a
+   claim of this kind, and only this one has been tested against a payload
+   that violates it.
+8. Then the twelve remaining A steps, or stop: a prompt is only worth writing
    where the base prompt would miss something, and for a structural check with
    six numbers in its payload it probably would not.
 
-Three rather than twenty-five, for the reason the last few commits keep
+Seven rather than twenty-five, for the reason the last few commits keep
 running into: writing all of them before checking the shape means rewriting all
-of them when the shape is wrong. The shape held — the three prompts needed no
+of them when the shape is wrong. The shape held — the first three needed no
 structural revision after measurement, only the one field-name fix the drift
-test caught.
+test caught, and the four that followed needed none either.
+
+Measuring them was not a formality, and it did not return one answer. One
+changed the verdict, one replaced a wandering score with a stable one, one
+added the reading a person actually decides from, and one did nothing at all —
+until it was given a payload with something in it to find, at which point it
+caught three planted conflicts out of three and left the clean control alone.
+
+That last one is the lesson worth carrying forward. A prompt written to catch
+disagreement cannot be evaluated on data that agrees: the first measurement of
+`cellranger_count` looked like a null result and was actually a null *test*.
+The difference took one afternoon and a copied `output.json` to establish.
