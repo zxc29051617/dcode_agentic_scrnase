@@ -726,3 +726,130 @@ def test_a_step_with_no_timestamp_at_all_is_absent_rather_than_guessed(liveness_
     assert body["current_step_elapsed_seconds"] is None
     steps = {s["step"]: s for s in client.get("/v1/scientific-runs/no-ts/steps").json()}
     assert steps["ingest_validate"]["duration_seconds"] is None
+
+
+# --- the read model derives each fact once -------------------------------------
+#
+# `RunAudit` was introduced to stop the projections re-deriving the same things.
+# `get_run_snapshot` called `_current_step_started` three times in three
+# adjacent entries; `_derive_status` re-found the pending gate and the
+# unfinished step that its caller then found again. None of that was visible in
+# a response, which is exactly why it needs a test rather than a reading.
+#
+# The load-bearing assertion is the first one: the projections must agree
+# exactly with what the free functions produce. The rest is about not doing the
+# work twice.
+
+
+def test_the_run_audit_agrees_with_the_free_functions(client):
+    """The refactor's contract: same answers, derived once instead of twice."""
+    from app import read_model as rm
+
+    for name in ("demo-2026-0001", "demo-2026-0002", "demo-2026-0003"):
+        run_dir = FIXTURE_ROOT / name
+        audit = rm.RunAudit(run_dir)
+        events = rm._read_audit(run_dir)
+
+        assert audit.events == events
+        assert audit.step_order == rm._step_order(events)
+        assert audit.step_status == rm._step_status(events)
+        assert audit.verdicts == rm._judge_verdicts(events)
+        assert audit.durations == rm._step_durations(events)
+        assert audit.pending_gate == rm._pending_gate(events)
+        assert audit.unfinished_step == rm._unfinished_step(events)
+        assert audit.current_step_started == rm._current_step_started(events)
+        assert audit.has_report == rm._has_report(run_dir)
+        assert audit.status() == rm._derive_status(
+            events,
+            has_report=rm._has_report(run_dir),
+            last_activity=rm._last_activity(run_dir),
+        )
+
+
+def test_the_audit_log_is_read_once_per_run(client, monkeypatch):
+    """Not a micro-optimisation: it is per run, for every run, every request."""
+    from app import read_model as rm
+
+    reads: list[str] = []
+    original = rm._read_audit
+
+    def counted(run_dir):
+        reads.append(run_dir.name)
+        return original(run_dir)
+
+    monkeypatch.setattr(rm, "_read_audit", counted)
+
+    rm.get_run_snapshot(FIXTURE_ROOT, "demo-2026-0002")
+    assert reads == ["demo-2026-0002"], f"audit.jsonl read {len(reads)} times"
+
+    reads.clear()
+    rm.list_runs(FIXTURE_ROOT)
+    assert len(reads) == len(set(reads)), f"a run's audit log was read twice: {reads}"
+
+
+def test_a_snapshot_derives_the_current_step_once(client, monkeypatch):
+    """The three adjacent calls this refactor removed."""
+    from app import read_model as rm
+
+    calls = 0
+    original = rm._current_step_started
+
+    def counted(events):
+        nonlocal calls
+        calls += 1
+        return original(events)
+
+    monkeypatch.setattr(rm, "_current_step_started", counted)
+    rm.get_run_snapshot(FIXTURE_ROOT, "demo-2026-0002")
+    assert calls == 1, f"_current_step_started called {calls} times, expected 1"
+
+
+def test_status_does_not_re_derive_what_it_was_given(client, monkeypatch):
+    """`_derive_status` used to find the gate its caller had already found."""
+    from app import read_model as rm
+
+    calls = 0
+    original = rm._pending_gate
+
+    def counted(events):
+        nonlocal calls
+        calls += 1
+        return original(events)
+
+    monkeypatch.setattr(rm, "_pending_gate", counted)
+    rm.get_run_snapshot(FIXTURE_ROOT, "demo-2026-0002")
+    assert calls == 1, f"_pending_gate called {calls} times, expected 1"
+
+
+def test_none_is_still_an_answer_and_not_a_missing_argument(client):
+    """`pending_gate=None` means "no gate", not "work it out yourself".
+
+    A `None` default would have made those indistinguishable, and a run whose
+    caller knew there was no gate would have been re-scanned for one.
+    """
+    from app import read_model as rm
+
+    gated = rm._read_audit(FIXTURE_ROOT / "demo-2026-0002")
+    assert rm._pending_gate(gated) is not None, "fixture no longer has an open gate"
+
+    # Told there is no gate, it believes that rather than looking.
+    assert rm._derive_status(
+        gated, has_report=False, last_activity=None, pending_gate=None,
+    ) != "needs_review"
+    # Told nothing, it looks, and finds one.
+    assert rm._derive_status(gated, has_report=False, last_activity=None) == "needs_review"
+
+
+def test_nothing_is_cached_between_calls(client):
+    """Two RunAudit objects over one directory are independent.
+
+    The gateway's guarantee is that it rebuilds from disk every request. A
+    cache keyed on the run directory would break that; per-object memoisation
+    does not, and this is what says so.
+    """
+    from app import read_model as rm
+
+    run_dir = FIXTURE_ROOT / "demo-2026-0002"
+    first, second = rm.RunAudit(run_dir), rm.RunAudit(run_dir)
+    assert first.events == second.events
+    assert first.events is not second.events, "state leaked between two reads"

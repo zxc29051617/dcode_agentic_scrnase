@@ -23,8 +23,21 @@ import os
 import re
 import time
 from datetime import datetime, timezone
+from functools import cached_property
 from pathlib import Path
 from typing import Any
+
+
+class _Unset:
+    """"The caller said nothing", where `None` is already an answer.
+
+    Used only by `_derive_status`, whose two optional inputs are both
+    legitimately `None` — no gate is open, no step is unfinished — so `None`
+    cannot double as "not supplied".
+    """
+
+
+_UNSET = _Unset()
 
 #: No `/`, no `..`, no leading dot — a run id that cannot climb out of
 #: `runs_root` by construction, before any path resolution happens at all.
@@ -178,8 +191,18 @@ def _derive_status(
     has_report: bool,
     last_activity: float | None = None,
     now: float | None = None,
+    pending_gate: dict[str, Any] | None | _Unset = _UNSET,
+    unfinished_step: str | None | _Unset = _UNSET,
 ) -> str:
     """Where this run stands, in the executor's own vocabulary.
+
+    `pending_gate` and `unfinished_step` may be passed in by a caller that has
+    already derived them — `RunAudit.status` does — and are derived here when
+    they are not. They are sentinel-defaulted rather than `None`-defaulted
+    because `None` is a meaningful answer to both questions: no gate is open,
+    no step is unfinished. A `None` default would make "the caller knows there
+    is no pending gate" indistinguishable from "the caller did not say", and
+    this function would go looking for a gate it had just been told is absent.
 
     The words match `src/state.py::RunStatus` on purpose. This used to return
     `halted` for a run waiting at a gate, which is the executor's word for a
@@ -196,12 +219,15 @@ def _derive_status(
     """
     if has_report:
         return "completed"
-    if _pending_gate(events) is not None:
+    gate = _pending_gate(events) if isinstance(pending_gate, _Unset) else pending_gate
+    if gate is not None:
         return "needs_review"
     if not events:
         return "unknown"
 
-    unfinished = _unfinished_step(events)
+    unfinished = (
+        _unfinished_step(events) if isinstance(unfinished_step, _Unset) else unfinished_step
+    )
     if unfinished is not None and last_activity is not None:
         elapsed = (now if now is not None else time.time()) - last_activity
         if elapsed > stale_after_seconds():
@@ -388,6 +414,93 @@ def _has_report(run_dir: Path) -> bool:
     )
 
 
+class RunAudit:
+    """One run's recorded facts, each derived at most once.
+
+    Every projection below asks the same run several overlapping questions, and
+    they were each answering from scratch. `get_run_snapshot` called
+    `_current_step_started` three times in three adjacent dictionary entries;
+    `_derive_status` re-derived the pending gate and the unfinished step that
+    its caller then derived again for its own fields. On the run list that is
+    per run, for every run, on every request.
+
+    So this holds the run directory and answers each question once. It is
+    **not a cache**: an instance is built inside one call, answers that call,
+    and is discarded. Two requests share nothing, and the projection is still
+    rebuilt from the files every time — which is the property that makes this
+    service unable to serve a stale run, and is worth more than the reads it
+    would save.
+
+    ## Why the walks are not merged into one loop
+
+    They look mergeable and are not. `unfinished_step` clears its open step on
+    `step_end` *or* `step_skipped`; `current_step_started` clears only on
+    `step_end`; `step_durations` pops the start it consumed. Folding those into
+    a single pass means choosing one of the three terminating rules for all of
+    them, which changes what at least two of them report. The duplication this
+    removes is *calling* them repeatedly, not the passes themselves.
+    """
+
+    def __init__(self, run_dir: Path) -> None:
+        self.run_dir = run_dir
+
+    @cached_property
+    def events(self) -> list[dict[str, Any]]:
+        return _read_audit(self.run_dir)
+
+    @cached_property
+    def step_order(self) -> list[str]:
+        return _step_order(self.events)
+
+    @cached_property
+    def step_status(self) -> dict[str, str]:
+        return _step_status(self.events)
+
+    @cached_property
+    def verdicts(self) -> dict[str, dict[str, Any]]:
+        return _judge_verdicts(self.events)
+
+    @cached_property
+    def durations(self) -> dict[str, float]:
+        return _step_durations(self.events)
+
+    @cached_property
+    def pending_gate(self) -> dict[str, Any] | None:
+        return _pending_gate(self.events)
+
+    @cached_property
+    def unfinished_step(self) -> str | None:
+        return _unfinished_step(self.events)
+
+    @cached_property
+    def current_step_started(self) -> float | None:
+        return _current_step_started(self.events)
+
+    @cached_property
+    def last_activity(self) -> float | None:
+        return _last_activity(self.run_dir)
+
+    @cached_property
+    def has_report(self) -> bool:
+        return _has_report(self.run_dir)
+
+    def status(self, *, now: float | None = None) -> str:
+        """`_derive_status`, given what this object has already worked out.
+
+        Passing the pending gate and the unfinished step in rather than letting
+        `_derive_status` find them again is the whole point: they are the two
+        it used to recompute behind its caller's back.
+        """
+        return _derive_status(
+            self.events,
+            has_report=self.has_report,
+            last_activity=self.last_activity,
+            now=now,
+            pending_gate=self.pending_gate,
+            unfinished_step=self.unfinished_step,
+        )
+
+
 def list_runs(runs_root: Path) -> list[dict[str, Any]]:
     """One summary row per subdirectory of `runs_root` that looks like a run."""
     rows: list[dict[str, Any]] = []
@@ -397,33 +510,29 @@ def list_runs(runs_root: Path) -> list[dict[str, Any]]:
         metadata = _read_json(child / "run_metadata.json")
         if metadata is None:
             continue  # not a run directory this service recognises
-        events = _read_audit(child)
-        has_report = _has_report(child)
-        activity = _last_activity(child)
+        audit = RunAudit(child)
         rows.append({
             "scientific_run_id": child.name,
-            "status": _derive_status(
-                events, has_report=has_report, last_activity=activity
-            ),
+            "status": audit.status(),
             "started_at": (metadata.get("runtime") or {}).get("started_at"),
             # The evidence behind a `running` or `interrupted` verdict, so the
             # threshold that produced it can be second-guessed by whoever is
             # looking at the row rather than only trusted.
-            "last_activity_at": _iso(activity),
+            "last_activity_at": _iso(audit.last_activity),
             # Which step a run is sitting inside, in the *list* and not only in
             # the detail. It is what makes a row actionable: "waiting" tells
             # somebody to open it, "waiting at apply_cell_qc_filter" tells them
             # what they are about to be asked. Already computed for the detail
             # from the same events, so this costs a function call, not a read.
-            "unfinished_step": _unfinished_step(events),
+            "unfinished_step": audit.unfinished_step,
             # Which step the run is *asking about*, which is not the same thing
             # as the step it is inside. A gate opens after its step has already
             # finished — `apply_cell_qc_filter` writes `step_end` and only then
             # asks whether to apply the cut — so `unfinished_step` is null for
             # exactly the runs a person most needs to identify. Only the name
             # travels; the evidence stays in the detail.
-            "pending_gate_step": (_pending_gate(events) or {}).get("step"),
-            "steps_recorded": len(_step_order(events)),
+            "pending_gate_step": (audit.pending_gate or {}).get("step"),
+            "steps_recorded": len(audit.step_order),
             **_headline(child),
         })
     return rows
@@ -436,45 +545,42 @@ def get_run_snapshot(runs_root: Path, run_id: str) -> dict[str, Any] | None:
     metadata = _read_json(run_dir / "run_metadata.json")
     if metadata is None:
         return None
-    events = _read_audit(run_dir)
-    has_report = _has_report(run_dir)
-    activity = _last_activity(run_dir)
-    step_order = _step_order(events)
-    step_status = _step_status(events)
-    verdicts = _judge_verdicts(events)
+    audit = RunAudit(run_dir)
+    verdicts = audit.verdicts
+    # Derived once and read three times below. It used to be called three times
+    # in these three adjacent entries, which is the clearest instance of what
+    # `RunAudit` exists to stop.
+    started = audit.current_step_started
     return {
         "scientific_run_id": run_id,
-        "status": _derive_status(
-            events, has_report=has_report, last_activity=activity
-        ),
-        "last_activity_at": _iso(activity),
+        "status": audit.status(),
+        "last_activity_at": _iso(audit.last_activity),
         # Named so a reader of an `interrupted` run knows where it stopped, and
         # so `--resume-from` has somewhere to start from.
-        "unfinished_step": _unfinished_step(events),
+        "unfinished_step": audit.unfinished_step,
         # How long it has been in that step. "In cellranger_count" and "in
         # cellranger_count for 40 minutes" are different facts, and only the
         # second one lets somebody tell a working run from a stuck one — which
         # is the question every person watching a long step actually has.
-        "current_step_started_at": _iso(_current_step_started(events)),
+        "current_step_started_at": _iso(started),
         "current_step_elapsed_seconds": (
-            None if _current_step_started(events) is None
-            else round(time.time() - _current_step_started(events), 1)
+            None if started is None else round(time.time() - started, 1)
         ),
         "started_at": (metadata.get("runtime") or {}).get("started_at"),
         "species": (metadata.get("source") or {}).get("config", {}).get("species"),
         "steps": [
-            {"step": s, "status": step_status.get(s, "unknown"),
+            {"step": s, "status": audit.step_status.get(s, "unknown"),
              "verdict": (verdicts.get(s) or {}).get("verdict")}
-            for s in step_order
+            for s in audit.step_order
         ],
-        "pending_gate": _pending_gate(events),
-        "has_report": has_report,
+        "pending_gate": audit.pending_gate,
+        "has_report": audit.has_report,
         # Counted from the audit log, so a run whose per-step output.json
         # files were not kept still reports its verdict tally correctly.
         "warn_count": sum(1 for v in verdicts.values() if v.get("verdict") == "warn"),
         "fail_count": sum(1 for v in verdicts.values() if v.get("verdict") == "fail"),
         "reused_steps": sorted(
-            {str(e.get("step")) for e in events if e.get("event") == "step_skipped"}
+            {str(e.get("step")) for e in audit.events if e.get("event") == "step_skipped"}
         ),
         **_headline(run_dir),
     }
@@ -662,12 +768,12 @@ def get_steps(runs_root: Path, run_id: str) -> list[dict[str, Any]] | None:
     run_dir = resolve_run_dir(runs_root, run_id)
     if run_dir is None:
         return None
-    events = _read_audit(run_dir)
-    step_status = _step_status(events)
-    verdicts = _judge_verdicts(events)
-    durations = _step_durations(events)
+    audit = RunAudit(run_dir)
+    step_status = audit.step_status
+    verdicts = audit.verdicts
+    durations = audit.durations
     rows = []
-    for step in _step_order(events):
+    for step in audit.step_order:
         output = _read_json(run_dir / step / "output.json") or {}
         rows.append({
             "step": step,
@@ -748,14 +854,13 @@ def step_timings(runs_root: Path) -> dict[str, Any]:
     for child in sorted(runs_root.iterdir()) if runs_root.is_dir() else []:
         if not child.is_dir():
             continue
-        events = _read_audit(child)
-        if not events:
+        audit = RunAudit(child)
+        if not audit.events:
             continue
-        if _derive_status(events, has_report=_has_report(child),
-                          last_activity=_last_activity(child)) != "completed":
+        if audit.status() != "completed":
             continue
         contributing += 1
-        for step, seconds in _step_durations(events).items():
+        for step, seconds in audit.durations.items():
             per_step.setdefault(step, []).append(seconds)
 
     steps: dict[str, Any] = {}
