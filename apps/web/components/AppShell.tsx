@@ -7,6 +7,7 @@ import dynamic from "next/dynamic";
 import Badge from "@/components/Badge";
 import ThemeToggle from "@/components/ThemeToggle";
 import { runTone } from "@/lib/verdict";
+import { statusWord, STATUS_WORDS } from "@/lib/stepLabels";
 
 /** Where this browser's choice about the assistant panel is remembered. */
 const ASIDE_PREFERENCE_KEY = "scrna.assistant.aside";
@@ -136,7 +137,8 @@ export default function AppShell({
         {run ? (
           <>
             <strong style={{ fontFamily: "ui-monospace, Menlo, monospace" }}>{run.id}</strong>
-            <Badge tone={runTone(run.status)}>{run.status}</Badge>
+            <Badge tone={runTone(run.status)} title={STATUS_WORDS[run.status]?.meaning ?? run.status}>
+                {statusWord(run.status)}</Badge>
           </>
         ) : (
           <strong>Scientific runs</strong>
