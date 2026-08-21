@@ -22,7 +22,6 @@ a second, drifting copy of which parameters a gate may set.
 from __future__ import annotations
 
 import uuid
-from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import Body, Depends, FastAPI, HTTPException
@@ -68,18 +67,6 @@ def get_catalog(settings: Settings = Depends(get_settings)) -> Catalog:
 
 
 # --- request bodies -----------------------------------------------------------
-
-
-class AnalysisSettings(BaseModel):
-    """The public analysis vocabulary. Extra keys are reported, not ignored.
-
-    `extra="allow"` on purpose: an unknown key must reach `validate_analysis` so
-    it can be named in `validation_errors`. Rejecting it at parse time would
-    produce a 422 with a schema dump, which tells an intake conversation nothing
-    it can act on.
-    """
-
-    model_config = {"extra": "allow"}
 
 
 class PreviewBody(BaseModel):

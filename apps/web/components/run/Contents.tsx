@@ -19,6 +19,10 @@ export default function Contents({ sections }: { sections: { id: string; label: 
   const [active, setActive] = useState(sections[0]?.id ?? "");
 
   useEffect(() => {
+    setActive(sections[0]?.id ?? "");
+  }, [sections]);
+
+  useEffect(() => {
     const targets = sections
       .map((s) => document.getElementById(s.id))
       .filter((el): el is HTMLElement => el !== null);

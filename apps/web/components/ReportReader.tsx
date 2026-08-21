@@ -1,6 +1,4 @@
-"use client";
-
-import { useMemo } from "react";
+import { useMemo, type ComponentPropsWithoutRef, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -25,6 +23,16 @@ function slug(text: string): string {
     .replace(/\s+/g, "-");
 }
 
+function textFromNode(node: ReactNode): string {
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(textFromNode).join("");
+  if (node && typeof node === "object" && "props" in node) {
+    const children = (node as { props?: { children?: ReactNode } }).props?.children;
+    return textFromNode(children ?? null);
+  }
+  return "";
+}
+
 export default function ReportReader({
   content,
   sourcePath,
@@ -40,15 +48,32 @@ export default function ReportReader({
 }) {
   const headings = useMemo<Heading[]>(() => {
     const found: Heading[] = [];
+    const seen = new Map<string, number>();
     for (const line of content.split("\n")) {
       const match = /^(#{2,3})\s+(.*)$/.exec(line);
-      if (match) {
-        const text = match[2].trim();
-        found.push({ level: match[1].length, text, id: slug(text) });
-      }
+      if (!match) continue;
+      const text = match[2].trim();
+      const base = slug(text);
+      const count = (seen.get(base) ?? 0) + 1;
+      seen.set(base, count);
+      found.push({ level: match[1].length, text, id: count === 1 ? base : `${base}-${count}` });
     }
     return found;
   }, [content]);
+
+  let headingIndex = 0;
+  const headingComponent = (tag: "h2" | "h3") => {
+    const Tag = tag;
+    return ({ children, ...props }: ComponentPropsWithoutRef<"h2">) => {
+      const heading = headings[headingIndex++] ?? null;
+      const text = textFromNode(children);
+      return (
+        <Tag {...props} id={heading?.id ?? slug(text)}>
+          {children}
+        </Tag>
+      );
+    };
+  };
 
   return (
     <div className="report-layout">
@@ -70,8 +95,8 @@ export default function ReportReader({
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
           components={{
-            h2: ({ children }) => <h2 id={slug(String(children))}>{children}</h2>,
-            h3: ({ children }) => <h3 id={slug(String(children))}>{children}</h3>,
+            h2: headingComponent("h2"),
+            h3: headingComponent("h3"),
             img: ({ alt, src }) => {
               const name = String(src ?? "").split("/").pop() ?? "";
               const id = figures[name];

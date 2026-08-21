@@ -100,23 +100,26 @@ def make_step_node(step: str) -> NodeFn:
         # scalar, which state cannot be checkpointed with. Coerced once here
         # rather than trusted to 23 skills and every future one.
         output = persistence.plain_python(result["output"])
+        warnings = list(result["warnings"])
+        errors = list(result["errors"])
+        # Recorded beside the artifacts so a later run can tell this step is
+        # done and read what it produced; state itself is never persisted.
+        if persistence.write_step_output(_run_dir(state), step, output) is None:
+            warnings.append(f"could not persist step output for {step}")
         record = {
             "step": step,
             "status": result["status"],
-            "warnings": result["warnings"],
-            "errors": result["errors"],
+            "warnings": warnings,
+            "errors": errors,
         }
         audit.append("step_end", **record, output_keys=sorted(output))
-        # Recorded beside the artifacts so a later run can tell this step is
-        # done and read what it produced; state itself is never persisted.
-        persistence.write_step_output(_run_dir(state), step, output)
 
         delta: dict[str, Any] = {
             "current_step": step,
             "artifacts": {step: output},
             "step_results": [record],
-            "warnings": [f"[{step}] {w}" for w in result["warnings"]],
-            "errors": [f"[{step}] {e}" for e in result["errors"]],
+            "warnings": [f"[{step}] {w}" for w in warnings],
+            "errors": [f"[{step}] {e}" for e in errors],
         }
         if isinstance(output.get("metrics"), dict):
             delta["metrics"] = {step: output["metrics"]}

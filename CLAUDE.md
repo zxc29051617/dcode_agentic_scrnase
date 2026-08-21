@@ -58,7 +58,7 @@ structure.
 includes rewriting a file wholesale when an edit would do.
 
 **Keep the repo clean.** One-off debugging scripts and run outputs do not
-belong in it. `runs/` costs roughly 400 MB per run and is gitignored; keep what
+belong in it. `runs/` costs roughly 410 MB per run and is gitignored; keep what
 matters in `results/` and delete the run. `bash scripts/run_disk_usage.sh`
 reports what has accumulated.
 

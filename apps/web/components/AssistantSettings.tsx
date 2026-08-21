@@ -101,13 +101,19 @@ export default function AssistantSettings({ onChanged }: { onChanged?: () => voi
     setMessage(null);
     try {
       const res = await fetch("/api/assistant-session", { method: "DELETE" });
-      const data = (await res.json()) as AssistantSessionStatus;
-      setStatus(data);
+      const data = (await res.json()) as AssistantSessionStatus | { error?: string; message?: string };
+      if (!res.ok) {
+        setMessage("message" in data ? data.message ?? "could not clear" : "could not clear");
+        return;
+      }
+      setStatus(data as AssistantSessionStatus);
       setApiKeyInput("");
       setProvider("local");
       setMessage("cleared");
       onChanged?.();
       router.refresh();
+    } catch {
+      setMessage("could not reach the server");
     } finally {
       setBusy(false);
     }

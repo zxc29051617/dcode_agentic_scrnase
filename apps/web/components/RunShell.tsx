@@ -75,11 +75,17 @@ export default async function RunShell({
   run,
   instructions = READ_ONLY_INSTRUCTIONS,
   assistantDefaultOpen,
+  assistantTitle,
+  assistantInitialMessage,
+  assistantSuggestions,
   children,
 }: {
   run: ShellRun;
   instructions?: string;
   assistantDefaultOpen?: boolean;
+  assistantTitle?: string;
+  assistantInitialMessage?: string;
+  assistantSuggestions?: string[];
   children: React.ReactNode;
 }) {
   const model = await effectiveModel();
@@ -93,6 +99,9 @@ export default async function RunShell({
       assistantModelOrigin={model.origin}
       instructions={instructions}
       assistantDefaultOpen={assistantDefaultOpen}
+      assistantTitle={assistantTitle}
+      assistantInitialMessage={assistantInitialMessage}
+      assistantSuggestions={assistantSuggestions}
       canStartAnalyses={controllerConfigured()}
     >
       {children}

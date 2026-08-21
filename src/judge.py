@@ -331,7 +331,6 @@ class LocalLLMJudge:
             "temperature": temperature,
         }
         self.default_model = model or os.environ.get("SCRNA_JUDGE_MODEL", "qwen2.5:7b-instruct")
-        self.llm = self._client_for_model(self.default_model)
 
     def _client_for_model(self, name: str) -> Any:
         """One client per model, built on first use and reused after."""

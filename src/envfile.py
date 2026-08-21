@@ -31,13 +31,6 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-#: Where to look, in order. The working directory first, because a run started
-#: in a study's own folder should be able to carry that study's settings; the
-#: project root second, which is what a single-checkout install has. The first
-#: file found is the one used — merging two would make "which value am I
-#: getting" a question with no answer you could read off a single file.
-SEARCH_ORDER = ("cwd", "project_root")
-
 
 def candidate_paths(start: Path | None = None) -> list[Path]:
     """The `.env` files that would be considered, in precedence order."""

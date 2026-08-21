@@ -17,21 +17,27 @@ import AssistantSettings from "@/components/AssistantSettings";
  * Mounted lazily by `AppShell` — see the note there about the bundle.
  */
 
-const SUGGESTIONS = [
+const DEFAULT_SUGGESTIONS = [
   "Explain the current warnings",
   "Summarize the QC results",
   "Which steps were reused?",
   "Show the provenance recorded for this run",
 ];
 
-function Suggestions({ runId }: { runId: string | null }) {
+function Suggestions({
+  runId,
+  suggestions,
+}: {
+  runId: string | null;
+  suggestions: string[];
+}) {
   // `useCopilotChat` exposes `appendMessage`, which takes a constructed
   // `TextMessage` — `sendMessage` lives on the headless hook and is not part
   // of this return type.
   const { appendMessage, isLoading } = useCopilotChat();
   return (
     <div className="suggestions">
-      {SUGGESTIONS.map((text) => (
+      {suggestions.map((text) => (
         <button
           key={text}
           disabled={isLoading}
@@ -57,13 +63,26 @@ function Suggestions({ runId }: { runId: string | null }) {
 export default function AssistantPanel({
   runId,
   instructions,
+  title,
+  initialMessage,
+  suggestions,
 }: {
   runId: string | null;
   instructions: string;
+  title?: string;
+  initialMessage?: string;
+  suggestions?: string[];
 }) {
   const scoped = runId
     ? `${instructions}\n\nThe user is currently looking at scientific run ${runId}. When they say "this run" they mean ${runId}.`
     : instructions;
+  const activeSuggestions = suggestions ?? DEFAULT_SUGGESTIONS;
+  const chatTitle = title ?? (runId ? `Run ${runId}` : "Scientific runs");
+  const chatInitial =
+    initialMessage ??
+    (runId
+      ? `Ask about run ${runId}. I can only read recorded results.`
+      : "Ask about the recorded runs. I can only read recorded results.");
 
   return (
     // `showDevConsole={false}` turns off CopilotKit's own floating badge, which
@@ -80,15 +99,13 @@ export default function AssistantPanel({
           /api/copilotkit, which reads the session cookie fresh every time,
           so a setting saved here takes effect on the very next message. */}
       <AssistantSettings />
-      <Suggestions runId={runId} />
+      <Suggestions runId={runId} suggestions={activeSuggestions} />
       <div style={{ flex: 1, minHeight: 0 }}>
         <CopilotChat
           instructions={scoped}
           labels={{
-            title: runId ? `Run ${runId}` : "Scientific runs",
-            initial: runId
-              ? `Ask about run ${runId}. I can only read recorded results.`
-              : "Ask about the recorded runs. I can only read recorded results.",
+            title: chatTitle,
+            initial: chatInitial,
           }}
         />
       </div>

@@ -1,5 +1,3 @@
-"use client";
-
 import { useState } from "react";
 import type { ArtifactEntry } from "@/lib/gatewayTypes";
 
@@ -13,10 +11,9 @@ import type { ArtifactEntry } from "@/lib/gatewayTypes";
  * Plotly documents still work and neither can read a cookie, a token or
  * anything else of ours.
  *
- * The report is never parsed or inlined. There is no `dangerouslySetInnerHTML`
- * anywhere in this app: the bytes go to the browser as a separate document
- * over `/api/artifacts/...`, which is the whole reason the sandbox can apply
- * to them at all.
+ * The report is never parsed or inlined. The bytes go to the browser as a
+ * separate document over `/api/artifacts/...`, which is the whole reason the
+ * sandbox can apply to them at all.
  *
  * Loaded on demand. A MultiQC report is tens of megabytes, and fetching one
  * for a tab nobody opened is a slow page for no reason.

@@ -1,6 +1,6 @@
 # Synthetic run fixture
 
-Two fabricated run directories the gateway is developed and tested against.
+Three fabricated run directories the gateway is developed and tested against.
 Neither came from `python -m src.run`. Nothing here is real: no FASTQ, no
 `.h5ad`, no real donor/sample identity, no real hostname, no real git commit,
 no real API key or endpoint.
@@ -9,6 +9,7 @@ no real API key or endpoint.
 |---|---|---|
 | `demo-2026-0001` | completed | yes |
 | `demo-2026-0002` | halted at `apply_cell_qc_filter`'s human gate | no |
+| `demo-2026-0003` | completed | yes |
 
 Regenerate with:
 

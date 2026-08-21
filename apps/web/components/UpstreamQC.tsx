@@ -1,5 +1,3 @@
-"use client";
-
 import type { UpstreamDetail } from "@/lib/gatewayTypes";
 
 /**
@@ -12,8 +10,9 @@ import type { UpstreamDetail } from "@/lib/gatewayTypes";
  * no iframe and no artifact endpoint.
  *
  * The full HTML reports are a separate matter: they live inside the run
- * directory and the gateway serves no file bytes yet, so there is nothing to
- * link to. Whether one exists is reported; where it is, deliberately, is not.
+ * directory and the gateway serves them through `/api/artifacts/...`, so the
+ * page can link to the report or sandbox it when one exists. Whether one
+ * exists is reported; where it is, deliberately, is not.
  */
 
 /** Cell Ranger metrics worth putting first. The rest follow in recorded order. */
@@ -156,7 +155,7 @@ function FastqQC({ detail }: { detail: UpstreamDetail }) {
 
       {(detail.expected_module_flags?.length ?? 0) > 0 && (
         <p className="subtle" style={{ margin: "0.5rem 0 0" }}>
-          Expected for 10x and not counted as findings:{" "}
+          Expected for 10x and not counted as findings: {" "}
           {detail.expected_module_flags!.join(", ")}
         </p>
       )}

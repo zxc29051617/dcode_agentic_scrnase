@@ -117,9 +117,13 @@ def run_continue_job(store: Store, job: dict[str, Any], *, runs_dir: str) -> Non
             run_id=job["scientific_run_id"],
             decision=payload["decision"],
             runs_dir=runs_dir,
+            judge_backend=payload.get("judge_backend"),
+            judge_model=payload.get("judge_model"),
         )
     except Exception as exc:  # noqa: BLE001
-        store.finish_job(job["job_id"], "failed", error=f"{type(exc).__name__}: {exc}")
+        error = f"{type(exc).__name__}: {exc}"
+        store.finish_job(job["job_id"], "failed", error=error)
+        store.set_request_status(job["request_id"], "failed")
         return
 
     _settle(store, job, final)

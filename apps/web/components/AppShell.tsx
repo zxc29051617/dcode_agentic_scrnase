@@ -30,6 +30,8 @@ export type ShellRun = {
   id: string;
   status: string;
   hasReport: boolean;
+  hasReportSection?: boolean;
+  hasFiles?: boolean;
 } | null;
 
 export default function AppShell({
@@ -41,6 +43,9 @@ export default function AppShell({
   assistantModelOrigin = null,
   instructions,
   assistantDefaultOpen,
+  assistantTitle,
+  assistantInitialMessage,
+  assistantSuggestions,
   canStartAnalyses = false,
   children,
 }: {
@@ -58,6 +63,9 @@ export default function AppShell({
    */
   assistantModelOrigin?: string | null;
   assistantDefaultOpen?: boolean;
+  assistantTitle?: string;
+  assistantInitialMessage?: string;
+  assistantSuggestions?: string[];
   instructions: string;
   /**
    * Whether an analysis controller is configured.
@@ -123,11 +131,15 @@ export default function AppShell({
   const links: { href: string; label: string; enabled: boolean }[] = base
     ? [
         { href: `${base}#findings`, label: "What it found", enabled: true },
-        { href: `${base}#report`, label: "Report", enabled: run!.hasReport },
+        {
+          href: `${base}#report`,
+          label: "Report",
+          enabled: run!.hasReportSection ?? run!.hasReport,
+        },
         { href: `${base}#quality`, label: "Quality control", enabled: true },
         { href: `${base}#how`, label: "How it ran", enabled: true },
         { href: `${base}#provenance`, label: "Provenance", enabled: true },
-        { href: `${base}#files`, label: "Files", enabled: true },
+        { href: `${base}#files`, label: "Files", enabled: run!.hasFiles ?? true },
       ]
     : [];
 
@@ -234,7 +246,13 @@ export default function AppShell({
           </div>
           <div className="aside-body">
             {assistantConfigured ? (
-              <AssistantPanel runId={run?.id ?? null} instructions={instructions} />
+              <AssistantPanel
+                runId={run?.id ?? null}
+                instructions={instructions}
+                title={assistantTitle}
+                initialMessage={assistantInitialMessage}
+                suggestions={assistantSuggestions}
+              />
             ) : (
               <div style={{ padding: "1rem" }}>
                 <p>

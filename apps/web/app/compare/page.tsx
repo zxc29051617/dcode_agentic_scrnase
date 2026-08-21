@@ -11,6 +11,13 @@ import { formatCount, formatTime, runTone } from "@/lib/verdict";
 
 export const dynamic = "force-dynamic";
 
+const COMPARE_ASSISTANT_SUGGESTIONS = [
+  "Which run looks better overall?",
+  "What are the biggest differences between these two runs?",
+  "Which run has fewer warnings or failures?",
+  "Summarize the provenance and step differences.",
+];
+
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 type ComparisonRow = readonly [string, string, string];
 
@@ -56,8 +63,10 @@ function comparisonRows(left: RunSnapshot, right: RunSnapshot): ComparisonRow[] 
 
 function reportArtifact(artifacts: ArtifactEntry[] | null): ArtifactEntry | null {
   const html = artifactOf(artifacts, "report_html");
+  if (html && !html.too_large) return html;
   const pdf = artifactOf(artifacts, "report_pdf");
-  return html ?? (pdf && !pdf.too_large ? pdf : pdf ?? null);
+  if (pdf && !pdf.too_large) return pdf;
+  return null;
 }
 
 function reportHref(runId: string, artifact: ArtifactEntry | null): string | null {
@@ -93,11 +102,18 @@ export default async function ComparePage({ searchParams }: { searchParams: Sear
     : "No comparable runs yet";
 
   const assistantInstructions = selectedGroup && leftSnapshot && rightSnapshot
-    ? `${READ_ONLY_INSTRUCTIONS}\n\nThis compare page shows two runs from the same input_ref: ${selectedGroup.input_ref}. Left run: ${leftSnapshot.scientific_run_id}. Right run: ${rightSnapshot.scientific_run_id}. When asked which is better, answer from the recorded summaries, report previews, provenance and steps only. Start with the better run, then say why.`
+    ? `${READ_ONLY_INSTRUCTIONS}\n\nThis compare workspace shows two runs from the same input_ref: ${selectedGroup.input_ref}. Left run: ${leftSnapshot.scientific_run_id}. Right run: ${rightSnapshot.scientific_run_id}. Answer from recorded summaries, report previews, provenance, and steps only. If the user asks which is better, start with the winner, then give the key differences as short bullets.`
     : `${READ_ONLY_INSTRUCTIONS}\n\nThis is a compare workspace. Ask the user to choose an input_ref that has at least two runs before comparing anything.`;
 
   return (
-    <RunShell run={null} instructions={assistantInstructions}>
+    <RunShell
+      run={null}
+      instructions={assistantInstructions}
+      assistantDefaultOpen
+      assistantTitle="Compare workspace"
+      assistantInitialMessage="Ask which run looks better, what differs, or which QC signal is stronger."
+      assistantSuggestions={COMPARE_ASSISTANT_SUGGESTIONS}
+    >
       <section className="stack compare-page">
         <header className="compare-hero">
           <p className="subtle">Compare runs from the same input reference</p>

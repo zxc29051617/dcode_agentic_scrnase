@@ -364,6 +364,8 @@ def _step_is_trustworthy(
     """
     output = read_step_output(run_dir, step)
     if output is None:
+        if status in {"ok", "skipped"}:
+            return None, f"{step}: recorded status {status!r} but no readable step output file"
         return None, None  # never ran on this route; not a failure, nothing to say
     if status is None:
         return None, f"{step}: no step_end in the audit log, so its outcome is unknown"

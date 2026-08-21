@@ -148,7 +148,15 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
   ];
 
   return (
-    <RunShell run={{ id, status: snapshot.status, hasReport: snapshot.has_report }}>
+    <RunShell
+      run={{
+        id,
+        status: snapshot.status,
+        hasReport: snapshot.has_report,
+        hasReportSection: hasReport || embeddingData.length > 0,
+        hasFiles: entries.length > 0,
+      }}
+    >
       <div className="doc">
         <div className="doc-body">
           <header className="doc-head">

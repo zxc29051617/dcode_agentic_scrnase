@@ -1,6 +1,6 @@
 # dcode_agentic_scrnaseq
 
-[![tests](https://github.com/zxc29051617/dcode_agentic_scrnase/actions/workflows/tests.yml/badge.svg)](https://github.com/zxc29051617/dcode_agentic_scrnase/actions/workflows/tests.yml)
+[![tests](https://github.com/zxc29051617/dcode_agentic_scrnaseq/actions/workflows/tests.yml/badge.svg)](https://github.com/zxc29051617/dcode_agentic_scrnaseq/actions/workflows/tests.yml)
 
 這是新的單細胞 RNA-seq agent workflow 研究/實作區，只在這個資料夾內建立與修改，不動 `claude_agentic_scrna/`。
 
@@ -44,7 +44,7 @@
 
 **執行產物**（完全 gitignore）
 - `runs/<run_id>/`：每次執行的所有輸出。每一步各存一份 `adata.h5ad` 以支援斷點續跑，
-  所以**一次執行約 400 MB**。跑多了要清：`bash scripts/run_disk_usage.sh` 看用量，
+  所以**一次執行約 410 MB**。跑多了要清：`bash scripts/run_disk_usage.sh` 看用量，
   值得留的複製到 `results/` 再把 run 刪掉
 
 > `reference/` 是基因組（幾十 GB、機器相關、不進 git）；`marker_db/` 是細胞型別的

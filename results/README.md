@@ -4,7 +4,7 @@ Finished analyses, kept by hand. **Not** where the pipeline writes.
 
 A run writes everything to `runs/<run_id>/`, which is in `.gitignore` and is
 disposable — each step saves its own `adata.h5ad` so a run can be resumed from
-disk, which is why one run costs about 400 MB. Copy what is worth keeping in
+disk, which is why one run costs about 410 MB. Copy what is worth keeping in
 here, then delete the run.
 
 ```

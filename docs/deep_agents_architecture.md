@@ -63,9 +63,11 @@ the **name of a graph node and a label in the audit log**, not a module path.
 
 - 25 of the 26 steps are judged. `human_review_decision` is a gate and has no
   judge.
-- 4 steps have their own prompt: `run_qc_metrics`, `detect_doublets`,
-  `run_clustering`, `cross_check_annotation`. The other 21 use the shared base
-  prompt. `docs/judge_prompt_plan.md` holds the plan and the measurements.
+- 8 steps have their own prompt: `apply_cell_qc_filter`, `cell_calling_review`,
+  `cellranger_count`, `cross_check_annotation`, `detect_doublets`,
+  `find_markers`, `run_clustering`, `run_qc_metrics`. The other 18 use the
+  shared base prompt. `docs/judge_prompt_plan.md` holds the plan and the
+  measurements.
 - The judge reads **one step's payload** and returns a verdict plus `advice`.
 - It cannot write an analysis result. Not because it is asked not to: the judge
   node returns `{"judge_results": [...]}` and nothing else
@@ -537,7 +539,7 @@ external gate API, worker, web frontend or control tool in this commit.
 
 The reviewers read JSON, not matrices. A run's `output.json` files, its
 `audit.jsonl`, its `run_metadata.json` and its `report.md` are a few megabytes;
-the ~400 MB is `.h5ad`. So a reviewer evaluation can run without the 18 GB of
+the ~410 MB is `.h5ad`. So a reviewer evaluation can run without the 18 GB of
 FASTQ — if there is a fixture.
 
 **A real run directory is not committed.** Run directories contain absolute

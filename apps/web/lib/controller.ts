@@ -157,12 +157,6 @@ export async function previewAnalysisRequest(input: PreviewInput): Promise<Previ
   });
 }
 
-export async function getAnalysisRequest(requestId: string) {
-  return call<{ request: unknown; job: unknown; run: unknown; decisions: unknown[] }>(
-    `/v1/analysis-requests/${encodeURIComponent(requestId)}`,
-  );
-}
-
 export async function getAnalysisRequestStatus(requestId: string): Promise<RequestStatusView> {
   return call<RequestStatusView>(
     `/v1/analysis-requests/${encodeURIComponent(requestId)}/status`,

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import ArtifactFrame from "@/components/ArtifactFrame";
 import UpstreamQC from "@/components/UpstreamQC";
 import type { ArtifactEntry, UpstreamDetail } from "@/lib/gatewayTypes";
@@ -68,6 +68,9 @@ export default function QCTabs({
   ];
 
   const [active, setActive] = useState(tabs[0].id);
+  useEffect(() => {
+    setActive(tabs[0]?.id ?? "");
+  }, [runId]);
   const current = tabs.find((t) => t.id === active)!;
   const empty = current.artifacts.length === 0 && !current.detail;
 
