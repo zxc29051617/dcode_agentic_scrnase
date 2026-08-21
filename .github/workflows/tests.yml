@@ -104,6 +104,12 @@ jobs:
           git diff --exit-code -- conda-lock.yml \
             || { echo "::error::conda-lock.yml is out of date; run: conda-lock lock --file environment.yml --platform linux-64"; exit 1; }
 
+      - name: Build the controller venv
+        run: |
+          cd services/controller
+          python -m venv .venv
+          .venv/bin/pip install -r requirements.txt
+
       - name: Run the test suite
         run: |
           set -o pipefail
