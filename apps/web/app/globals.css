@@ -1,14 +1,53 @@
 /* One place for the whole shell's look, so a page can be about its data
-   rather than about its layout. Light and dark both defined; the viewer's
-   system setting picks. */
+   rather than about its layout.
+
+   ## Three theme states, not two
+
+   `data-theme` is absent by default, which means "follow the system". A person
+   who picks explicitly gets `data-theme="light"` or `"dark"` on <html>, and
+   that choice has to win in *both* directions — a dark choice on a light
+   system as well as a light choice on a dark one. Two rules are therefore
+   needed and the second used to be missing: the media query below could only
+   ever be opted *out* of, so choosing dark on a light machine did nothing.
+
+   The palette is written light-first on bare `:root`. Everything that follows
+   only redefines tokens, so no colour has its single definition inside a media
+   query — a rule this file previously kept by accident and now keeps on
+   purpose. */
 
 :root {
   --bg: #f7f8fa;
   --panel: #ffffff;
   --ink: #16191d;
+  /* The strong foreground, used where something has to read as *the* text
+     colour rather than as body copy: the active contents entry, and the
+     tooltip, which inverts (`background: var(--fg); color: var(--bg)`).
+
+     It was referenced in four places and defined in none, so those four
+     resolved to nothing — the tooltip had no background at all, which is why
+     it rendered as loose text over whatever was behind it. It tracks `--ink`
+     rather than introducing a fifth grey. */
+  --fg: #16191d;
   --muted: #667085;
   --line: #e3e6ea;
   --accent: #2f6feb;
+  /* Text on an accent-filled control. Not always white: `--accent` lightens in
+     dark mode so that it reads against a dark page, and white on that lighter
+     blue is the weaker pairing of the two. */
+  --on-accent: #ffffff;
+
+  /* What sits behind content this app did not draw and cannot restyle:
+     matplotlib PNGs from `build_report`, and third-party HTML documents
+     (FastQC, MultiQC, Cell Ranger's web_summary) shown in an iframe.
+
+     Deliberately the same in both themes, and deliberately light. Those
+     documents were authored against a white page — a transparent-background
+     PNG with black axis labels, or an HTML report with unset `body` colours,
+     becomes unreadable on a dark backdrop. Making them "follow the theme"
+     would be following it into illegibility. It is a token rather than a
+     literal so that the decision is stated once, here, with its reason,
+     instead of appearing as a bare `#fff` in two components. */
+  --foreign-bg: #ffffff;
 
   /* Verdict colours, used identically everywhere a verdict appears —
      the run list, the summary cards and every row of the timeline. A
@@ -35,14 +74,17 @@
   --shell-top-h: 3.4rem;
 }
 
+/* Dark, applied when the system asks for it and the reader has not overridden. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #14161a;
     --panel: #1c1f24;
     --ink: #e8eaed;
+    --fg: #e8eaed;
     --muted: #9aa3af;
     --line: #2c3138;
     --accent: #6c9bff;
+    --on-accent: #10131a;
     --pass: #5cc98d;
     --pass-bg: #14301f;
     --warn: #e0b341;
@@ -53,6 +95,44 @@
     --reused-bg: #262a30;
   }
 }
+
+/* Dark, applied because the reader chose it — including on a light system,
+   which the media query above cannot express.
+
+   These declarations must stay identical to the block above. They are
+   duplicated rather than shared because CSS has no way to apply one set of
+   custom properties from both a media query and an attribute selector, and
+   `tests/theme_tokens.test.ts` fails if the two ever disagree — the same
+   trade the step prompts make, where a second description of something is
+   allowed to exist only because a test compares it against the first. */
+:root[data-theme="dark"] {
+  --bg: #14161a;
+  --panel: #1c1f24;
+  --ink: #e8eaed;
+  --fg: #e8eaed;
+  --muted: #9aa3af;
+  --line: #2c3138;
+  --accent: #6c9bff;
+  --on-accent: #10131a;
+  --pass: #5cc98d;
+  --pass-bg: #14301f;
+  --warn: #e0b341;
+  --warn-bg: #33280c;
+  --fail: #f08a80;
+  --fail-bg: #3a1614;
+  --reused: #a6adbb;
+  --reused-bg: #262a30;
+}
+
+/* The browser's own widgets — form controls, scrollbars, the canvas behind a
+   PDF or an image opened on its own — read this rather than the tokens above.
+   Without it a dark page keeps a white scrollbar and light-scheme dropdowns. */
+:root { color-scheme: light; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { color-scheme: dark; }
+}
+:root[data-theme="dark"] { color-scheme: dark; }
+:root[data-theme="light"] { color-scheme: light; }
 
 * { box-sizing: border-box; }
 
@@ -113,6 +193,31 @@ code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.92em
   padding: 0.75rem 0.5rem;
 }
 .shell-main { grid-area: main; padding: 1.25rem 1.5rem 3rem; min-width: 0; }
+
+/* Three segments in one control, so the group reads as one choice rather than
+   three unrelated buttons sharing a corner of the header. */
+.theme-toggle { display: inline-flex; }
+.theme-toggle button {
+  border-radius: 0;
+  margin-left: -1px;
+  padding: 0.28rem 0.5rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+.theme-toggle button:first-child { border-radius: 7px 0 0 7px; margin-left: 0; }
+.theme-toggle button:last-child { border-radius: 0 7px 7px 0; }
+.theme-toggle button[aria-pressed="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+  /* Above its neighbours so the shared 1px border is the accent's, not the
+     unselected button's. */
+  position: relative;
+  z-index: 1;
+}
+/* Until the stored choice has been read there is no pressed segment, which is
+   honest — the control does not claim a state it has not established yet. */
 /* CopilotKit injects a `<cpk-web-inspector>` custom element at
    `z-index: 2147483646` — one below the maximum a browser allows — and on
    localhost it appears whether or not you asked for it: its `"auto"` mode
@@ -329,7 +434,7 @@ input[type="search"], select, button {
 }
 button { cursor: pointer; }
 button:hover { border-color: var(--accent); }
-button[data-variant="primary"] { background: var(--accent); color: #fff; border-color: var(--accent); }
+button[data-variant="primary"] { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
 
 /* --- timeline ------------------------------------------------------------- */
 
@@ -447,7 +552,7 @@ button[data-variant="primary"] { background: var(--accent); color: #fff; border-
 .hero { border-color: var(--accent); }
 .btn-primary {
   display: inline-block; padding: 0.6rem 1.1rem; border-radius: 8px;
-  background: var(--accent); color: #fff;
+  background: var(--accent); color: var(--on-accent);
   font-weight: 600; text-decoration: none;
 }
 .btn-primary:hover { filter: brightness(1.08); text-decoration: none; }

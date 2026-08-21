@@ -50,7 +50,11 @@ export default function FigureGallery({
                   height: "auto",
                   border: "1px solid var(--line)",
                   borderRadius: "8px",
-                  background: "#fff",
+                  // Stays light in both themes, on purpose — see `--foreign-bg`
+                  // in globals.css. A matplotlib PNG with a transparent
+                  // background and black axis labels is unreadable on a dark
+                  // panel, so this figure keeps the page it was drawn for.
+                  background: "var(--foreign-bg)",
                 }}
               />
             </a>

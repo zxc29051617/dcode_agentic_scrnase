@@ -74,7 +74,12 @@ export default function ArtifactFrame({
             height,
             border: "1px solid var(--line)",
             borderRadius: "8px",
-            background: "#fff",
+            // Stays light in both themes, on purpose — see `--foreign-bg` in
+            // globals.css. FastQC, MultiQC and Cell Ranger's web_summary are
+            // authored against a white page and this app cannot restyle them
+            // through the sandbox, so a dark backdrop would only put dark
+            // behind their black text.
+            background: "var(--foreign-bg)",
           }}
         />
       )}
