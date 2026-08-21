@@ -288,3 +288,31 @@ export function stepStatusWord(status: string): string {
       return status.replace(/_/g, " ");
   }
 }
+
+/** Request statuses from the controller, for the intake page. */
+export function requestStatusWord(status: string): string {
+  switch (status) {
+    case "draft":
+      return "Draft";
+    case "validated":
+      return "Ready";
+    case "awaiting_confirmation":
+      return "Waiting for confirmation";
+    case "queued":
+      return "Queued";
+    case "running":
+      return "Running";
+    case "needs_review":
+      return "Waiting for you";
+    case "completed":
+      return "Finished";
+    case "failed":
+      return "Failed";
+    case "cancelled":
+      return "Cancelled";
+    case "rejected":
+      return "Rejected";
+    default:
+      return status.replace(/_/g, " ");
+  }
+}

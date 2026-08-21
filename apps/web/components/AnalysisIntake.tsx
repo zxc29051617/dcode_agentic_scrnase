@@ -6,7 +6,7 @@ import { CopilotKit, useCopilotChat } from "@copilotkit/react-core";
 import { CopilotChat } from "@copilotkit/react-ui";
 import { Role, TextMessage } from "@copilotkit/runtime-client-gql";
 import "@copilotkit/react-ui/styles.css";
-import { stepLabel } from "@/lib/stepLabels";
+import { requestStatusWord, stepLabel } from "@/lib/stepLabels";
 import { humanDuration, expectedDuration } from "@/lib/duration";
 import type {
   SpeciesProfileView,
@@ -369,7 +369,14 @@ export default function AnalysisIntake({
         {request && (
           <>
             <Field label="Request" value={<code>{request.request_id}</code>} />
-            <Field label="Status" value={<strong data-testid="request-status">{liveStatus}</strong>} />
+              <Field
+                label="Status"
+                value={
+                  <strong data-testid="request-status">
+                    {liveStatus ? requestStatusWord(liveStatus) : liveStatus}
+                  </strong>
+                }
+              />
             <Field label="Data" value={<code>{request.input_ref}</code>} missing={!request.input_ref} />
             <Field label="Project" value={request.project} missing={!request.project} />
             <Field label="Species" value={request.species} missing={!request.species} />
