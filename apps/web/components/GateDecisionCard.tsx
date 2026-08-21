@@ -4,6 +4,7 @@ import { useState } from "react";
 import ThresholdPreview from "@/components/run/ThresholdPreview";
 import { useRouter } from "next/navigation";
 import type { GateState } from "@/lib/controllerTypes";
+import { buildGateDecisionBody } from "@/lib/gateDecision";
 import { candidatesFor, filterCandidates, type GateCandidate } from "@/lib/gateCandidates";
 import GateAdvisor from "@/components/GateAdvisor";
 
@@ -63,6 +64,7 @@ export default function GateDecisionCard({
     gate?.step === "apply_cell_qc_filter" &&
     (gate?.reasons ?? []).some((r) => r.includes("no QC thresholds chosen"));
   const [decision, setDecision] = useState<Decision>(acceptWouldHalt ? "revise" : "accept");
+  const [rationale, setRationale] = useState("");
   const [overrides, setOverrides] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -77,18 +79,15 @@ export default function GateDecisionCard({
     setBusy(true);
     setError(null);
     try {
-      const body: Record<string, unknown> = {
+      // What is sent, and what is deliberately left out of it, is
+      // `lib/gateDecision.ts` — the blank-is-an-absence rule and the
+      // send-the-string-as-typed rule are both testable there without a DOM.
+      const body = buildGateDecisionBody({
         decision,
-        expected_generation: state.generation,
-      };
-      if (decision === "revise") {
-        // Only the parameters the operator actually typed into. A blank keeps
-        // the current value, which is the same rule the terminal follows.
-        const typed = Object.fromEntries(
-          Object.entries(overrides).filter(([, value]) => value.trim() !== ""),
-        );
-        body.overrides = typed;
-      }
+        generation: state.generation,
+        overrides,
+        rationale,
+      });
       const response = await fetch(
         `/api/scientific-runs/${encodeURIComponent(state.scientific_run_id)}/gates/${encodeURIComponent(state.gate_id!)}/decision`,
         {
@@ -288,6 +287,33 @@ export default function GateDecisionCard({
         </div>
       )}
 
+
+      {/* Optional, and it stays optional — a required free-text box produces
+          "." and a mandatory rationale nobody means is worse evidence than an
+          honest absence. But it has to exist: `docs/report_contract.md` P3
+          renders a rationale for every human decision, and without a control
+          here every gate answered in a browser printed a dash in that column
+          while the same gate answered at a terminal recorded a sentence. The
+          audit tier is the reason this pipeline exists; it should not empty
+          out for the operators the web app was built for. */}
+      <label style={{ display: "block", marginTop: "0.9rem" }}>
+        Why <span className="subtle">(optional — recorded in the run&rsquo;s audit log and in the
+        report&rsquo;s decision table, where it is the only account of what you were thinking)</span>
+        <textarea
+          data-testid="gate-rationale"
+          value={rationale}
+          rows={2}
+          onChange={(event) => setRationale(event.target.value)}
+          placeholder={
+            decision === "revise"
+              ? "e.g. mito median is 5.4%, so 15 takes the tail without cutting into the body"
+              : decision === "stop"
+                ? "e.g. wrong reference, restarting from the FASTQs"
+                : "e.g. the warning is about cluster 12, which is 8 cells and expected here"
+          }
+          style={{ display: "block", width: "100%", marginTop: "0.25rem", padding: "0.4rem 0.5rem" }}
+        />
+      </label>
 
       <div style={{ marginTop: "0.8rem", display: "flex", gap: "0.6rem", alignItems: "center" }}>
         {/* "Submit stop" is not a sentence anybody says, and it gave the

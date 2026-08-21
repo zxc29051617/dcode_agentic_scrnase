@@ -25,12 +25,7 @@
  * operator's.
  */
 
-type Row = {
-  threshold: number | string;
-  cells_removed?: number;
-  cells_kept?: number;
-  pct_removed?: number;
-};
+import { criterionRows, medianOf } from "@/lib/thresholdEvidence";
 
 const CRITERION_TITLES: Record<string, { title: string; what: string }> = {
   min_genes: {
@@ -53,14 +48,6 @@ const CRITERION_TITLES: Record<string, { title: string; what: string }> = {
   },
 };
 
-function isRows(value: unknown): value is Row[] {
-  return (
-    Array.isArray(value) &&
-    value.length > 0 &&
-    value.every((r) => r && typeof r === "object" && "threshold" in r)
-  );
-}
-
 export default function ThresholdPreview({
   preview,
   distributions,
@@ -70,8 +57,7 @@ export default function ThresholdPreview({
   distributions?: Record<string, unknown>;
   nCells?: number;
 }) {
-  if (!preview || typeof preview !== "object") return null;
-  const groups = Object.entries(preview).filter(([, rows]) => isRows(rows)) as [string, Row[]][];
+  const groups = criterionRows(preview);
   if (groups.length === 0) return null;
 
   return (
@@ -136,16 +122,4 @@ export default function ThresholdPreview({
 function formatNumber(value: unknown): string {
   if (typeof value !== "number" || !Number.isFinite(value)) return "—";
   return value.toLocaleString("en-US");
-}
-
-/** The median out of whatever shape the step recorded its distribution in. */
-function medianOf(value: unknown): number | null {
-  if (typeof value === "number") return value;
-  if (value && typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    for (const key of ["median", "p50", "50%"]) {
-      if (typeof record[key] === "number") return record[key] as number;
-    }
-  }
-  return null;
 }
