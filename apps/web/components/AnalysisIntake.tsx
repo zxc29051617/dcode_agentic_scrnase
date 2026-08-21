@@ -6,7 +6,7 @@ import { CopilotKit, useCopilotChat } from "@copilotkit/react-core";
 import { CopilotChat } from "@copilotkit/react-ui";
 import { Role, TextMessage } from "@copilotkit/runtime-client-gql";
 import "@copilotkit/react-ui/styles.css";
-import { requestStatusWord, stepLabel } from "@/lib/stepLabels";
+import { jobStatusWord, requestStatusWord, stepLabel } from "@/lib/stepLabels";
 import { humanDuration, expectedDuration } from "@/lib/duration";
 import type {
   SpeciesProfileView,
@@ -540,7 +540,7 @@ export default function AnalysisIntake({
               <div className="panel" data-testid="started-panel">
                 <p style={{ marginTop: 0 }}>
                   Scientific run <code>{runId}</code>
-                  {status?.job ? ` · job ${status.job.status}` : ""}
+                  {status?.job ? ` · job ${jobStatusWord(status.job.status)}` : ""}
                 </p>
                 {status?.run?.status === "needs_review" && (
                   <p>

@@ -316,3 +316,21 @@ export function requestStatusWord(status: string): string {
       return status.replace(/_/g, " ");
   }
 }
+
+/** Job statuses from the controller, for the intake page's started panel. */
+export function jobStatusWord(status: string): string {
+  switch (status) {
+    case "queued":
+      return "Queued";
+    case "running":
+      return "Running";
+    case "waiting":
+      return "Waiting at gate";
+    case "completed":
+      return "Finished";
+    case "failed":
+      return "Failed";
+    default:
+      return status.replace(/_/g, " ");
+  }
+}
