@@ -9,7 +9,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test:unit": "node --test --experimental-strip-types --conditions=react-server tests/assistant_model.test.ts tests/assistant_session.test.ts tests/intake.test.ts tests/run_progress.test.ts tests/gate_decision.test.ts tests/threshold_evidence.test.ts tests/theme_tokens.test.ts tests/run_status.test.ts",
+    "test:unit": "node --test --experimental-strip-types --conditions=react-server tests/assistant_model.test.ts tests/assistant_session.test.ts tests/intake.test.ts tests/run_progress.test.ts tests/gate_decision.test.ts tests/threshold_evidence.test.ts tests/theme_tokens.test.ts tests/run_status.test.ts tests/step_status.test.ts",
     "test:conversation": "node --experimental-strip-types --conditions=react-server tests/assistant_conversation.ts",
     "test:viewer": "npm run build && playwright test --config=playwright.config.ts",
     "test:bundle": "node --experimental-strip-types tests/no_secret_in_bundle.ts",

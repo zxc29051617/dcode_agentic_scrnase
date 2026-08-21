@@ -269,3 +269,22 @@ export const STATUS_WORDS: Record<string, { word: string; meaning: string }> = {
 export function statusWord(status: string): string {
   return STATUS_WORDS[status]?.word ?? status.replace(/_/g, " ");
 }
+
+/** A step record's status, rendered for the page rather than the audit log. */
+export function stepStatusWord(status: string): string {
+  switch (status) {
+    case "ok":
+    case "done":
+    case "completed":
+      return "Completed";
+    case "skipped":
+      return "Skipped";
+    case "error":
+    case "failed":
+      return "Failed";
+    case "running":
+      return "Running";
+    default:
+      return status.replace(/_/g, " ");
+  }
+}

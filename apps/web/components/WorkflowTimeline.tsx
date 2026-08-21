@@ -4,7 +4,7 @@ import { useState } from "react";
 import Badge from "@/components/Badge";
 import UpstreamQC from "@/components/UpstreamQC";
 import { stepTone, stepToneLabel } from "@/lib/verdict";
-import { stepLabel, VERDICT_WORDS } from "@/lib/stepLabels";
+import { stepLabel, stepStatusWord, VERDICT_WORDS } from "@/lib/stepLabels";
 import { humanDuration } from "@/lib/duration";
 import type { StepRecord } from "@/lib/gatewayTypes";
 
@@ -97,7 +97,7 @@ export default function WorkflowTimeline({
                 )}
                 <dl className="kv">
                   <dt>status</dt>
-                  <dd>{step.status}</dd>
+                  <dd>{stepStatusWord(step.status)}</dd>
                   {step.verdict && (
                     <>
                       <dt>reviewer</dt>
