@@ -203,7 +203,7 @@ because the measurement above found no reason for one on this endpoint.
 ## Per-step instructions
 
 `prompts/local_judge_base.md` goes to every step. `prompts/steps/<step>.md`, if
-it exists, is appended for that step alone. Four steps have one today.
+it exists, is appended for that step alone. Eight steps have one today.
 
 These are not decoration. Asked only to score `cross_check_annotation`, the
 judge quoted the flag counts back and never compared the two cell type names in
@@ -212,6 +212,31 @@ instructions, 3 of 3. Adding the same facts to the payload without the
 instruction changed nothing.
 
 `prompts/steps/README.md` has the required shape and how to add one.
+
+## The judge also gives advice
+
+`advice` comes back from the same call as the verdict, not from a second node.
+The verdict is for machine routing; the advice is for a person to read. Asking
+the same evidence twice would only double the wall-clock of `--judge local`.
+
+On real data it says things like:
+
+```
+max_pct_mito = 15   [medium]  15% 只移除 72 顆（3.2%），修掉高粒線體尾巴
+min_genes    = 1000 [medium]  移除 145 顆（6.5%），落在觀察範圍 14–7919 內
+run_umap                      0 條建議 —— 沒有東西要選就不要編
+```
+
+⚠️ **Advice is never applied.** The judge node returns only `judge_results`
+(`src/nodes.py`); no key on it can carry a suggested value into `artifacts` or
+config. Advice surfaces at the human gate and in tier 2 of the report, and a
+person decides. The reason this is enforced rather than trusted is in
+[`decisions.md`](decisions.md).
+
+Judgement quality depends on the prompt far more than on the model.
+`prompts/local_judge_base.md` requires every reason to quote a number from the
+payload; without that requirement, all three models merely paraphrased the
+warning back.
 
 ## What gets recorded about the judge
 

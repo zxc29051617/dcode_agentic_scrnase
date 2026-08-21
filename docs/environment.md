@@ -28,6 +28,37 @@ python tests/run_all.py
 `conda-lock` needs a conda, mamba or micromamba to drive; pass `--micromamba`
 and it fetches one itself, which is what CI does.
 
+The version of `conda-lock` itself is pinned, because a lock format is only
+readable by the tool that agrees with it. CI installs the same line:
+
+```bash
+pip install conda-lock==4.0.2
+conda-lock install --micromamba --name dcode-scrna conda-lock.yml
+```
+
+## FastQC and MultiQC are already in the lock
+
+The FASTQ route shells out to both. Neither needs a separate install:
+`environment.yml` pins `fastqc=0.12.1` and `multiqc=1.35`, and `openjdk` comes
+in with FastQC. CI installs from the same lockfile and verifies with
+`fastqc --version` / `multiqc --version` that they actually arrived.
+
+Before trusting an environment you already have, check it has not drifted:
+
+```bash
+conda activate dcode-scrna
+fastqc --version && multiqc --version    # expect 0.12.1 and 1.35
+```
+
+`fastq_qc` locates FastQC with `shutil.which("fastqc")`. **The usual reason it
+is not found is an unactivated environment** — these binaries live in the env's
+`bin/`, not on the system PATH, and calling `<env>/bin/python` without
+activating misses them the same way. A genuinely missing FastQC does not block
+the run; `fastq_qc` records a warning and continues to `cellranger_count`,
+whose own web_summary still carries Q30 and mapping rate. But
+`DEFAULT_POLICY`'s `autocontinue_on_warn=False` stops that warning at the human
+gate.
+
 ## Platforms
 
 `conda-lock.yml` is solved for **linux-64 only**. That is the platform this runs
