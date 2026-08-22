@@ -24,6 +24,24 @@ python -m src.run --input data/pbmc_1k_v3/pbmc_1k_v3_fastqs --headless-decision 
 python -m src.run --input <matrix> --interactive
 ```
 
+## Cell Ranger 要用多少機器
+
+預設 16 核、64 GB，寫在 `skills/cellranger_count/cellranger_count.py` 的 `DEFAULTS`。
+
+```bash
+python -m src.run --input <fastq_dir> --localcores 64 --localmem 512
+```
+
+`--localmem` 是 Cell Ranger **在裡面排程的預算**，不是「超過會警告」的上限。在一台
+2 TB 的機器上用預設的 64，`ALIGN_AND_COUNT` 會同時跑三個約 21 GB 的 chunk、其餘排隊，
+而日誌寫的是 `1 GB of memory available` —— 那是它自己剩下的預算，不是機器的空閒記憶體。
+看起來像卡住，其實是被設定成這樣。
+
+兩個參數都登記在 `cellranger_count` 的 `config_keys` 裡，所以改了會讓 `--resume-from`
+從 count 重跑。這不是因為量過核心數會改變結果，而是因為沒量過：
+`registry.earliest_step_reading()` 對沒登記的 key 會 fail-closed 歸給第一步，那會整條
+線重跑，比重跑一次 count 更貴。
+
 各種分析參數（`--force-cells`、`--min-genes`、`--celltypist-model`…）見
 [`workflow.md`](workflow.md#由人決定的參數)。要用哪個模型檢查結果見
 [`judge_setup.md`](judge_setup.md)。

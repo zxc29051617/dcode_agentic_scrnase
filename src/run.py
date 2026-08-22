@@ -421,6 +421,26 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="X",
         help="keep barcodes with at least X UMI instead of Cell Ranger's cell call",
     )
+    # Cell Ranger's own resource budget, absent by default so that a run naming
+    # neither carries no opinion about the machine into its config; the skill's
+    # DEFAULTS then apply.
+    #
+    # `--localmem` is a budget Cell Ranger schedules *inside*, not a ceiling it
+    # is warned about. On a 2 TB host the shipped 64 leaves ALIGN_AND_COUNT
+    # running three chunks of ~21 GB and queueing the rest, and the log reports
+    # "1 GB of memory available" — its remaining budget, not the machine's free
+    # memory. That reads like a stuck run rather than a configured one.
+    #
+    # Both are registered in `cellranger_count`'s `config_keys`, so changing
+    # one cuts a `--resume-from` plan at the count. Leaving them out would be
+    # worse, not cheaper: `earliest_step_reading` fails closed and attributes an
+    # unregistered key to the first step in the registry, re-running the whole
+    # pipeline to save a recount.
+    hw = parser.add_argument_group("Cell Ranger resources")
+    hw.add_argument("--localcores", type=int, metavar="N",
+                    help="cores for `cellranger count` (default 16, set in the skill)")
+    hw.add_argument("--localmem", type=int, metavar="GB",
+                    help="memory budget in GB for `cellranger count` (default 64)")
     # Cell QC thresholds. No defaults on purpose: published "standard" values
     # come from specific tissues and protocols, and applying one silently to a
     # different one is how good cells get thrown away unnoticed. Omit them and
@@ -588,6 +608,8 @@ def main(argv: list[str] | None = None) -> int:
         for key, value in {
             "species": args.species,
             "transcriptome": args.reference,
+            "localcores": args.localcores,
+            "localmem": args.localmem,
             "force_cells": args.force_cells,
             "min_umi": args.min_umi,
             "min_genes": args.min_genes,

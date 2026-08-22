@@ -122,9 +122,18 @@ REGISTRY: dict[str, StepSpec] = {
         StepSpec("fastq_qc", "upstream", "judge_fastq_qc",
                  config_keys=("fastqc_binary", "fastqc_threads", "min_q30",
                               "multiqc_binary", "skip_fastq_qc")),
+        # `localcores` and `localmem` are here for the fail-closed reason rather
+        # than a scientific one. They are Cell Ranger's resource budget, and the
+        # tempting claim is that a core count cannot change which reads counted
+        # — but that is a claim nobody here has measured, and a parallel
+        # reduction is exactly where it could quietly stop being true. Listed,
+        # they cut a resume plan at the count. Left out, `earliest_step_reading`
+        # attributes them to the first step in the registry and re-runs
+        # everything, which is worse for the same money.
         StepSpec("cellranger_count", "upstream", "judge_cellranger_count",
                  config_keys=("binary", "cellranger", "chemistry", "expected_cells",
-                              "force_cells", "min_umi", "transcriptome")),
+                              "force_cells", "localcores", "localmem", "min_umi",
+                              "transcriptome")),
         StepSpec("count_matrix_classify", "router", "judge_matrix_classify", branches=True),
         StepSpec("load_raw_counts", "analysis", "judge_raw_counts", branches=True),
         StepSpec("load_filtered_counts", "analysis", "judge_filtered_counts"),

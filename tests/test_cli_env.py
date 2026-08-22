@@ -26,7 +26,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src import envfile  # noqa: E402
 from src.judge import BACKEND_ALIASES, LocalLLMJudge, StubJudge, get_judge  # noqa: E402
+from src import registry  # noqa: E402
+from src import run as run_module  # noqa: E402
 from src.policy import GatePolicy  # noqa: E402
+from src.registry import REGISTRY  # noqa: E402
 from src.provenance import AuditLog  # noqa: E402
 from src.run import build_parser, run_workflow  # noqa: E402
 from tests import fixtures  # noqa: E402
@@ -358,6 +361,79 @@ def test_every_command_line_in_the_readme_parses():
         except SystemExit as exc:
             raise AssertionError(f"README example does not parse: python -m src.run {command}") \
                 from exc
+
+
+# --- Cell Ranger resources ------------------------------------------------------------------
+
+
+def test_the_cli_can_raise_cellranger_resources():
+    """`--localmem 64` is a budget Cell Ranger schedules inside, not a warning.
+
+    Measured on a 2 TB, 128-core host: the shipped default left ALIGN_AND_COUNT
+    running three ~21 GB chunks and queueing the rest, and the log said "1 GB
+    of memory available" — its own remaining budget, which reads like a stuck
+    run. There was no way to raise it without editing the skill.
+    """
+    parser = build_parser()
+    args = parser.parse_args(["--input", "x", "--localcores", "64", "--localmem", "512"])
+    assert args.localcores == 64 and args.localmem == 512
+
+    captured = {}
+
+    def fake_run_workflow(**kwargs):
+        captured.update(kwargs)
+        return {"run_id": "t", "status": "completed"}
+
+    real = run_module.run_workflow
+    run_module.run_workflow = fake_run_workflow
+    try:
+        run_module.main(["--input", "x", "--localcores", "64", "--localmem", "512"])
+    finally:
+        run_module.run_workflow = real
+
+    config = captured.get("config") or {}
+    assert config.get("localcores") == 64, "the flag never reached the step's config"
+    assert config.get("localmem") == 512, "the flag never reached the step's config"
+
+
+def test_cellranger_resources_are_absent_unless_asked():
+    """Absent means absent, so the skill's own DEFAULTS apply.
+
+    Passing None would write a null into config and into run_metadata.json,
+    which records an opinion about the machine that nobody expressed.
+    """
+    captured = {}
+
+    def fake_run_workflow(**kwargs):
+        captured.update(kwargs)
+        return {"run_id": "t", "status": "completed"}
+
+    real = run_module.run_workflow
+    run_module.run_workflow = fake_run_workflow
+    try:
+        run_module.main(["--input", "x"])
+    finally:
+        run_module.run_workflow = real
+
+    config = captured.get("config") or {}
+    assert "localcores" not in config and "localmem" not in config
+
+
+def test_a_resource_change_cuts_at_the_count_and_not_before():
+    """Both names must be attributed to `cellranger_count`, and only to it.
+
+    `earliest_step_reading` fails closed: a key in nobody's `config_keys` is
+    attributed to the *first* step in the registry, so adding a flag to config
+    without registering it turns a resume into a full re-run — the opposite of
+    what a resource flag is for. Registering it costs a recount and nothing
+    upstream of one.
+    """
+    keys = REGISTRY["cellranger_count"].config_keys
+    assert "localcores" in keys and "localmem" in keys
+    for key in ("localcores", "localmem"):
+        cut, owner = registry.earliest_step_reading([key])
+        assert cut == "cellranger_count", f"{key} cuts at {cut}"
+        assert owner[key] == "cellranger_count"
 
 
 def main() -> int:
