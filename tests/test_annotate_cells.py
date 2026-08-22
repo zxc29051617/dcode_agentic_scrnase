@@ -11,6 +11,8 @@ Run with `python tests/test_annotate_cells.py` (or `python tests/run_all.py`).
 
 from __future__ import annotations
 
+import contextlib
+import io
 import sys
 import tempfile
 from pathlib import Path
@@ -100,6 +102,87 @@ def test_the_candidate_list_is_evidence_an_advisor_can_read():
     if "available" in models:
         assert models["available"], "the catalogue should not be empty when reachable"
         assert {"model", "description"} <= set(models["available"][0])
+
+
+# --- picking a model you actually have -----------------------------------------------------
+#
+# The failure this closes, in full: on 2026-08-22 a model was chosen from
+# `--list-models`, the FASTQ route ran for half an hour, and step 22 of 26 died
+# on `FileNotFoundError: No such file: Developing_Mouse_Brain.pkl`. The
+# catalogue lists sixty-one models; three were on the machine. Both numbers
+# were already in the payload, in two separate lists, and joining them was left
+# to the reader. `apps/web/lib/gateCandidates.ts` had done that join for the
+# browser for some time; the terminal had not.
+
+
+def test_every_catalogue_row_says_whether_it_is_here():
+    catalogue = ac._model_catalogue()
+    if "available" not in catalogue:
+        raise Skip("the published catalogue is not reachable")
+    downloaded = set(catalogue.get("downloaded") or [])
+    for row in catalogue["available"]:
+        assert "local" in row, f"{row['model']} does not say whether it is downloaded"
+        assert row["local"] == (row["model"] in downloaded), row["model"]
+
+
+def test_a_model_that_is_not_downloaded_is_named_as_such():
+    # Injected rather than measured: which models a machine holds is exactly
+    # the thing that differs between machines, so a test that asserted a real
+    # one would pass here and fail on a fresh checkout.
+    hint = ac._absent_model_hint(
+        "Developing_Mouse_Brain.pkl",
+        {"downloaded": ["Immune_All_Low.pkl", "Immune_All_High.pkl"]},
+    )
+    assert "not downloaded" in hint
+    assert "download_models" in hint, "the hint has to say how to get it"
+    assert "Immune_All_Low.pkl" in hint, "and what is available instead"
+    assert "--resume-from" in hint, "resuming beats re-running twenty-one steps"
+
+
+def test_a_downloaded_model_gets_no_download_hint():
+    # Then the failure is something else, and a download instruction would send
+    # somebody after the wrong problem.
+    hint = ac._absent_model_hint(
+        "Immune_All_Low.pkl", {"downloaded": ["Immune_All_Low.pkl"]}
+    )
+    assert hint == ""
+
+
+def test_an_empty_cache_is_reported_as_none_rather_than_blank():
+    hint = ac._absent_model_hint("Whatever.pkl", {"downloaded": []})
+    assert "none" in hint
+
+
+def test_the_listing_groups_what_is_here_apart_from_what_is_not():
+    catalogue = {
+        "downloaded": ["A.pkl"],
+        "available": [
+            {"model": "A.pkl", "description": "here", "local": True},
+            {"model": "B.pkl", "description": "absent", "local": False},
+            {"model": "C.pkl", "description": "absent", "local": False},
+        ],
+    }
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        ac._print_catalogue(catalogue)
+    printed = buffer.getvalue()
+    assert "Downloaded, ready to use (1)" in printed
+    assert "Not downloaded (2)" in printed
+    # The one that is here must come first: a reader scanning from the top
+    # should reach a usable answer before a list of things to wait for.
+    assert printed.index("A.pkl") < printed.index("B.pkl")
+
+
+def test_an_unreachable_catalogue_still_lists_the_cache():
+    # Offline is not "no models". The cache needs no network and is the only
+    # set that works without one.
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        ac._print_catalogue(
+            {"downloaded": ["A.pkl"], "available_error": "ConnectionError: nope"}
+        )
+    printed = buffer.getvalue()
+    assert "A.pkl" in printed and "downloaded" in printed
 
 
 # --- annotating ----------------------------------------------------------------

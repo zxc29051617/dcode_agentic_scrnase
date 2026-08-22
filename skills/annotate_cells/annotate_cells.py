@@ -98,7 +98,21 @@ def _resolve(payload: dict[str, Any]) -> str | None:
 
 
 def _model_catalogue() -> dict[str, Any]:
-    """Available CellTypist models, for an operator or advisor to choose from."""
+    """Available CellTypist models, for an operator or advisor to choose from.
+
+    `available` is the published catalogue and `downloaded` is what this machine
+    holds; two lists, and until they were joined the difference between them was
+    left for the reader to work out across sixty-one entries. Choosing one of
+    the fifty-nine that are not here does not fail at the point of choosing. It
+    fails inside `celltypist.annotate`, which on the FASTQ route is the
+    twenty-second step of twenty-six and about half an hour in.
+
+    So every row carries `local`, the same field `apps/web/lib/gateCandidates.ts`
+    already derives for the browser. Its comment is the rule this now follows on
+    both surfaces: *choosing an absent model is a decision to wait for a
+    download, and finding that out after confirming is the failure this flag
+    prevents.*
+    """
     try:
         from celltypist import models
     except Exception as exc:  # noqa: BLE001 - report rather than raise
@@ -109,15 +123,67 @@ def _model_catalogue() -> dict[str, Any]:
         catalogue["downloaded"] = list(models.get_all_models())
     except Exception:  # noqa: BLE001 - a missing cache is not fatal
         catalogue["downloaded"] = []
+    downloaded = set(catalogue["downloaded"])
     try:
         described = models.models_description()
         catalogue["available"] = [
-            {"model": str(row["model"]), "description": str(row["description"])}
+            {
+                "model": str(row["model"]),
+                "description": str(row["description"]),
+                "local": str(row["model"]) in downloaded,
+            }
             for _, row in described.iterrows()
         ]
     except Exception as exc:  # noqa: BLE001 - offline is a finding, not a crash
         catalogue["available_error"] = f"{type(exc).__name__}: {exc}"
     return catalogue
+
+
+def _absent_model_hint(model_name: str, catalogue: dict[str, Any]) -> str:
+    """The sentence to append when the model simply is not on this machine.
+
+    Empty when it is here, because then the failure is something else and a
+    download instruction would send somebody down the wrong path.
+    """
+    if model_name in set(catalogue.get("downloaded") or []):
+        return ""
+    here = ", ".join(catalogue.get("downloaded") or []) or "none"
+    return (
+        f". {model_name!r} is not downloaded on this machine (downloaded here: {here}); "
+        f"fetch it with `python -c \"import celltypist; "
+        f"celltypist.models.download_models(model=['{model_name}'])\"` and resume with "
+        f"--resume-from, or choose a downloaded model. `--list-models` marks which is which."
+    )
+
+
+def _print_catalogue(catalogue: dict[str, Any]) -> None:
+    """The catalogue as something to choose from, grouped by what is here.
+
+    Sixty-one JSON objects and a separate list of two filenames is a join
+    performed by eye, which is the step that went wrong. Printing the groups
+    does the join once.
+    """
+    if catalogue.get("error"):
+        print(catalogue["error"])
+        return
+    rows = catalogue.get("available") or []
+    if not rows:
+        # Offline, or an install without the catalogue. The cache is still a
+        # real answer and is the only one that works without a network.
+        print(f"catalogue unavailable: {catalogue.get('available_error', 'no models listed')}")
+        for name in catalogue.get("downloaded") or []:
+            print(f"  {name}  (downloaded)")
+        return
+    here = [r for r in rows if r.get("local")]
+    absent = [r for r in rows if not r.get("local")]
+    print(f"Downloaded, ready to use ({len(here)})")
+    for row in here or [{"model": "(none)", "description": ""}]:
+        print(f"  {row['model']:<44} {row.get('description', '')}")
+    print()
+    print(f"Not downloaded ({len(absent)}) — CellTypist fetches one on first use,")
+    print("which happens inside the annotation step rather than before the run.")
+    for row in absent:
+        print(f"  {row['model']:<44} {row.get('description', '')}")
 
 
 def _model_identity(model_name: str) -> dict[str, Any]:
@@ -230,9 +296,19 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
             over_clustering=cluster_key if majority_voting else None,
         )
     except Exception as exc:  # noqa: BLE001 - a failed model load is a finding
+        catalogue = _model_catalogue()
+        # The catalogue was already attached here; it just never reached the
+        # sentence. `FileNotFoundError: No such file: Developing_Mouse_Brain.pkl`
+        # is CellTypist's own wording and reads like a broken install, when what
+        # happened is that a real model in the published catalogue has not been
+        # fetched on this machine — after twenty-one steps that did work.
+        detail = _absent_model_hint(str(model_name), catalogue)
         return _result(
-            errors=[f"CellTypist failed with model {model_name!r}: {type(exc).__name__}: {exc}"],
-            evidence={"models": _model_catalogue()},
+            errors=[
+                f"CellTypist failed with model {model_name!r}: "
+                f"{type(exc).__name__}: {exc}{detail}"
+            ],
+            evidence={"models": catalogue},
         )
 
     annotated = result.to_adata()
@@ -347,10 +423,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cluster-key", default="leiden")
     parser.add_argument("--no-majority-voting", action="store_true")
     parser.add_argument("--list-models", action="store_true", help="print the catalogue and exit")
+    parser.add_argument("--json", action="store_true",
+                        help="with --list-models, print the raw catalogue instead of the grouping")
     args = parser.parse_args(argv)
 
     if args.list_models:
-        print(json.dumps(_model_catalogue(), indent=2, ensure_ascii=False))
+        catalogue = _model_catalogue()
+        if args.json:
+            print(json.dumps(catalogue, indent=2, ensure_ascii=False))
+        else:
+            _print_catalogue(catalogue)
         return 0
 
     config: dict[str, Any] = {"cluster_key": args.cluster_key}

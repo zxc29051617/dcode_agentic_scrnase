@@ -115,12 +115,17 @@ t-SNE 直接讀 embedding、不需要先跑過 clustering：
 列出來讓你（或之後的 advisor）挑：
 
 ```bash
-# 先看有哪些模型
+# 先看有哪些模型。輸出分成兩組：本機已下載的、還沒下載的
 python skills/annotate_cells/annotate_cells.py --list-models x
+python skills/annotate_cells/annotate_cells.py --list-models x --json   # 原始 JSON
 
 # 決定後
 python -m src.run --input <matrix> --celltypist-model Immune_All_Low.pkl
 ```
+
+**沒下載的模型不會在選的時候失敗，會在 `annotate_cells` 失敗** —— 走 FASTQ 路線時
+那是第 22 步，前面已經跑了半小時。所以清單分組列出，錯誤訊息也會指名該模型不在本機、
+本機有哪些、以及怎麼下載後用 `--resume-from` 接著跑（不用重跑前面 21 步）。
 
 會輸出 `cell_type`（每群共識標籤）、`cell_type_per_cell`（逐細胞預測）、
 `conf_score`（信心分數），以及把三者畫在 UMAP/t-SNE 上的 PNG。

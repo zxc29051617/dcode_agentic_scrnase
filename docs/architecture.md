@@ -67,6 +67,7 @@
 | `apps/web/` | Next.js / CopilotKit 前端 |
 | `tests/` | `python tests/run_all.py` 全跑 |
 | `scripts/` | 維運腳本（取測試資料、連 reference、匯出 graph、查磁碟用量） |
+| `fixtures/` | 三個捏造的 run 目錄，給 `services/gateway/tests/` 和 `services/controller/tests/` 共用。**放頂層是因為它跨越兩個 service 的邊界** —— 放進其中一個會讓另一個去 reach 進它的內部，放進 `tests/`（Python 主套件）則會讓兩個獨立 service 去 import 主專案的測試目錄。裡面沒有任何真實資料，見 `fixtures/synthetic_runs/README.md` |
 
 **資料與設定**（進 git）
 
@@ -77,6 +78,7 @@
 | `schemas/` | 模型判斷 / 狀態 / 輸出的 JSON schema |
 | `docs/` | 架構、報告契約、`graph.mmd`（編譯後的 graph 匯出） |
 | `workflows/` | LangGraph workflow 草圖與版本化設計 |
+| `config/` | 網頁層的資料白名單範本 `dataset_catalog.example.json`。複製成 `dataset_catalog.json` 再改成自己的路徑，見 [`web.md`](web.md) |
 
 **外部大檔**（只有 symlink 和 README 進 git，內容 gitignore）
 
@@ -89,7 +91,14 @@
 **執行產物**（完全 gitignore）
 
 `runs/<run_id>/` 是每次執行的所有輸出。每一步各存一份 `adata.h5ad`，所以中斷後可以
-從已完成的步驟繼續；代價是**一次執行約 410 MB**。清理方式見 [`development.md`](development.md#磁碟)。
+從已完成的步驟繼續；代價是磁碟：矩陣輸入約 **410 MB**，FASTQ 輸入約 **5.5 GB**
+（量測自 `20260822T023010Z-28801d6c`，其中 5.1 GB 是 Cell Ranger 的 BAM 與對齊中間產物）。
+清理方式見 [`development.md`](development.md#磁碟)。
+
+`results/` 是**人手動保留**的完成分析，內容 gitignore、README 進 git。它跟 `runs/` 的
+差別不在內容而在誰決定什麼時候刪：`runs/` 是為機器續跑而最佳化的工作區，用完就刪；
+`results/` 的資料夾由人取名（不是 run id），為的是半年後還找得到。值得留的複製過去，
+再把 run 刪掉 —— 見 `results/README.md`。
 
 > `reference/` 是基因組（幾十 GB、機器相關、不進 git）；`marker_db/` 是細胞型別的
 > marker 表（不到 1 MB、進 git）。兩者無關。
