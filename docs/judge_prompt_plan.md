@@ -410,9 +410,11 @@ vocabulary question to the prompt.
    invisible until something is wrong. Four of the eight prompts make a
    claim of this kind, and only this one has been tested against a payload
    that violates it.
-8. Then the twelve remaining A steps, or stop: a prompt is only worth writing
+8. Then the sixteen remaining A steps, or stop: a prompt is only worth writing
    where the base prompt would miss something, and for a structural check with
-   six numbers in its payload it probably would not.
+   six numbers in its payload it probably would not. The count is the A table
+   above — 16 A, 7 that stayed at A after the B measurement, 2 at C, which is
+   the 25 judged steps. It read twelve while the A list was shorter.
 
 Seven rather than twenty-five, for the reason the last few commits keep
 running into: writing all of them before checking the shape means rewriting all
