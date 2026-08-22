@@ -108,29 +108,202 @@ Markers / Annotation   **你決定**：CellTypist 用哪個模型
 | checkpoint | 流程中斷時保存下來的進度 |
 | preflight | 執行前檢查 |
 
-## Quick start
+## 安裝
+
+### 先確認機器
+
+| | |
+|---|---|
+| 作業系統 | **linux-64 only**。`conda-lock.yml` 只解過這個平台，macOS / Windows 會在安裝時就被擋下來，不會裝出一個沒人測過的東西 |
+| 套件管理 | conda、mamba 或 micromamba 任一個 |
+| Python | 不用自己準備，環境裡釘的是 3.11.15 |
+| 磁碟 | 環境本身數 GB；**每執行一次約 410 MB**；reference 每個物種 20–32 GB（只有 FASTQ 輸入需要） |
+| 記憶體 | 矩陣輸入：一般工作站即可。FASTQ 輸入：Cell Ranger 預設吃 16 核 / 64 GB |
+| GPU | **不需要**。要接本機模型檢查結果才需要，接遠端端點則不用 |
+
+**只用表現矩陣（MTX / `.h5` / `.h5ad`）的話，下面第 1、2 步做完就能跑了**，不需要
+Cell Ranger、不需要 reference、不需要任何模型。
+
+### 1. 取得程式碼
 
 ```bash
-# 1. 建環境（從 lockfile，不要從 environment.yml 重新解析）
+git clone https://github.com/zxc29051617/dcode_agentic_scrnaseq.git
+cd dcode_agentic_scrnaseq
+```
+
+### 2. 建環境
+
+**從 lockfile 裝，不要從 `environment.yml` 重新解析**，也**不要**用
+`micromamba -f conda-lock.yml`（實測：它會裝掉 257 個 conda 套件、靜靜跳過 55 個 pip
+套件，裝出一個沒有 langgraph 也沒有 scanpy 的環境）。
+
+```bash
 pip install conda-lock==4.0.2
 conda-lock install --micromamba --name dcode-scrna conda-lock.yml
 conda activate dcode-scrna
+```
 
-# 2. 放 reference（只有 FASTQ 輸入需要；見 reference/README.md）
-ls reference/
+`conda-lock` 需要一個 conda / mamba / micromamba 來驅動，`--micromamba` 會自己抓一個
+下來，CI 跑的就是這一行。FastQC 與 MultiQC 已經在 lock 裡，不用另外裝。
 
-# 3. 跑
+### 3. 確認裝好了
+
+```bash
+python tests/run_all.py                  # 缺資料的測試會乾淨地 skip，並說明缺什麼
+fastqc --version && multiqc --version    # 預期 0.12.1 和 1.35
+```
+
+找不到 `fastqc` 最常見的原因是環境沒有 activate —— 這些執行檔在環境的 `bin/` 裡，
+不在系統 PATH 上。
+
+### 4. 跑第一次
+
+```bash
 python -m src.run --input /path/to/filtered_feature_bc_matrix
-
-# 4. 看結果
 ls runs/<run_id>/build_report/
 ```
 
-環境的坑（尤其**不要**用 `micromamba -f conda-lock.yml`）→
-[`docs/environment.md`](docs/environment.md)。
-
 檢查結果的模型預設是 `StubJudge`：不需要任何模型、也不連網路，只看步驟自己回報的
-狀態。要接真的模型 → [`docs/judge_setup.md`](docs/judge_setup.md)。
+狀態。整條流程的行為（人工確認、停下來、報告）在這個模式下都是完整的。
+
+環境的坑講得更細 → [`docs/environment.md`](docs/environment.md)。
+
+## 需要另外下載的東西
+
+有五樣東西**不在這個 repo 裡**，因為它們不能放進 git —— 太大、要接受授權條款、或
+根本不是安裝得起來的東西。**每一樣都是按需求才需要**，不是安裝的必經步驟：
+
+| 要下載的 | 多大 | 什麼時候需要 | 怎麼拿 |
+|---|---|---|---|
+| Cell Ranger | ~2 GB | 只有 FASTQ 輸入 | 手動，見下 |
+| Reference 基因體 | 20–32 GB / 物種 | 只有 FASTQ 輸入 | 10x 現成的，或自己建 |
+| 測試 / 展示資料 | 54 MB 或 18 GB | 想跑範例、想讓測試跑滿 | `scripts/get_test_data.sh` |
+| CellTypist 模型 | 數十 MB / 個 | 只有要自動註解細胞型別 | 一行 Python |
+| 檢查結果的模型 | 看你接哪個 | 想用真模型取代 stub | 任何 OpenAI 相容端點 |
+
+### Cell Ranger（FASTQ 輸入才需要）
+
+**這一步無法腳本化**：10x 要求接受授權條款，下載網址是簽章過的、會過期。
+
+1. 到 <https://www.10xgenomics.com/support/software/cell-ranger/downloads> 下載
+2. **解壓到 `tools/` 底下**，不要解到專案外面再用 symlink 指進來 ——
+   專案外的路徑是別人刪得掉的路徑（2026-08-17 就發生過，`mkref` 跑到一半安裝被刪掉）
+
+```bash
+tar -xf cellranger-10.1.0.tar.gz -C tools/
+ln -sfn cellranger-10.1.0/bin/cellranger tools/cellranger
+```
+
+`cellranger_count` 會自己找：`tools/` 優先，其次 `PATH`、`~/projects/cellranger-*`、
+`/opt/cellranger-*`。細節見 [`tools/README.md`](tools/README.md)。
+
+### Reference 基因體（FASTQ 輸入才需要）
+
+放在 `reference/<目錄名>` 底下。**只有這個目錄可以指到專案外面** —— 程式和設定裡的
+路徑一律是 `reference/<dirname>`，所以換磁碟、換機器都不必動 Python。
+
+```bash
+bash scripts/link_reference.sh                       # 列出已登記的物種
+bash scripts/link_reference.sh human /path/to/ref    # 建 symlink
+bash scripts/link_reference.sh human --copy /path/to/ref
+```
+
+- **小鼠**：直接抓 10x 現成的 `refdata-gex-GRCm39-2024-A` tarball
+- **人類**：這個專案用的是 T2T-CHM13v2.0 + RefSeq/Liftoff v5.3，需要自己建
+
+```bash
+python scripts/build_t2t_chm13_reference.py plan     # 印出完整計畫，不動任何東西
+```
+
+自己建人類 reference 要 ~30 GB 磁碟和大記憶體機器（實際建的那次是 128 GB / 16 執行
+緒、37.8 分鐘）。其他物種、GTF 要滿足的七個條件、以及為什麼那些條件會**默默**出錯
+而不是報錯 → [`reference/README.md`](reference/README.md)。
+
+### 測試 / 展示資料（可選）
+
+```bash
+bash scripts/get_test_data.sh            # 列出需要什麼、目前有什麼
+bash scripts/get_test_data.sh matrices   # 54 MB —— 夠大部分測試跑
+bash scripts/get_test_data.sh fastq      # 18 GB —— FASTQ 路線
+```
+
+全部是 10x 的公開資料。沒有這些，測試一樣是綠的，只是測得比較少，而且每個跳過的
+測試都會指名它缺哪份資料。→ [`data/README.md`](data/README.md)
+
+### CellTypist 模型（要自動註解細胞型別才需要）
+
+程式**不會替你選模型**，也不會自己下載。沒指定就不做註解，並告訴你這台機器上有哪些
+模型可用。
+
+```bash
+python -c "import celltypist; celltypist.models.download_models(model=['Immune_All_Low.pkl'])"
+python -m src.run --input <matrix> --celltypist-model Immune_All_Low.pkl
+```
+
+### 檢查結果的模型（可選）
+
+不設就是 `stub`，不連網路。要接真的模型：
+
+```bash
+cp .env.example .env
+# 編輯 SCRNA_JUDGE_BASE_URL / SCRNA_JUDGE_MODEL / SCRNA_JUDGE_API_KEY
+
+python scripts/check_judge_endpoint.py    # 先確認端點通、模型在、會回結構化輸出
+python -m src.run --input <matrix> --judge local
+```
+
+端點是任何 OpenAI 相容的服務（Ollama、vLLM、LM Studio、OpenAI 本身），換一個不需要
+改程式。**`/v1` 這個後綴是必要的。** 送出去的資料實際有什麼、四個模型的實測比較
+→ [`docs/judge_setup.md`](docs/judge_setup.md)。
+
+## 啟動
+
+### 命令列（主要用法）
+
+```bash
+conda activate dcode-scrna
+python -m src.run --input /path/to/filtered_feature_bc_matrix
+```
+
+需要人決定時它會停下來，這是預設行為。完整旗標與結束代碼 →
+[`docs/cli.md`](docs/cli.md)。
+
+### 瀏覽器介面（可選，本機開發用）
+
+四個東西、三個環境，照順序來。**網頁那一層自己不執行任何分析** —— controller 只做
+驗證和排程，真正跑流程的是 `dcode-scrna` 環境裡的 worker，走的是同一個
+`src/graph.py`。
+
+```bash
+# 1. controller（自己的 venv，有 FastAPI、沒有 scanpy）
+cd services/controller
+python3.11 -m venv .venv && .venv/bin/pip install -r requirements.txt
+
+# 2. 資料白名單：哪些路徑允許被分析請求指名
+cd ../..
+cp config/dataset_catalog.example.json config/dataset_catalog.json   # 改成你的路徑
+
+# 3. Node.js 環境 + 前端（Node 裝在自己的環境，不碰 dcode-scrna）
+conda create -n copilotkit-web -c conda-forge nodejs=22
+conda activate copilotkit-web
+cd apps/web
+cp .env.local.example .env.local     # 設 GATEWAY_URL 和 ANALYSIS_CONTROLLER_URL
+npm install && npm run dev:stack
+
+# 4. worker —— 另一個 terminal，在科學環境裡
+conda activate dcode-scrna
+CONTROLLER_DB=var/controller/controller.sqlite CONTROLLER_RUNS_ROOT=runs \
+  python -m services.controller.worker
+```
+
+然後開 `http://127.0.0.1:3000/analysis/new`。
+
+`dev:stack` 刻意**不**幫你起 worker：worker 會 import 整個分析程式，把 scanpy 塞進
+前端的行程樹裡沒有道理。沒設 `ANALYSIS_CONTROLLER_URL` 的話整個站台退回唯讀，頁面上
+會直說。→ [`docs/web.md`](docs/web.md)
+
+> ⚠️ 網頁這一層是**本機開發用的 MVP**：SQLite、輪詢、**沒有登入驗證**。不要把那個
+> 連接埠對外開放。
 
 ## 輸入
 
@@ -202,6 +375,29 @@ python -m src.run --continue-from <run_id> --interactive
   有專門為那一步設計的提示詞，另外 17 個暫時共用一份通用提示詞 —— 進度與實測見
   [`docs/judge_prompt_plan.md`](docs/judge_prompt_plan.md)
 - 🚧 網頁介面是**本機開發用的 MVP**：SQLite、輪詢、沒有登入驗證，不要對外開放
+
+## 打包成容器
+
+還沒有 Dockerfile。要自己包的話，下面四件事決定了 image 裡能放什麼：
+
+1. **環境用 `conda-lock install` 裝**，不要在 image 裡重新解析依賴 —— 重解出來的
+   環境和測過的那個不是同一個。lock 只解過 `linux-64`。
+2. **Cell Ranger 不能進公開 image。** 10x 的授權不允許再散布，要留給使用者自己掛
+   進 `tools/`（`-v /path/to/cellranger-10.1.0:/app/tools/cellranger-10.1.0`）。
+3. **Reference 和資料用掛載的，不要 COPY。** 一個物種 20–32 GB，塞進 image 沒有意義。
+   `reference/` 是設計上唯一可以指到外面的目錄，就是為了這件事。
+4. **判斷用的模型從環境變數給。** `SCRNA_JUDGE_BASE_URL` 等四個變數即可，不需要改
+   程式。從容器裡看，`localhost` 是容器自己 —— 要用宿主機的 Ollama 得給實際 IP。
+
+只做矩陣輸入的話，一個只有第 1 點的 image 就完整可用了。
+
+## 授權
+
+**目前沒有 LICENSE 檔案。** 沒有授權條款的公開 repo，法律上預設是保留全部權利 ——
+別人可以看，但不能合法使用或修改。開源前需要補一個。
+
+第三方素材的授權已經標注在使用它的地方：`marker_db/scmayomap`（scMayoMap，MIT）、
+`apps/web/app/globals.css` 裡兩段改寫自 Uiverse.io 的 CSS（MIT）。
 
 ## 文件
 
