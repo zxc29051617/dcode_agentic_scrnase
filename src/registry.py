@@ -10,6 +10,7 @@ while they are filled in one at a time.
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -68,6 +69,62 @@ class StepSpec:
     """
 
 
+def per_sample_int(value: Any) -> int | dict[str, int]:
+    """`1039`, or `{"lib_a": 1039, "lib_b": 1198}` — one count, or one per library.
+
+    `cell_calling_review._for` has always read either, and the gate's own
+    message says so: "a single value for every sample, or a mapping per sample".
+    Neither front end could express the second half. `--force-cells` took
+    `type=int` and this table said `int`, so answering the gate the way the gate
+    asks was refused as `invalid int value` from the command line and
+    `is not a valid int` at the terminal prompt. Two libraries whose knees sit
+    at different ranks is the ordinary case for two chemistries, not an exotic
+    one.
+
+    Text is the input that matters — a terminal, and any HTTP form after it,
+    hands over strings — but an already-parsed number or mapping is read too,
+    the way `int` and `float` accept both.
+
+    A value that is not a positive whole number is refused rather than coerced.
+    A threshold that silently became something else would reach
+    `select_barcodes` as a cell count nobody asked for, and the audit log would
+    record it as a decision somebody made.
+    """
+    if isinstance(value, dict):
+        parsed: Any = value
+    elif isinstance(value, int) and not isinstance(value, bool):
+        parsed = value
+    else:
+        text = str(value).strip()
+        if not text.startswith("{"):
+            # Not a mapping attempt, so it was meant as a number and `int` says
+            # what is wrong with it better than anything written here would.
+            parsed = int(text)
+        else:
+            try:
+                parsed = json.loads(text)
+            except ValueError as exc:
+                raise ValueError(
+                    f"not a number and not a JSON mapping: {exc}. Expected 1039 or "
+                    f'\'{{"library_id": 1039, "other_library": 1198}}\''
+                ) from exc
+
+    if not isinstance(parsed, dict):
+        if not isinstance(parsed, int) or isinstance(parsed, bool) or parsed <= 0:
+            raise ValueError(f"must be a positive number of cells, not {parsed!r}")
+        return parsed
+    if not parsed:
+        raise ValueError("a mapping has to name at least one library")
+    out: dict[str, int] = {}
+    for name, count in parsed.items():
+        if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
+            raise ValueError(
+                f"{name!r} is {count!r}; each library needs a positive whole number"
+            )
+        out[str(name)] = count
+    return out
+
+
 def integration_mode(value: Any) -> str:
     """One of the two documented modes, or a refusal.
 
@@ -91,8 +148,10 @@ REVISABLE_PARAMETERS: dict[str, Any] = {
     "min_genes": float,
     "min_counts": float,
     "max_pct_mito": float,
-    "force_cells": int,
-    "min_umi": int,
+    # Both accept a mapping per library, because `cell_calling_review` reads one
+    # and its gate message asks for one. See `per_sample_int`.
+    "force_cells": per_sample_int,
+    "min_umi": per_sample_int,
     "celltypist_model": str,
     "scmayomap_tissue": str,
     "integration_mode": integration_mode,
@@ -275,8 +334,17 @@ def coerce_overrides(
             continue
         try:
             accepted[key] = convert(value)
-        except (TypeError, ValueError):
-            rejected.append(f"{key}={value!r} is not a valid {convert.__name__}")
+        except (TypeError, ValueError) as exc:
+            # Two kinds of converter, two kinds of message. `float` can only
+            # restate the value that was already printed, so its own name is the
+            # more useful half. A validator written here knows the shape it
+            # wanted and says so — and naming the Python function instead would
+            # repeat the mistake this gate is for: telling somebody what they
+            # may set and then refusing it in terms they cannot act on.
+            if getattr(convert, "__module__", None) == __name__:
+                rejected.append(f"{key}={value!r}: {exc}")
+            else:
+                rejected.append(f"{key}={value!r} is not a valid {convert.__name__}")
 
     return accepted, rejected
 

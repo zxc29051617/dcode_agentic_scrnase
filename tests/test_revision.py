@@ -32,10 +32,11 @@ from src.registry import (  # noqa: E402
     REGISTRY,
     REVISABLE_PARAMETERS,
     coerce_overrides,
+    per_sample_int,
     revisable_from,
     steps_invalidated_by,
 )
-from src.run import run_workflow  # noqa: E402
+from src.run import per_sample_int as cli_per_sample_int, run_workflow  # noqa: E402
 from src.state import summarize  # noqa: E402
 from tests import fixtures  # noqa: E402
 
@@ -124,6 +125,86 @@ def test_nothing_is_dropped_without_being_said():
     for key in raw:
         assert key in accepted or any(key in message for message in rejected), \
             f"{key} was neither applied nor refused"
+
+
+# --- a cell count per library, at the gate ------------------------------------------
+#
+# `cell_calling_review` stops with "Set force_cells or min_umi — a single value
+# for every sample, **or a mapping per sample** — and re-run", prints
+# `revise can set: force_cells, min_umi`, and `_for(setting, name)` has always
+# read either. Neither front end could express the mapping: `--force-cells` took
+# `type=int` and `REVISABLE_PARAMETERS` said `int`, so on 2026-08-22, for two
+# libraries whose knees sat at rank 1,039 and rank 1,198, the gate refused its
+# own instruction. Fixing the command line alone left the terminal prompt — the
+# path the gate actually points at — still refusing it.
+
+
+def test_a_cell_count_per_library_is_a_valid_answer_at_the_gate():
+    accepted, rejected = coerce_overrides(
+        {"force_cells": '{"pbmc_1k_v2": 1039, "pbmc_1k_v3": 1198}'},
+        REGISTRY["cell_calling_review"].revisable,
+    )
+    assert accepted == {"force_cells": {"pbmc_1k_v2": 1039, "pbmc_1k_v3": 1198}}
+    assert rejected == []
+
+
+def test_one_number_at_the_gate_still_means_every_library():
+    accepted, rejected = coerce_overrides(
+        {"min_umi": "500"}, REGISTRY["cell_calling_review"].revisable
+    )
+    assert accepted == {"min_umi": 500} and rejected == []
+
+
+def test_the_terminal_and_the_command_line_read_the_answer_the_same_way():
+    """The drift this is guarding against is the one that happened.
+
+    `ask_for_overrides` validates nothing precisely so that `coerce_overrides`
+    is the single place a value acquires meaning. That only holds while the
+    command line goes through the same function — when `--force-cells` learned
+    the mapping form on its own, the two front ends disagreed for a day about
+    what the gate had asked for.
+    """
+    for parameter in ("force_cells", "min_umi"):
+        assert REVISABLE_PARAMETERS[parameter] is per_sample_int, (
+            f"{parameter} at a gate no longer reads what the command line reads"
+        )
+    for answer in ("1039", '{"a": 1039, "b": 1198}'):
+        assert cli_per_sample_int(answer) == per_sample_int(answer)
+
+
+def test_a_per_library_count_is_refused_in_terms_the_typist_can_act_on():
+    """Refused, and told what would have worked.
+
+    A refusal naming the Python converter — "not a valid per_sample_int" —
+    would repeat the original mistake in a smaller way: the gate says what you
+    may set, then declines it in words that are not about the answer.
+    """
+    allowed = REGISTRY["cell_calling_review"].revisable
+    for bad in ('{"pbmc_1k_v2": 0}', '{"pbmc_1k_v2": -1}', '{"pbmc_1k_v2": 1.5}',
+                '{"pbmc_1k_v2": "1039"}', "{}", "0", "-5", "plenty"):
+        accepted, rejected = coerce_overrides({"force_cells": bad}, allowed)
+        assert not accepted, f"{bad!r} reached config"
+        assert len(rejected) == 1 and "force_cells" in rejected[0], rejected
+        assert "per_sample_int" not in rejected[0], (
+            f"the refusal names the converter instead of the answer: {rejected[0]}"
+        )
+
+    _, rejected = coerce_overrides({"force_cells": '{"pbmc_1k_v2": 1039,'}, allowed)
+    assert "library_id" in rejected[0], "a broken mapping is shown the mapping form"
+
+
+def test_answering_with_a_mapping_invalidates_from_cell_calling_review():
+    """A dict is a changed value like any other, and cuts the resume plan.
+
+    Worth pinning separately: `earliest_step_reading` compares config values,
+    and a type it had never seen before this change is exactly where a
+    comparison quietly starts returning "unchanged".
+    """
+    invalid = steps_invalidated_by("cell_calling_review")
+    assert invalid[0] == "cell_calling_review"
+    assert "cellranger_count" not in invalid, (
+        "answering the cell-calling gate must not recount the libraries"
+    )
 
 
 # --- what a change invalidates ------------------------------------------------------

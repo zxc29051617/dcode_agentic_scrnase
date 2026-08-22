@@ -48,6 +48,9 @@ web_summary 仍然有 Q30 和 mapping rate），但 `DEFAULT_POLICY` 的
 --force-cells '{"A": 1500, "B": 2400}'  # 逐樣本（config 用 dict）
 ```
 
+互動式 gate 上按 `revise` 回答 `force_cells` / `min_umi` 時，接受的是同樣這兩種
+寫法：命令列與終端提問走同一個 `registry.per_sample_int`。
+
 ## 由人決定的參數
 
 程式碼裡沒有預設閾值。以下每一項都是同一個做法：**先把證據列給你看，然後停下來，

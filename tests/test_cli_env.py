@@ -545,6 +545,69 @@ def test_no_configuration_at_all_is_stub():
                 assert run_all.configured_judge_backend() == "stub"
 
 
+# --- a cell count per library ---------------------------------------------------------------
+#
+# `cell_calling_review` stops with "Set force_cells or min_umi — a single value
+# for every sample, **or a mapping per sample** — and re-run", and
+# `_for(setting, name)` has always read either. `docs/workflow.md` prints the
+# mapping as an example. Only the command line could not express it: `type=int`
+# answered the gate's own instruction with `invalid int value`, on 2026-08-22,
+# for two libraries whose knees sat at rank 1,039 and rank 1,198 — which is the
+# ordinary case for two chemistries, not an exotic one.
+
+
+def test_one_number_applies_to_every_library():
+    assert run_module.per_sample_int("1039") == 1039
+    assert run_module.per_sample_int("  1039  ") == 1039
+
+
+def test_a_mapping_gives_each_library_its_own_number():
+    assert run_module.per_sample_int('{"pbmc_1k_v2": 1039, "pbmc_1k_v3": 1198}') == {
+        "pbmc_1k_v2": 1039,
+        "pbmc_1k_v3": 1198,
+    }
+
+
+def test_both_forms_reach_the_flag():
+    parser = build_parser()
+    assert parser.parse_args(["--input", "x", "--force-cells", "1039"]).force_cells == 1039
+    mapped = parser.parse_args(
+        ["--input", "x", "--min-umi", '{"a": 500, "b": 900}']
+    ).min_umi
+    assert mapped == {"a": 500, "b": 900}
+
+
+def test_a_threshold_that_is_not_a_positive_whole_number_is_refused():
+    """Refused rather than coerced.
+
+    A count that silently became something else is worse than one that was
+    rejected: `select_barcodes` would keep a number of cells nobody asked for,
+    and the audit log would record it as a decision.
+    """
+    import argparse as _argparse
+
+    for bad in ("0", "-5", '{"a": 0}', '{"a": -1}', '{"a": "1039"}', '{"a": 1.5}',
+                '{"a": true}', "{}", "[]", "nope", '{"a":'):
+        try:
+            run_module.per_sample_int(bad)
+        except (_argparse.ArgumentTypeError, ValueError):
+            continue
+        raise AssertionError(f"{bad!r} was accepted")
+
+
+def test_the_refusal_shows_the_shape_that_works():
+    import argparse as _argparse
+
+    # Starts with `{`, so it was meant as a mapping and is answered as one.
+    # A bare word is a failed number and argparse says so on its own.
+    try:
+        run_module.per_sample_int('{"pbmc_1k_v2": 1039,')
+    except _argparse.ArgumentTypeError as exc:
+        assert "library_id" in str(exc), "the message has to show the mapping form"
+    else:
+        raise AssertionError("malformed JSON was accepted")
+
+
 def main() -> int:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     failures = []

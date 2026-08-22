@@ -17,7 +17,7 @@ from .envfile import load as load_env_file
 from .judge import BACKEND_ALIASES, describe_judge, get_judge
 from .policy import GatePolicy
 from .provenance import AuditLog, record_judge_session
-from .registry import REGISTRY
+from .registry import REGISTRY, per_sample_int as read_per_sample_int
 from . import manifest
 from .state import new_run_state, summarize, unresolved_choices
 
@@ -380,6 +380,27 @@ def ask_on_terminal(request: dict[str, Any]) -> dict[str, Any]:
         print("   please answer accept, revise or stop", file=sys.stderr)
 
 
+def per_sample_int(text: str) -> int | dict[str, int]:
+    """`--force-cells 1039`, or `--force-cells '{"lib_a": 1039, "lib_b": 1198}'`.
+
+    An argparse adapter and nothing else. What the value *means* is decided in
+    `registry.per_sample_int`, the same function the gate's `revise` answer goes
+    through, so that the command line and the terminal prompt cannot drift into
+    accepting different things — which is exactly what they had done: the gate
+    asked for "a single value for every sample, or a mapping per sample" and
+    both front ends took `int`.
+
+    The only thing added here is argparse's protocol. A plain `ValueError` makes
+    argparse print `invalid per_sample_int value: '...'` and throw the message
+    away; `ArgumentTypeError` is printed verbatim, and the message is the half
+    that tells you what to type instead.
+    """
+    try:
+        return read_per_sample_int(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
 def build_parser() -> argparse.ArgumentParser:
     """The command line, as a value, so it can be inspected without running one.
 
@@ -411,15 +432,18 @@ def build_parser() -> argparse.ArgumentParser:
     cells = parser.add_mutually_exclusive_group()
     cells.add_argument(
         "--force-cells",
-        type=int,
+        type=per_sample_int,
         metavar="N",
-        help="keep the top N barcodes by UMI instead of Cell Ranger's cell call",
+        help="keep the top N barcodes by UMI instead of Cell Ranger's cell call. "
+             "One number for every library, or a JSON mapping per library: "
+             '\'{"lib_a": 1039, "lib_b": 1198}\'',
     )
     cells.add_argument(
         "--min-umi",
-        type=int,
+        type=per_sample_int,
         metavar="X",
-        help="keep barcodes with at least X UMI instead of Cell Ranger's cell call",
+        help="keep barcodes with at least X UMI instead of Cell Ranger's cell call. "
+             "One number for every library, or a JSON mapping per library",
     )
     # Cell Ranger's own resource budget, absent by default so that a run naming
     # neither carries no opinion about the machine into its config; the skill's
