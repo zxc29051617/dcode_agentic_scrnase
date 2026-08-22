@@ -2,56 +2,55 @@
 
 ## 這是什麼
 
-把 `scrna-orchestrator` 的固定分析流程，包成一個由 LangGraph 驅動的工作流：
+把 `scrna-orchestrator` 的固定分析流程，包成一個由 LangGraph 驅動的工作流。
+四種東西組成它：
 
-- **deterministic analysis step**：QC、count、cell calling、filter、doublets、
-  normalization、PCA、integration、clustering、markers、annotation、report
-- **local judge step**：每個分析步驟後接地端模型評斷結果好不好
-- **human gate**：必要時停下來讓人看
-- **provenance**：每一步都記錄輸入、輸出、judge 結果、人工決策
+- **分析步驟**（程式碼裡叫 deterministic analysis step）：固定、可重現的程式分析 ——
+  QC、count、cell calling、filter、doublets、normalization、PCA、integration、
+  clustering、markers、annotation、report
+- **模型檢查**（judge step）：每個分析步驟完成後，本地模型看這一步的結果合不合理
+- **人工確認**（human gate）：需要人決定時，流程停下來等人回答
+- **執行紀錄**（provenance）：每一步都記錄輸入、輸出、模型判斷、人工決定
 
 ```text
-        ┌──────────────────────┐
-        │ Input                │
-        │ FASTQ / MTX / h5 /   │
-        │ h5ad                 │
-        └──────────┬───────────┘
-                   ↓
-        ┌──────────────────────┐
-        │ Deterministic        │  26 個 step，順序由 graph 固定
-        │ analysis step        │  → docs/workflow.md
-        └──────────┬───────────┘
-                   ↓
-        ┌──────────────────────┐
-        │ Judge                │  結構化評分 + 建議，不寫入結果
-        │ (local / stub)       │  → docs/judge_setup.md
-        └──────────┬───────────┘
-                   ↓
-        ┌──────────────────────┐
-        │ Human gate           │  預設停下來，不偷偷放行
-        └──────────┬───────────┘
-                   ↓
-        ┌──────────────────────┐
-        │ Provenance + report  │  audit log、report.md、report.html
-        │                      │  → docs/report_contract.md
-        └──────────────────────┘
+    ┌────────────────────┐
+    │ 輸入               │  FASTQ / MTX / .h5 / .h5ad
+    └─────────┬──────────┘
+              ↓
+    ┌────────────────────┐
+    │ 分析步驟（程式）   │  26 步，順序寫死在 graph 裡
+    │                    │  → docs/workflow.md
+    └─────────┬──────────┘
+              ↓
+    ┌────────────────────┐
+    │ 模型檢查           │  看結果合不合理，給判斷與建議
+    │                    │  不會寫入分析結果
+    └─────────┬──────────┘  → docs/judge_setup.md
+              ↓
+    ┌────────────────────┐
+    │ 人工確認           │  預設停下來，不會自動放行
+    └─────────┬──────────┘
+              ↓
+    ┌────────────────────┐
+    │ 執行紀錄 + 報告    │  audit.jsonl、report.md、report.html
+    └────────────────────┘  → docs/report_contract.md
 ```
 
 `docs/graph.mmd` 是編譯後 graph 的匯出，node/edge 數量以該檔為準。
 
 ## 設計原則
 
-1. **分析是 deterministic 的。** 模型不直接修改科學結果。
-2. **評斷與執行分離。** 模型讀結構化證據，回傳 verdict 與建議；judge node 的回傳值
-   只有 `judge_results`（`src/nodes.py`），沒有任何 key 能讓建議值走到 `artifacts`
-   或 config。
-3. **人的決策是明示的。** 有歧義或有後果的決定停在 human gate；
-   `DEFAULT_POLICY` 的 `autocontinue_on_warn=False` 是預設。
-4. **每個決定都可稽核。** 輸入、輸出、模型 verdict、設定、人工決策都進 provenance，
-   verdict 會帶上產生它的 model。
-5. **續跑是一等公民。** run 可以從 checkpoint 接續，或沿用仍然有效的 artifact。
-6. **閾值不寫死。** QC threshold、細胞數、CellTypist 模型都由人給；程式碼裡沒有
-   預設值，因為 config 裡的值會進 audit log，程式碼裡的預設不會。
+1. **分析由程式做，結果可重現。** 模型不會修改任何科學結果。
+2. **檢查與執行分開。** 模型只讀整理好的結果與統計數值，回傳判斷與建議。檢查節點的
+   回傳值只有 `judge_results`（`src/nodes.py`），沒有任何欄位能讓建議值走到
+   `artifacts` 或設定裡。
+3. **需要人判斷的決定一定停下來。** `DEFAULT_POLICY` 的
+   `autocontinue_on_warn=False` 是預設值，不會自動放行。
+4. **每個重要決定都有紀錄，可以回頭查。** 輸入、輸出、模型判斷、設定、人工決定
+   都寫進執行紀錄，每筆判斷會帶上做出它的模型。
+5. **流程中斷後可以繼續。** 從進度檔接著跑，或沿用還有效的結果檔，不必全部重來。
+6. **閾值不寫死。** QC 閾值、細胞數、CellTypist 模型都由人給；程式碼裡沒有預設值，
+   因為寫在設定裡的值會被記錄下來，寫死在程式碼裡的預設值不會。
 
 另一條貫穿全案的原則：任何可執行流程先設計成 state machine，再決定是否接 LangChain。
 
@@ -62,7 +61,7 @@
 | | |
 |---|---|
 | `src/` | LangGraph orchestrator 實作。`src/service.py` 是給非終端機前端用的薄接縫 |
-| `skills/` | 每個 workflow step 一個工具（`SKILL.md` 契約 + Python 實作），26 個，與 `src/registry.py` 一一對應 |
+| `skills/` | 每個分析步驟一個工具（`SKILL.md` 契約 + Python 實作），26 個，與 `src/registry.py` 一一對應 |
 | `services/gateway/` | 唯讀 FastAPI projection，只有 GET，永不 import `src/` |
 | `services/controller/` | 可寫的 analysis controller（驗證、確認、排程）+ scientific worker（唯一呼叫 executor 的地方） |
 | `apps/web/` | Next.js / CopilotKit 前端 |
@@ -73,9 +72,9 @@
 
 | | |
 |---|---|
-| `prompts/` | judge 的提示詞。`local_judge_base.md` 是共用的，`steps/<step>.md` 是個別步驟的加註 |
+| `prompts/` | 模型檢查用的提示詞。`local_judge_base.md` 是共用的，`steps/<step>.md` 是個別步驟的加註 |
 | `marker_db/` | cell type 註解用的 marker 資料庫（scMayoMap，785 KB 純文字） |
-| `schemas/` | judge / state / output 的 JSON schema |
+| `schemas/` | 模型判斷 / 狀態 / 輸出的 JSON schema |
 | `docs/` | 架構、報告契約、`graph.mmd`（編譯後的 graph 匯出） |
 | `workflows/` | LangGraph workflow 草圖與版本化設計 |
 
@@ -89,8 +88,8 @@
 
 **執行產物**（完全 gitignore）
 
-`runs/<run_id>/` 是每次執行的所有輸出。每一步各存一份 `adata.h5ad` 以支援斷點續跑，
-所以**一次執行約 410 MB**。清理方式見 [`development.md`](development.md#磁碟)。
+`runs/<run_id>/` 是每次執行的所有輸出。每一步各存一份 `adata.h5ad`，所以中斷後可以
+從已完成的步驟繼續；代價是**一次執行約 410 MB**。清理方式見 [`development.md`](development.md#磁碟)。
 
 > `reference/` 是基因組（幾十 GB、機器相關、不進 git）；`marker_db/` 是細胞型別的
 > marker 表（不到 1 MB、進 git）。兩者無關。
@@ -99,24 +98,24 @@
 
 | 檔案 | 負責 |
 |---|---|
-| `registry.py` | 有哪些 step、對應哪個 skill、誰來 judge |
+| `registry.py` | 有哪些步驟、對應哪個 skill、由哪個節點檢查 |
 | `species.py` | 物種→reference / mito prefix / 紅血球基因的對照表（純資料） |
 | `matrix_io.py` | 矩陣讀寫、barcode-rank 證據（knee / inflection）、細胞挑選 |
-| `nodes.py` | graph node：跑一個 step、judge 一個 step、停下來等人 |
-| `judge.py` | judge 契約與 backend（stub / 本地模型） |
-| `policy.py` | 什麼樣的 verdict 才能繼續 |
+| `nodes.py` | graph 節點：跑一個步驟、檢查一個步驟、停下來等人 |
+| `judge.py` | 模型檢查的契約與後端（stub / 本地模型） |
+| `policy.py` | 什麼樣的判斷結果才能繼續往下走 |
 | `graph.py` | `workflows/fastq_count_main_graph.md` 的接線 |
-| `state.py` | node 之間傳遞的狀態 |
-| `provenance.py` | append-only audit log + run 開始時的環境快照 |
-| `persistence.py` | 暫停（checkpointer）與續跑（從 run_dir 的 artifact 判斷）；磁碟成本的取捨寫在檔頭 |
+| `state.py` | 節點之間傳遞的狀態 |
+| `provenance.py` | 執行紀錄（只新增、不修改舊紀錄）+ 執行開始時的環境快照 |
+| `persistence.py` | 暫停（寫進度檔）與繼續（從 run_dir 既有的結果檔判斷）；磁碟成本的取捨寫在檔頭 |
 | `plots.py` | 報告的 12 個圖組 |
 
 **兩個真相來源，各管一半：**
 
 | | 負責什麼 |
 |---|---|
-| `src/registry.py` | 有哪些 step、各自的 kind、由哪個 judge node 評分、可改哪些參數 |
-| `src/graph.py` | **topology** —— 誰接誰、conditional routing、human gate 的接線 |
+| `src/registry.py` | 有哪些步驟、各自的種類、由哪個節點檢查、可改哪些參數 |
+| `src/graph.py` | **流程拓撲** —— 誰接誰、條件分支、人工確認接在哪 |
 
-只加 `StepSpec` 而不動 `graph.py` 不會「自動長出」接線，而是直接失敗。細節見
+只在 `registry.py` 登記而不動 `graph.py` 不會「自動長出」接線，而是直接報錯。細節見
 [`development.md`](development.md#加一個新的-step)。

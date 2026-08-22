@@ -1,7 +1,7 @@
 # Workflow
 
-26 個 workflow step 全部實作完成——`skills/` 底下就是這 26 個，一個資料夾一個 step，
-沒有空殼。順序由 `src/graph.py` 固定，不是由模型決定。
+26 個分析步驟全部實作完成——`skills/` 底下就是這 26 個，一個資料夾一步，沒有空殼。
+順序寫死在 `src/graph.py` 裡，不是由模型決定。
 
 | | |
 |---|---|
@@ -13,9 +13,10 @@
 `--species` 決定用哪份 reference 和 QC 常數（`--reference` 可以明確覆寫）；
 物種和 reference 對不上會在第二步就停下來，不會等 count 跑完才發現。
 
-`--matrix-kind` 已經不需要了——`count_matrix_classify` 會從矩陣本身判斷 raw/filtered。
+`--matrix-kind` 已經不需要了——`count_matrix_classify` 會從矩陣本身判斷是 raw 還是
+filtered。
 
-**FASTQ 路線**：偵測輸入 → 選 reference 並驗證物種 → 結構檢查 →
+**FASTQ 路線**：判斷輸入格式 → 選 reference 並驗證物種 → 執行前檢查 →
 **FastQC/MultiQC 品質評估** → count。
 
 `fastq_qc` 用 `shutil.which("fastqc")` 找 FastQC。**找不到時最常見的原因是環境沒
@@ -23,13 +24,13 @@ activate** —— 這些執行檔在 env 的 `bin/` 裡，不在系統 PATH 上�
 `<env>/bin/python` 而不 activate 也一樣找不到。真的缺了也不會擋住流程
 （`fastq_qc` 記一筆 warning 就往下走到 `cellranger_count`，Cell Ranger 自己的
 web_summary 仍然有 Q30 和 mapping rate），但 `DEFAULT_POLICY` 的
-`autocontinue_on_warn=False` 會讓那個 warning 停在 human gate。
+`autocontinue_on_warn=False` 會讓那個 warning 停在人工確認。
 
 ## 樣本級分流（選用，預設關閉）
 
 在任何樣本被 count 之前決定哪些進入分析——Cell Ranger 一個 library 要 20–40 分鐘，
 讓壞掉的 library 進來比慢更糟。它只報告不自己刪除（跟 `apply_cell_qc_filter`
-同一個形狀）：
+一樣的做法）：
 
 ```bash
 --sample-qc-triage                      # 開啟
@@ -49,7 +50,8 @@ web_summary 仍然有 Q30 和 mapping rate），但 `DEFAULT_POLICY` 的
 
 ## 由人決定的參數
 
-程式碼裡沒有預設閾值。以下每一項都是「先給證據，再停下來」。
+程式碼裡沒有預設閾值。以下每一項都是同一個做法：**先把證據列給你看，然後停下來，
+不替你挑數字。**
 
 ### 細胞數（raw 矩陣路線）
 
@@ -80,8 +82,8 @@ python -m src.run --input <matrix>
 python -m src.run --input <matrix> --min-genes 200 --max-pct-mito 15
 ```
 
-發表論文常見的 200 / 20% 是特定組織、特定 protocol 的值。你自己的標準值放 config，
-不要放程式碼——config 裡的值會進 audit log，程式碼裡的預設不會。
+發表論文常見的 200 / 20% 是特定組織、特定 protocol 的值。你自己的標準值放設定，
+不要寫進程式碼——寫在設定裡的值會被記錄下來，寫死在程式碼裡的預設值不會。
 
 ### Doublet
 
@@ -127,8 +129,8 @@ python -m src.run --input <matrix> --celltypist-model Immune_All_Low.pkl
 
 `build_report` 產出 `report.md`（可進 git、agent 好讀）與 `report.html`
 （圖內嵌成 data URI，單檔可直接寄給人），兩者由同一份 ReportModel 產生。
-分三層 17 個條件式章節——論文主圖 / QC 附錄 / **pipeline 稽核**（每個閾值的來源、
-judge verdict、人工決策、套件版本與模型 hash）。條件不成立的章節會寫明原因，
-不會靜默消失。
+分三層 17 個條件式章節——論文主圖 / QC 附錄 / **流程查核**（每個閾值從哪來、模型的
+判斷、人做了什麼決定、套件版本與模型 hash）。條件不成立的章節會寫明原因，不會靜靜
+消失。
 
-完整契約見 [`report_contract.md`](report_contract.md)。
+完整規格見 [`report_contract.md`](report_contract.md)。

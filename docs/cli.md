@@ -13,18 +13,19 @@ reference 直接放在 `reference/` 底下（實體目錄，不是 symlink —�
 ## 跑整條 graph
 
 ```bash
-# 預設 policy：走到 human gate 就停，不會偷偷放行
+# 預設行為：需要人決定時就停下來，不會自動放行
 python -m src.run --input /path/to/filtered_feature_bc_matrix
 
-# FASTQ 路線，走完整條線（--headless-decision accept 是明確的 opt-in）
+# FASTQ 路線，一路跑完不停
+#（--headless-decision accept 表示「不經人工確認直接採用」，必須明確指定才會啟用）
 python -m src.run --input data/pbmc_1k_v3/pbmc_1k_v3_fastqs --headless-decision accept
 
-# 互動模式：gate 阻塞在終端機的 input()，並寫 checkpoint.sqlite
+# 互動模式：需要確認時直接在終端機問你，並把進度寫進 checkpoint.sqlite
 python -m src.run --input <matrix> --interactive
 ```
 
 各種分析參數（`--force-cells`、`--min-genes`、`--celltypist-model`…）見
-[`workflow.md`](workflow.md#由人決定的參數)。judge 的選擇見
+[`workflow.md`](workflow.md#由人決定的參數)。要用哪個模型檢查結果見
 [`judge_setup.md`](judge_setup.md)。
 
 ## 只跑單一 skill，不進 graph
@@ -54,20 +55,19 @@ bash scripts/get_test_data.sh fastq    # 18 GB，FASTQ 路線
 cat reference/README.md                # reference 怎麼放、人類的怎麼建
 ```
 
-## 續跑
+## 中斷後繼續
 
-兩種，問的是不同的問題，不要混用。見
-[`resume.md`](resume.md)。
+兩種，問的是不同的問題，不要混用。見 [`resume.md`](resume.md)。
 
-## exit code
+## 結束代碼（exit code）
 
-| code | 意思 |
+| 代碼 | 意思 |
 |---|---|
-| `0` | `completed`（有產出報告），或 `needs_review`（停在 gate 等人，可以 `--continue-from`） |
-| `1` | `failed` —— 過程中有 error |
-| `2` | `halted` —— **停了而且沒有產出報告**（例如 QC threshold 沒給、或人選了 stop） |
+| `0` | `completed`（有產出報告），或 `needs_review`（停下來等人，可以用 `--continue-from` 回答） |
+| `1` | `failed` —— 過程中出錯 |
+| `2` | `halted` —— **停了而且沒有產出報告**（例如 QC 閾值沒給、或人選了停止） |
 | `3` | `running` —— 不該漏出來 |
 | `4` | `--continue-from` 找不到可以回答的東西 |
 
 `2` 跟 `4` 分開，因為「分析停住」跟「找不到那次執行」是兩種不同的問題。
-腳本要問「我拿到報告了嗎」，判斷 exit code 是不是 `0` 就夠。
+腳本要問「我拿到報告了嗎」，判斷代碼是不是 `0` 就夠。

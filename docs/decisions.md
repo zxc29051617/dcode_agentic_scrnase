@@ -9,7 +9,7 @@
 上一版 README 同時宣稱 452 和 463，兩個都錯。測試數量本來就取決於本機有哪些
 資料集，而寫一個「量測當下」的快照只是把過期時間延後而已。現在 README 放 CI badge，
 它讀的是 master 的實際狀態；`docs/development.md` 只承諾兩件不會變的事：
-沒有 failure，且每個 skip 都指名它缺哪份資料。
+沒有 failure，且每個跳過的測試都指名它缺哪份資料。
 
 ## 不要用 `micromamba -f conda-lock.yml`
 
@@ -25,19 +25,24 @@
 是對的，也不會多出一份會跟實作漂移的描述。開新 step 的流程見
 [`development.md`](development.md#加一個新的-step)。
 
-## judge 的建議永遠不會被自動套用
+## 模型的建議永遠不會被自動套用
 
-舊版 prompt 下 `gpt-oss:20b` 曾建議 `max_pct_mito=0.1`——但這個欄位的單位是 0–100
-的百分比，照做會砍掉幾乎所有細胞。judge node 的回傳值只有 `judge_results`
-（見 `src/nodes.py:109`），沒有任何 key 能讓建議值走到 `artifacts` 或 config。
+舊版提示詞下 `gpt-oss:20b` 曾建議 `max_pct_mito=0.1`——但這個欄位的單位是 0–100 的
+百分比，照做會砍掉幾乎所有細胞。檢查節點的回傳值只有 `judge_results`
+（見 `src/nodes.py:109`），沒有任何欄位能讓建議值走到 `artifacts` 或設定裡。
 這條限制不是形式主義。
 
 ## `--matrix-kind` 已移除
 
-`count_matrix_classify` 會從矩陣本身判斷 raw/filtered，不需要人先宣告。
+`count_matrix_classify` 會從矩陣本身判斷是 raw 還是 filtered，不需要人先宣告。
 
 ## 文件的資訊架構（2026-08）
 
-README 一度長到 481 行，同時扮演 landing page、operations manual、developer guide
-和 decision log。現在 README 只回答六個問題（這是什麼／為什麼／怎麼運作／怎麼跑／
-會得到什麼／深入去哪看），其餘內容依讀者拆進 `docs/`。內容是搬移不是刪除。
+README 一度長到 481 行，同時扮演入口頁、操作手冊、開發指南和決策紀錄。現在 README
+只回答六個問題（這是什麼／為什麼／怎麼運作／怎麼跑／會得到什麼／深入去哪看），
+其餘內容依讀者拆進 `docs/`。內容是搬移不是刪除。
+
+同一輪還做了用詞調整：**專有名詞保留，專案自己的概念講白話。** QC、PCA、UMAP、
+AnnData、FASTQ 這些 scRNA-seq 的詞保留英文；judge、verdict、human gate、
+provenance、artifact、checkpoint 這些是這個專案自己的概念，README 用白話講，
+並在「名詞對照」表裡標出程式碼裡叫什麼，這樣讀者點進 `docs/` 或原始碼不會斷線。

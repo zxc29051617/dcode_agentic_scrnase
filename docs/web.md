@@ -7,13 +7,13 @@ CLI 和 Web 是兩種**不同的互動模型**，不是同一件事的兩個入�
 | | `python -m src.run --interactive` | Web `/analysis/new` |
 |---|---|---|
 | 誰組出參數 | 你自己打旗標 | 對話整理成 draft，你在畫面上確認 |
-| gate 怎麼問 | 阻塞在終端機的 `input()` | run 掛起，checkpoint 留在磁碟，瀏覽器回答 |
-| 誰在等 | 你的 shell 一直開著 | 沒有人在等，worker 之後才接手 |
-| operator 身分 | `getpass.getuser()` | server 端解析，client 不能自稱 |
+| 需要確認時怎麼問 | 直接在終端機問你 | 執行掛起，進度留在磁碟，之後從瀏覽器回答 |
+| 誰在等 | 你的終端機一直開著 | 沒有人在等，worker 之後才接手 |
+| 誰做的決定 | `getpass.getuser()` | 由 server 端判斷，前端不能自稱是誰 |
 
-**CLI 完全沒有改變**，[`cli.md`](cli.md) 講的都還算數。Web 是加上去的一層，它自己不
-執行任何東西：controller 只做驗證和排程，真正跑 workflow 的是 `dcode-scrna` 環境裡
-的 worker，而 worker 走的是同一個 `src/graph.py`。
+**CLI 完全沒有改變**，[`cli.md`](cli.md) 講的都還算數。網頁是加上去的一層，它自己
+不執行任何分析：controller 只做驗證和排程，真正跑流程的是 `dcode-scrna` 環境裡的
+worker，而 worker 走的是同一個 `src/graph.py`。
 
 ## 最小可複製的 Web 啟動
 
@@ -43,13 +43,13 @@ CONTROLLER_DB=var/controller/controller.sqlite CONTROLLER_RUNS_ROOT=runs \
 
 然後開 `http://127.0.0.1:3000/analysis/new`。
 
-`dev:stack` 刻意**不**幫你起 worker：worker 會 import 整個 executor，把 scanpy 塞進
-前端的 process tree 沒有道理。沒裝 controller 的話整個站台就退回唯讀，頁面上會直說。
+`dev:stack` 刻意**不**幫你起 worker：worker 會 import 整個分析程式，把 scanpy 塞進
+前端的行程樹裡沒有道理。沒裝 controller 的話整個站台就退回唯讀，頁面上會直說。
 
 ## 限制
 
-Web 這一層是 **local-development MVP**：SQLite、polling、**沒有 authentication**，
-這些限制在 `services/controller/README.md` 裡列得很清楚，不要對外開放那個 port。
+網頁這一層是**本機開發用的 MVP**：SQLite、輪詢、**沒有登入驗證**，這些限制在
+`services/controller/README.md` 裡列得很清楚，不要對外開放那個連接埠。
 
-細節看 `services/controller/README.md` 和
+細節看 `services/controller/README.md` 和分析請求的 API 規格
 [`analysis_request_contract.md`](analysis_request_contract.md)。
