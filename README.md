@@ -393,11 +393,19 @@ python -m src.run --continue-from <run_id> --interactive
 
 ## 授權
 
-**目前沒有 LICENSE 檔案。** 沒有授權條款的公開 repo，法律上預設是保留全部權利 ——
-別人可以看，但不能合法使用或修改。開源前需要補一個。
+[MIT](LICENSE)。可以自由使用、修改、散布，包括商業用途，條件只有一個：保留
+[`LICENSE`](LICENSE) 裡的版權聲明。
 
-第三方素材的授權已經標注在使用它的地方：`marker_db/scmayomap`（scMayoMap，MIT）、
-`apps/web/app/globals.css` 裡兩段改寫自 Uiverse.io 的 CSS（MIT）。
+授權涵蓋的是這個 repo 裡的程式碼。**不涵蓋沒有被 commit 進來的東西** —— Cell Ranger
+是 10x 自己的授權（不可再散布，所以也不會出現在任何 image 裡）、reference 基因體與
+測試資料是各自來源的公開資料。
+
+用到的第三方素材，授權標注在使用它的地方：
+
+| | 授權 | 用在哪 |
+|---|---|---|
+| [scMayoMap](https://github.com/chloelulu/scMayoMap) marker database | MIT | `marker_db/scmayomap/markers.csv`，供 `cross_check_annotation` 讀取 |
+| [Uiverse.io](https://github.com/uiverse-io/galaxy) 的兩段 CSS | MIT | `apps/web/app/globals.css`，聲明就放在那兩段旁邊 |
 
 ## 文件
 
