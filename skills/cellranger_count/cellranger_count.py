@@ -425,16 +425,31 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
             "(verified against this reference, not recounted)"
         )
 
-    # Cell Ranger writes BOTH matrices, so which one goes downstream is a
-    # decision, not a guess. Wanting to set the cell count means wanting the raw
-    # barcode list; otherwise Cell Ranger's own call is the sensible default.
-    wants_own_cell_count = config.get("force_cells") is not None or config.get("min_umi") is not None
-    chosen = "raw" if wants_own_cell_count else "filtered"
-    if wants_own_cell_count:
-        warnings.append(
-            "routing on the raw matrix because a cell count was requested; "
-            "Cell Ranger's own call stays available for comparison"
-        )
+    # Cell Ranger writes BOTH matrices, and the raw one is what goes downstream
+    # — always, whether or not a cell count was asked for.
+    #
+    # It used to be conditional: raw when `force_cells` or `min_umi` was set,
+    # filtered otherwise. That made how many cells to keep the one decision in
+    # this pipeline you had to answer *before* you could see the evidence for
+    # it. Everywhere else the shape is the opposite — `apply_cell_qc_filter`
+    # costs out every candidate cut and stops — and `cell_calling_review` is
+    # written to that same shape, with a barcode-rank curve, a knee, an
+    # inflection and a UMI threshold per candidate count. On the FASTQ route
+    # nobody could reach it without already having the answer, and a
+    # placeholder `--force-cells 1500` would have been recorded in the audit
+    # log as a decision that was never made.
+    #
+    # Cell Ranger's own call is not discarded: `cell_calling_review` reads
+    # `libraries[].filtered_feature_bc_matrix` from this step's own record and
+    # reports it as `evidence.cellranger_cells`, beside the curve. It becomes
+    # the suggestion it always was rather than a choice made on the operator's
+    # behalf, and answering the gate with that same number is one click.
+    chosen = "raw"
+    warnings.append(
+        "routing on the raw matrix so the cell count stays an explicit decision; "
+        f"Cell Ranger's own call is recorded and shown for comparison at "
+        f"cell_calling_review"
+    )
 
     key = f"{chosen}_feature_bc_matrix"
     return _result(

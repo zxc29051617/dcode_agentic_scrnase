@@ -265,7 +265,16 @@ def test_every_library_is_passed_downstream_not_just_the_first():
         assert set(json.loads(manifest.read_text())) == {"A", "B"}
 
 
-def test_output_hands_the_filtered_matrix_to_the_classifier():
+def test_output_hands_the_raw_matrix_to_the_classifier():
+    """Always raw, so how many cells to keep stays a decision somebody makes.
+
+    This used to be conditional — raw when `force_cells` or `min_umi` was set,
+    filtered otherwise — which made the cell count the one choice in this
+    pipeline you had to answer before you could see the evidence for it. On the
+    FASTQ route `cell_calling_review` was simply unreachable without already
+    having the answer, while everywhere else (`apply_cell_qc_filter`) the shape
+    is to cost out the candidates and stop.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         reference = fixtures.make_reference(root, "ref", genomes=["GRCh38"])
@@ -273,13 +282,68 @@ def test_output_hands_the_filtered_matrix_to_the_classifier():
         fixtures.make_cellranger_outs_h5(work, "SampleA", genome="GRCh38")
         result = count.run(_payload(root, reference=reference, work=root / "run"))
 
-    assert result["matrix_kind_hint"] == "filtered"
+    assert result["matrix_kind_hint"] == "raw"
     library = result["libraries"][0]
-    assert result["matrix_paths"]["SampleA"] == library["filtered_feature_bc_matrix"]
-    assert library["raw_feature_bc_matrix"].endswith("raw_feature_bc_matrix.h5")
-    assert result["available_matrices"]["raw"], "the raw matrices stay reachable"
+    assert result["matrix_paths"]["SampleA"] == library["raw_feature_bc_matrix"]
     assert result["recommended_next_tool"] == "count_matrix_classify"
     assert result["metrics"]["per_library"]["SampleA"]["Estimated Number of Cells"] == "1222"
+
+
+def test_the_route_no_longer_depends_on_whether_a_cell_count_was_given():
+    """Same output with and without one, so the gate cannot be pre-empted."""
+    results = []
+    for config in ({}, {"force_cells": 400}, {"min_umi": 500}):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference = fixtures.make_reference(root, "ref", genomes=["GRCh38"])
+            fixtures.make_cellranger_outs_h5(root / "run" / "cellranger_count",
+                                             "SampleA", genome="GRCh38")
+            payload = _payload(root, reference=reference, work=root / "run")
+            payload["config"].update(config)
+            results.append(count.run(payload)["matrix_kind_hint"])
+    assert results == ["raw", "raw", "raw"], results
+
+
+def test_cell_ranger_own_call_stays_reachable_for_comparison():
+    """The filtered matrix is recorded even though it is not what goes on.
+
+    `cell_calling_review` reads `libraries[].filtered_feature_bc_matrix` from
+    this step's record and reports `evidence.cellranger_cells` beside the
+    barcode-rank curve. Dropping it would turn Cell Ranger's call from a
+    suggestion into something nobody can see.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        reference = fixtures.make_reference(root, "ref", genomes=["GRCh38"])
+        fixtures.make_cellranger_outs_h5(root / "run" / "cellranger_count",
+                                         "SampleA", genome="GRCh38")
+        result = count.run(_payload(root, reference=reference, work=root / "run"))
+
+    library = result["libraries"][0]
+    assert library["filtered_feature_bc_matrix"].endswith("filtered_feature_bc_matrix.h5")
+    assert library["raw_feature_bc_matrix"].endswith("raw_feature_bc_matrix.h5")
+    assert result["available_matrices"]["raw"], "the raw matrices stay reachable"
+    assert result["available_matrices"]["filtered"], "and so does Cell Ranger's own call"
+
+
+def test_answering_the_cell_calling_gate_does_not_recount():
+    """`force_cells` must cut at the review, not at the count.
+
+    It was listed in `cellranger_count`'s `config_keys` while the route was
+    chosen from it. Now that it cannot change a byte this step writes, leaving
+    it there would mean answering the gate re-ran Cell Ranger on every library
+    — twenty to forty minutes each — to reproduce a matrix nothing had
+    invalidated.
+    """
+    from src.registry import REGISTRY, earliest_step_reading
+
+    keys = REGISTRY["cellranger_count"].config_keys
+    assert "force_cells" not in keys and "min_umi" not in keys
+    for key in ("force_cells", "min_umi"):
+        cut, _ = earliest_step_reading([key])
+        assert cut == "cell_calling_review", f"{key} cuts at {cut}"
+    # And what genuinely does change the count still cuts there.
+    assert earliest_step_reading(["expected_cells"])[0] == "cellranger_count"
 
 
 def main() -> int:

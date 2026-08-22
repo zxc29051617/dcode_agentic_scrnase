@@ -130,10 +130,16 @@ REGISTRY: dict[str, StepSpec] = {
         # they cut a resume plan at the count. Left out, `earliest_step_reading`
         # attributes them to the first step in the registry and re-runs
         # everything, which is worse for the same money.
+        # `force_cells` and `min_umi` are deliberately absent. They were listed
+        # while this step chose the raw or filtered matrix from them; it now
+        # always hands over raw, so neither can change a single byte it writes.
+        # Leaving them would mean answering the cell-calling gate cut the resume
+        # plan here and recounted every library — twenty to forty minutes each,
+        # to reproduce a matrix nothing had invalidated. `cell_calling_review`
+        # lists both, which is where they are actually read.
         StepSpec("cellranger_count", "upstream", "judge_cellranger_count",
                  config_keys=("binary", "cellranger", "chemistry", "expected_cells",
-                              "force_cells", "localcores", "localmem", "min_umi",
-                              "transcriptome")),
+                              "localcores", "localmem", "transcriptome")),
         StepSpec("count_matrix_classify", "router", "judge_matrix_classify", branches=True),
         StepSpec("load_raw_counts", "analysis", "judge_raw_counts", branches=True),
         StepSpec("load_filtered_counts", "analysis", "judge_filtered_counts"),
