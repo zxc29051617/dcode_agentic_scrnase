@@ -346,6 +346,84 @@ def test_answering_the_cell_calling_gate_does_not_recount():
     assert earliest_step_reading(["expected_cells"])[0] == "cellranger_count"
 
 
+# --- one library, one set of directories ----------------------------------------------------
+#
+# `--fastqs` is a comma-separated list, and Cell Ranger requires the requested
+# `--sample` to be in *every* directory on it. Handing every input directory to
+# every library therefore worked only while there was one directory. Two of
+# them, on 2026-08-22:
+#
+#     --fastqs .../pbmc_1k_v2_fastqs,.../pbmc_1k_v3_fastqs --sample pbmc_1k_v2
+#     ERROR: Requested sample(s) not found in fastq directory
+#            ".../pbmc_1k_v3_fastqs"
+#
+# The run failed in 0.0 minutes, before reading a read, after eleven minutes of
+# FastQC that all had to be repeated.
+
+
+def test_each_library_is_counted_from_the_directories_that_hold_it():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        first = fixtures.make_fastq_dir(root, ("LibA",), name="fastq_a")
+        second = fixtures.make_fastq_dir(root, ("LibB",), name="fastq_b")
+        assert count._dirs_holding("LibA", [str(first), str(second)]) == [str(first)]
+        assert count._dirs_holding("LibB", [str(first), str(second)]) == [str(second)]
+
+
+def test_a_library_spanning_two_directories_keeps_both():
+    """A sample sequenced across two runs is legitimate, and Cell Ranger takes
+    both — as long as every directory on the list holds it."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        first = fixtures.make_fastq_dir(root, ("LibA",), name="run1")
+        second = fixtures.make_fastq_dir(root, ("LibA",), name="run2")
+        held = count._dirs_holding("LibA", [str(first), str(second)])
+        assert held == [str(first), str(second)]
+
+
+def test_a_prefix_does_not_collect_a_longer_name():
+    """`A` must not pick up `A_2`'s reads. `_S` is the delimiter 10x writes."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        directory = fixtures.make_fastq_dir(root, ("A_2",), name="fastq")
+        assert count._dirs_holding("A", [str(directory)]) == []
+
+
+def test_a_directory_that_cannot_be_read_is_kept_rather_than_judged():
+    """The reuse path counts nothing and never looks at the reads.
+
+    Dropping a directory because a FASTQ tree has since been unmounted would
+    turn a finished matrix into a failure. This narrows a list that would
+    otherwise be wrong; it does not decide what is in a directory it cannot see.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        missing = str(Path(tmp) / "gone")
+        assert count._dirs_holding("SampleA", [missing]) == [missing]
+
+
+def test_a_file_contributes_its_directory_and_a_missing_path_does_not():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        directory = fixtures.make_fastq_dir(root, ("LibA",), name="fastq")
+        one_file = directory / "LibA_S1_L001_R1_001.fastq.gz"
+        assert count._dirs_holding("LibA", [str(one_file)]) == [str(directory)]
+        # A path that is not there stays as it is: its parent is a different
+        # directory, and judging that would be judging the wrong thing.
+        absent = str(root / "nowhere")
+        assert count._dirs_holding("LibA", [absent]) == [absent]
+
+
+def test_a_library_no_directory_holds_is_named_rather_than_handed_to_cellranger():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        reference = fixtures.make_reference(root, "ref", genomes=["GRCh38"])
+        fixtures.make_fastq_dir(root, ("SomethingElse",), name="fastq")
+        payload = _payload(root, reference=reference, work=root / "run")
+        result = count.run(payload)
+    assert result["errors"], "a library nothing holds must not reach Cell Ranger"
+    assert "SampleA_S*" in result["errors"][0], result["errors"]
+
+
 def main() -> int:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     failures = []

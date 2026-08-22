@@ -208,6 +208,50 @@ def _libraries_from_artifacts(artifacts: dict[str, Any], config: dict[str, Any])
     ]
 
 
+def _dirs_holding(sample_prefix: str, dirs: list[str]) -> list[str]:
+    """The directories that actually contain this sample's reads.
+
+    `--fastqs` takes a comma-separated list, and Cell Ranger requires the
+    requested `--sample` to be present in **every** directory on it. Passing all
+    of a run's input directories to every library therefore works only while
+    there is one directory:
+
+        --fastqs .../pbmc_1k_v2_fastqs,.../pbmc_1k_v3_fastqs --sample pbmc_1k_v2
+        ERROR: Requested sample(s) not found in fastq directory
+               ".../pbmc_1k_v3_fastqs"
+
+    which is how a two-library run failed in 0.0 minutes on 2026-08-22, before
+    reading a single read. Filtering is also more correct than picking one
+    directory: a library legitimately spans several when the same sample was
+    sequenced across runs, and Cell Ranger accepts that as long as every listed
+    directory holds it.
+
+    Matched on `<sample>_S`, the delimiter in 10x's own naming
+    (`<sample>_S1_L001_R1_001.fastq.gz`), so `A` does not collect `A_2`'s files.
+    A path that is a *file* contributes its parent, which is what `--fastqs`
+    wants. A path that is neither — not there at all — is left as it stands
+    rather than resolved to its parent, because the parent is a different
+    directory and judging it would be judging the wrong thing.
+
+    A directory is dropped only when it can be read *and* demonstrably lacks the
+    sample. One that is not there to inspect is kept: the reuse path counts
+    nothing and never looks at the reads, and refusing it because a FASTQ tree
+    has since been unmounted would turn a finished matrix into a failure. This
+    narrows a list that would otherwise be wrong; it does not take on deciding
+    what is there when it cannot see.
+    """
+    holding: list[str] = []
+    for entry in dirs:
+        path = Path(entry).expanduser().resolve()
+        directory = path.parent if path.is_file() else path
+        if directory.is_dir() and not any(directory.glob(f"{sample_prefix}_S*")):
+            continue
+        candidate = str(directory)
+        if candidate not in holding:
+            holding.append(candidate)
+    return holding
+
+
 def _fastq_dirs(payload: dict[str, Any]) -> list[str]:
     bundle = payload.get("input_bundle") or {}
     if isinstance(bundle, (str, Path)):
@@ -388,18 +432,29 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
     if not libraries:
         return _result(errors=["no library to count; fastq_preflight found no sample"])
 
-    # Absolute for the same reason as the transcriptome: the subprocess runs
-    # from the output directory, where a relative path means somewhere else.
-    fastqs = ",".join(str(Path(d).expanduser().resolve()) for d in dirs)
     work = Path(payload.get("run_dir") or ".") / TOOL_NAME
 
     records: list[dict[str, Any]] = []
     for library in libraries:
+        # Per library, not once for the run. Absolute for the same reason as the
+        # transcriptome: the subprocess runs from the output directory, where a
+        # relative path means somewhere else.
+        holding = _dirs_holding(library["sample_prefix"], dirs)
+        if not holding:
+            return _result(
+                errors=[
+                    f"{library['library_id']}: no input directory holds "
+                    f"{library['sample_prefix']}_S*; fastq_preflight detected it "
+                    f"from {', '.join(dirs)}"
+                ],
+                libraries=records,
+                warnings=warnings,
+            )
         try:
             records.append(
                 _count_one(
                     library,
-                    fastqs=fastqs,
+                    fastqs=",".join(holding),
                     transcriptome=transcriptome,
                     work=work,
                     config=config,
