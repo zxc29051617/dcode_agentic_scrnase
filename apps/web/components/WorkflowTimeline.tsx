@@ -1,11 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Badge from "@/components/Badge";
 import UpstreamQC from "@/components/UpstreamQC";
 import { stepTone, stepToneLabel } from "@/lib/verdict";
 import { stepLabel, stepStatusWord, VERDICT_WORDS } from "@/lib/stepLabels";
-import { humanDuration } from "@/lib/duration";
+import { expectedDuration, humanDuration, liveElapsed, tickIntervalMs } from "@/lib/duration";
 import type { StepRecord } from "@/lib/gatewayTypes";
 
 /**
@@ -19,11 +19,25 @@ import type { StepRecord } from "@/lib/gatewayTypes";
 export default function WorkflowTimeline({
   steps,
   runId,
+  unfinishedStep = null,
+  elapsedSeconds = null,
+  timings,
 }: {
   steps: StepRecord[];
   /** Needed to build figure URLs, which go through this app's own proxy so the
    *  browser never learns the gateway's address. */
   runId: string;
+  /** The step the run is inside, from `unfinished_step`. A step with a
+   *  `step_start` and no `step_end` has no `step_status` entry, so it arrives
+   *  as `"unknown"` and would otherwise render identically to a step nothing
+   *  is known about. */
+  unfinishedStep?: string | null;
+  /** How long it has been in that step, measured by the gateway. */
+  elapsedSeconds?: number | null;
+  /** Per-step medians from this machine's own finished runs. Absent for a step
+   *  too few runs have reached, which is why nothing here hardcodes "20-40
+   *  minutes": that is a claim about somebody else's hardware. */
+  timings?: Record<string, { n: number; median_seconds: number; min_seconds: number; max_seconds: number }>;
 }) {
   const [open, setOpen] = useState<string | null>(null);
 
@@ -34,7 +48,11 @@ export default function WorkflowTimeline({
   return (
     <div className="timeline">
       {steps.map((step) => {
-        const tone = stepTone(step.status, step.verdict?.verdict);
+        // The run is inside this step right now. Said at the call site rather
+        // than in `stepTone`, which only knows what the record says, and the
+        // record cannot say "still going" — that is the absence of an entry.
+        const running = !!unfinishedStep && step.step === unfinishedStep;
+        const tone = stepTone(running ? "running" : step.status, step.verdict?.verdict);
         const expanded = open === step.step;
         const problems = step.output_summary.warnings.length + step.output_summary.errors.length;
         // Read defensively: the gateway is a separate service on its own
@@ -65,15 +83,22 @@ export default function WorkflowTimeline({
                 {/* What this step cost. It is the number somebody re-running
                     the analysis is planning around, and it was on disk from
                     the first run. */}
-                {humanDuration(step.duration_seconds) && (
-                  <span className="subtle">{humanDuration(step.duration_seconds)}</span>
+                {running ? (
+                  <RunningClock
+                    baselineSeconds={elapsedSeconds}
+                    timing={timings?.[step.step]}
+                  />
+                ) : (
+                  humanDuration(step.duration_seconds) && (
+                    <span className="subtle">{humanDuration(step.duration_seconds)}</span>
+                  )
                 )}
                 {problems > 0 && (
                   <span className="subtle">
                     {problems} note{problems === 1 ? "" : "s"}
                   </span>
                 )}
-                <Badge tone={tone}>{stepToneLabel(step.status, step.verdict?.verdict)}</Badge>
+                <Badge tone={tone}>{stepToneLabel(running ? "running" : step.status, step.verdict?.verdict)}</Badge>
               </span>
             </button>
 
@@ -345,5 +370,62 @@ function Figures({
         ))}
       </div>
     </div>
+  );
+}
+
+/**
+ * How long this step has been going, and how long it usually takes.
+ *
+ * ## Why it ticks rather than being rendered once
+ *
+ * The gateway measures the elapsed time and the page renders it, and from that
+ * moment the number is frozen. A step badge reading RUNNING beside a still
+ * `8.3 min` for half an hour is exactly the thing a reader cannot distinguish
+ * from a hung process — which is the whole reason RUNNING exists as a state.
+ * So the clock moves.
+ *
+ * ## Why it does not read the wall clock
+ *
+ * `Date.now() - startedAt` compares the browser's clock with the gateway's.
+ * They are different machines, and a browser a few minutes behind renders a
+ * negative age, or a frozen zero, on a step that is running normally. The
+ * baseline comes from the server and only the *increment* is measured here, so
+ * the two clocks are never subtracted from one another.
+ *
+ * ## The expectation is measured, not asserted
+ *
+ * "Cell Ranger takes 20-40 minutes" is a fact about whoever wrote it down.
+ * `expectedDuration` reads this machine's own finished runs and returns
+ * nothing when too few have reached this step, which is the honest answer
+ * before there is anything to average.
+ */
+function RunningClock({
+  baselineSeconds,
+  timing,
+}: {
+  baselineSeconds: number | null | undefined;
+  timing?: { n: number; median_seconds: number; min_seconds: number; max_seconds: number };
+}) {
+  const [sinceMount, setSinceMount] = useState(0);
+  const elapsed = liveElapsed(baselineSeconds, sinceMount);
+
+  useEffect(() => {
+    if (baselineSeconds == null) return;
+    const interval = tickIntervalMs(baselineSeconds + sinceMount);
+    const id = setTimeout(() => setSinceMount((s) => s + interval / 1000), interval);
+    return () => clearTimeout(id);
+  }, [baselineSeconds, sinceMount]);
+
+  const expected = expectedDuration(timing);
+  // Past half again the slowest run that ever reached here, "still working" is
+  // no longer the only reading. The same threshold `run/Progress.tsx` uses.
+  const overdue = timing && elapsed != null && elapsed > timing.max_seconds * 1.5;
+
+  return (
+    <span className="subtle" data-testid="running-clock" data-tone={overdue ? "warn" : undefined}>
+      {elapsed != null && humanDuration(elapsed)}
+      {expected && ` · ${expected}`}
+      {overdue && " · longer than any finished run"}
+    </span>
   );
 }

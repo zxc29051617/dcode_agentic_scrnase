@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import type { GateState } from "@/lib/controllerTypes";
 import { buildGateDecisionBody } from "@/lib/gateDecision";
 import { candidatesFor, filterCandidates, type GateCandidate } from "@/lib/gateCandidates";
+import { presetsFor, type GatePreset, type PresetFact } from "@/lib/gatePresets";
 import GateAdvisor from "@/components/GateAdvisor";
 
 /**
@@ -35,9 +36,9 @@ import GateAdvisor from "@/components/GateAdvisor";
  */
 
 const DECISIONS = [
-  { value: "accept", label: "Accept", hint: "take this result and carry on" },
-  { value: "revise", label: "Revise", hint: "change a parameter and run this step again" },
-  { value: "stop", label: "Stop", hint: "end the run here" },
+  { value: "accept", label: "接受", hint: "採用這個結果，繼續往下跑" },
+  { value: "revise", label: "改參數重跑", hint: "改一個參數，把這一步重跑一次" },
+  { value: "stop", label: "停止", hint: "在這裡結束這次執行" },
 ] as const;
 
 type Decision = (typeof DECISIONS)[number]["value"];
@@ -66,6 +67,10 @@ export default function GateDecisionCard({
   const [decision, setDecision] = useState<Decision>(acceptWouldHalt ? "revise" : "accept");
   const [rationale, setRationale] = useState("");
   const [overrides, setOverrides] = useState<Record<string, string>>({});
+  // Which named set is showing. `"custom"` is a real choice, not the
+  // absence of one: it means the person looked at the sets and wants the
+  // boxes, which is different from a gate that offered no sets at all.
+  const [preset, setPreset] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
@@ -73,6 +78,12 @@ export default function GateDecisionCard({
   if (!gate || !state.gate_id) return null;
 
   const offered = gate.revisable ?? [];
+  const presets = presetsFor({
+    step: gate.step,
+    revisable: gate.revisable,
+    advice: gate.advice as unknown[] | null,
+    evidence: gate.evidence as Record<string, unknown> | null,
+  });
 
   async function submit() {
     if (busy) return;
@@ -104,16 +115,16 @@ export default function GateDecisionCard({
             ? detail
             : detail
               ? JSON.stringify(detail)
-              : "the decision was not accepted",
+              : "這個決定沒有被接受",
         );
         return;
       }
-      setDone(`${decision} recorded — the worker will continue this run`);
+      setDone(`已記錄「${DECISIONS.find((d) => d.value === decision)?.label ?? decision}」—— worker 會接手繼續這次執行`);
       // Re-render the server component so the page stops showing a gate that
       // has been answered.
       router.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "could not submit the decision");
+      setError(err instanceof Error ? err.message : "送不出這個決定");
     } finally {
       setBusy(false);
     }
@@ -121,11 +132,11 @@ export default function GateDecisionCard({
 
   return (
     <div className="panel" data-tone="warn" data-testid="gate-decision-card">
-      <h2 style={{ marginTop: 0 }}>Waiting for your decision</h2>
+      <h2 style={{ marginTop: 0 }}>等你決定</h2>
       <p style={{ marginTop: 0 }}>
-        <code>{gate.step}</code> ({gate.gate}) — verdict <strong>{gate.verdict}</strong>
-        {gate.score !== null && gate.score !== undefined && ` · score ${gate.score}`} · gate{" "}
-        {state.generation}
+        <code>{gate.step}</code>（{gate.gate}）— 判斷 <strong>{gate.verdict}</strong>
+        {gate.score !== null && gate.score !== undefined && ` · 分數 ${gate.score}`} · 第{" "}
+        {state.generation} 次
       </p>
 
       {gate.reasons?.length > 0 && (
@@ -138,8 +149,8 @@ export default function GateDecisionCard({
 
       {gate.suggested_action && (
         <p className="subtle">
-          Suggested: {gate.suggested_action}{" "}
-          <em>— a suggestion from the reviewer, not a decision. It is yours.</em>
+          建議的做法：{gate.suggested_action}{" "}
+          <em>—— 這是模型的建議，不是決定。決定在你。</em>
         </p>
       )}
 
@@ -149,14 +160,13 @@ export default function GateDecisionCard({
           gate and belongs on the page. */}
       {gate.revisable?.length > 0 && !(gate.advice?.length > 0) && (
         <p className="subtle" data-testid="gate-no-advice">
-          The reviewer proposed no value here — it reported what it measured and left the choice
-          open. The evidence below is what it measured.
+          模型在這裡沒有提出任何數值 —— 它只回報了量到的東西，把選擇留著。下面就是它量到的。
         </p>
       )}
 
       {gate.advice?.length > 0 && (
         <div data-testid="gate-advice">
-          <h3>The reviewer proposed</h3>
+          <h3>模型提出的建議值</h3>
           <ul>
             {gate.advice.map((entry, i) => (
               <li key={i}>
@@ -190,7 +200,7 @@ export default function GateDecisionCard({
               had already enumerated every option for. The picker below is
               where the choice is made; this stays for checking what the
               executor actually recorded. */}
-          <summary>Full recorded evidence (JSON, for checking)</summary>
+          <summary>完整的原始證據（JSON，供核對）</summary>
           <pre style={{ overflowX: "auto", fontSize: "0.75rem" }}>
             {JSON.stringify(gate.evidence, null, 2)}
           </pre>
@@ -199,7 +209,7 @@ export default function GateDecisionCard({
 
       {gate.review && (
         <details data-testid="gate-review" open>
-          <summary>Run review</summary>
+          <summary>本次執行的檢視</summary>
           <pre style={{ overflowX: "auto", fontSize: "0.75rem" }}>
             {JSON.stringify(gate.review, null, 2)}
           </pre>
@@ -216,14 +226,13 @@ export default function GateDecisionCard({
           rather than discovered after the fact a second time. */}
       {acceptWouldHalt && (
         <p className="subtle" data-tone="warn" data-testid="accept-would-halt" style={{ marginTop: "0.8rem" }}>
-          <strong>Accept will not resolve this step.</strong> No threshold has been set, so the run
-          would halt right after — nothing was filtered for it to carry forward. Choose{" "}
-          <strong>Revise</strong> and set at least one value below.
+          <strong>接受不會讓這一步完成。</strong>還沒有設定任何閾值，所以接受之後這次執行會立刻停住
+          —— 沒有過濾後的物件可以往下傳。請選<strong>改參數重跑</strong>，並在下面至少給一個值。
         </p>
       )}
 
       <fieldset style={{ marginTop: "1rem", border: "none", padding: 0 }}>
-        <legend className="subtle">Your decision</legend>
+        <legend className="subtle">你的決定</legend>
         {DECISIONS.map((option) => (
           <label key={option.value} style={{ display: "block", padding: "0.15rem 0" }}>
             <input
@@ -236,7 +245,7 @@ export default function GateDecisionCard({
             />{" "}
             <strong>{option.label}</strong>{" "}
             <span className="subtle">
-              — {option.value === "accept" && acceptWouldHalt ? "would halt the run; see above" : option.hint}
+              — {option.value === "accept" && acceptWouldHalt ? "會讓這次執行停住，見上方說明" : option.hint}
             </span>
           </label>
         ))}
@@ -246,15 +255,32 @@ export default function GateDecisionCard({
         <div data-testid="revise-fields" style={{ marginTop: "0.6rem" }}>
           {offered.length === 0 ? (
             <p className="subtle">
-              This gate offers no parameters, so <code>revise</code> means only &ldquo;run it
-              again&rdquo;.
+              這一關沒有可以改的參數，所以「改參數重跑」在這裡就只是「再跑一次」。
             </p>
           ) : (
             <>
               <p className="subtle" style={{ marginTop: 0 }}>
-                Changing <code>{gate.revise_target}</code> onward. Blank keeps the current value.
+                會從 <code>{gate.revise_target}</code> 開始重跑。留白表示沿用目前的值。
               </p>
-              {offered.map((name) => {
+              {/* A named set, or three empty boxes. The decision at a QC gate
+                  is not three independent numbers, it is one posture — cut
+                  the tail, keep everything, be strict — and rebuilding that
+                  from a percentile table is work the evidence already did.
+                  `lib/gatePresets.ts` returns nothing where it cannot build a
+                  set, and then this is the plain form it always was. */}
+              {presets.length > 0 && (
+                <PresetPicker
+                  presets={presets}
+                  selected={preset}
+                  onSelect={(next) => {
+                    setPreset(next);
+                    const chosen = presets.find((p) => p.key === next);
+                    if (chosen) setOverrides({ ...chosen.overrides });
+                  }}
+                />
+              )}
+              {(presets.length === 0 || preset === "custom") &&
+                offered.map((name) => {
                 // The executor listed the options for this parameter, so pick
                 // from them. Where it did not, a text box is the honest
                 // control — inventing a menu would be inventing choices.
@@ -280,8 +306,8 @@ export default function GateDecisionCard({
                       }
                     />
                   </label>
-                );
-              })}
+                  );
+                })}
             </>
           )}
         </div>
@@ -297,8 +323,8 @@ export default function GateDecisionCard({
           audit tier is the reason this pipeline exists; it should not empty
           out for the operators the web app was built for. */}
       <label style={{ display: "block", marginTop: "0.9rem" }}>
-        Why <span className="subtle">(optional — recorded in the run&rsquo;s audit log and in the
-        report&rsquo;s decision table, where it is the only account of what you were thinking)</span>
+        為什麼 <span className="subtle">（選填 —— 會寫進這次執行的稽核紀錄，以及報告的決策表；
+        那裡是唯一留下你當時在想什麼的地方）</span>
         <textarea
           data-testid="gate-rationale"
           value={rationale}
@@ -306,10 +332,10 @@ export default function GateDecisionCard({
           onChange={(event) => setRationale(event.target.value)}
           placeholder={
             decision === "revise"
-              ? "e.g. mito median is 5.4%, so 15 takes the tail without cutting into the body"
+              ? "例如：粒線體中位數 4.73%，15 切的是尾巴，不會砍進分布主體"
               : decision === "stop"
-                ? "e.g. wrong reference, restarting from the FASTQs"
-                : "e.g. the warning is about cluster 12, which is 8 cells and expected here"
+                ? "例如：reference 選錯了，要從 FASTQ 重來"
+                : "例如：警告講的是第 12 群，只有 8 顆細胞，這個組織本來就會這樣"
           }
           style={{ display: "block", width: "100%", marginTop: "0.25rem", padding: "0.4rem 0.5rem" }}
         />
@@ -327,12 +353,12 @@ export default function GateDecisionCard({
           data-tone={decision === "stop" ? "fail" : undefined}
         >
           {busy
-            ? "Submitting…"
+            ? "送出中…"
             : decision === "accept"
-              ? "Accept and continue"
+              ? "接受並繼續"
               : decision === "revise"
-                ? "Re-run this step with these values"
-                : "Stop this run"}
+                ? "用這些值重跑這一步"
+                : "停止這次執行"}
         </button>
         {done && <span className="subtle" data-testid="gate-done">{done}</span>}
       </div>
@@ -355,9 +381,8 @@ export default function GateDecisionCard({
       )}
 
       <p className="subtle" style={{ marginBottom: 0, marginTop: "0.8rem" }}>
-        The assistant can explain this evidence and argue for an option. It cannot answer for you
-        — <code>accept</code>, <code>revise</code> and <code>stop</code> are recorded against a
-        person.
+        助理可以解釋這些證據、替某個選項辯護，但它<strong>不能替你回答</strong>
+        —— <code>accept</code>、<code>revise</code>、<code>stop</code> 都是記在一個人名下的。
       </p>
     </div>
   );
@@ -413,7 +438,7 @@ function CandidatePicker({
 
       <input
         type="search"
-        placeholder="Filter by name or description…"
+        placeholder="用名稱或說明過濾…"
         value={query}
         data-testid={`picker-search-${group.parameter}`}
         onChange={(event) => setQuery(event.target.value)}
@@ -452,7 +477,7 @@ function CandidatePicker({
         )}
         {local.length > 0 && (
           <CandidateGroup
-            heading="Available now"
+            heading="本機已有，可以直接用"
             note="already downloaded on this machine"
             items={local}
             parameter={group.parameter}
@@ -462,8 +487,8 @@ function CandidatePicker({
         )}
         {remote.length > 0 && (
           <CandidateGroup
-            heading="Needs downloading first"
-            note="CellTypist fetches these on use; this page does not download anything"
+            heading="要先下載"
+note="CellTypist 會在使用時自己抓；這個頁面不會下載任何東西"
             items={remote}
             parameter={group.parameter}
             value={value}
@@ -553,5 +578,145 @@ function CandidateGroup({
         );
       })}
     </div>
+  );
+}
+
+/** `4618.5` -> `4,618.5`. Absent stays absent rather than becoming a zero. */
+function nfmt(value: number | null): string | null {
+  return value === null ? null : value.toLocaleString("en-US");
+}
+
+const PRESET_NAMES: Record<string, string> = {
+  advised: "模型建議",
+  looser: "寬鬆",
+  stricter: "嚴格",
+};
+
+/**
+ * One line of a preset: what this criterion alone would cost, and where this
+ * run's own distribution sits.
+ *
+ * Both halves are needed and neither is enough. "removes 108 cells" does not
+ * say whether 15 is a tail or the middle of the data; "the median is 4.73"
+ * does not say what acting on it costs. The pairing is the whole reason the
+ * step writes `preview` and `distributions` as two blocks.
+ */
+function FactLine({ fact }: { fact: PresetFact }) {
+  const removed = nfmt(fact.cellsRemoved);
+  const kept = nfmt(fact.cellsKept);
+  return (
+    <li style={{ padding: "0.1rem 0" }}>
+      <code>
+        {fact.parameter} {fact.threshold}
+      </code>{" "}
+      {removed !== null ? (
+        <>
+          — 單獨移除 {removed} 顆
+          {fact.pctRemoved !== null && `（${fact.pctRemoved}%）`}
+          {kept !== null && `，保留 ${kept}`}
+        </>
+      ) : (
+        <span className="subtle">— 這個值不在預覽表裡，代價未知</span>
+      )}
+      {fact.median !== null && (
+        <span className="subtle">
+          {" "}
+          · 本次中位數 {fact.median}
+          {fact.p90 !== null && `，p90 ${fact.p90}`}
+          {fact.p95 !== null && `，p95 ${fact.p95}`}
+        </span>
+      )}
+    </li>
+  );
+}
+
+/**
+ * Pick a whole threshold set, or ask for the boxes.
+ *
+ * ## "Recommended" has to point at something
+ *
+ * Only the `judge` preset is marked, and what marks it is not this component's
+ * opinion: it is the set the run's own judge call advised, shown with the
+ * confidence it reported and the sentence it wrote. A page that labelled a
+ * derived set "recommended" would be the interface making a scientific choice
+ * with nothing behind it, which is the failure the whole gate exists to avoid.
+ *
+ * ## No total, ever
+ *
+ * Each line is that criterion applied alone and the cuts overlap — 87 + 105 +
+ * 108 read as 300 on the run this was built against, where 167 cells were
+ * actually removed. There is no combined figure here because there is no
+ * honest one to show before the filter runs; `filter_summary` reports it
+ * afterwards, in `n_removed_by_more_than_one`.
+ */
+function PresetPicker({
+  presets,
+  selected,
+  onSelect,
+}: {
+  presets: GatePreset[];
+  selected: string | null;
+  onSelect: (key: string) => void;
+}) {
+  return (
+    <fieldset
+      data-testid="gate-presets"
+      style={{ border: "none", padding: 0, margin: "0 0 0.8rem 0" }}
+    >
+      <legend className="subtle">選一組閾值</legend>
+      {presets.map((preset, i) => (
+        <label
+          key={preset.key}
+          data-testid={`preset-${preset.key}`}
+          style={{ display: "block", padding: "0.35rem 0" }}
+        >
+          <input
+            type="radio"
+            name="preset"
+            value={preset.key}
+            checked={selected === preset.key}
+            onChange={() => onSelect(preset.key)}
+          />{" "}
+          <strong>
+            {i + 1}. {PRESET_NAMES[preset.key] ?? preset.key}
+          </strong>
+          {preset.source === "judge" && (
+            <span className="subtle" data-testid="preset-recommended">
+              {" "}
+              — 模型建議
+              {preset.confidence ? `，信心 ${preset.confidence}` : ""}
+            </span>
+          )}
+          <ul style={{ margin: "0.2rem 0 0 1.4rem", fontSize: "0.9rem" }}>
+            {preset.facts.map((fact) => (
+              <FactLine key={fact.parameter} fact={fact} />
+            ))}
+          </ul>
+          {/* The judge's own words, not a paraphrase. It was written during
+              this run's judge call and is already in the audit log, so the
+              page is quoting the record rather than adding to it. */}
+          {preset.rationale && (
+            <p className="subtle" style={{ margin: "0.2rem 0 0 1.4rem", fontSize: "0.85rem" }}>
+              {preset.rationale}
+            </p>
+          )}
+        </label>
+      ))}
+      <label style={{ display: "block", padding: "0.35rem 0" }}>
+        <input
+          type="radio"
+          name="preset"
+          value="custom"
+          checked={selected === "custom"}
+          onChange={() => onSelect("custom")}
+        />{" "}
+        <strong>{presets.length + 1}. 自己填</strong>
+        <span className="subtle"> — 每個參數分別輸入</span>
+      </label>
+      <p className="subtle" style={{ margin: "0.4rem 0 0", fontSize: "0.85rem" }}>
+        每一行都是那個條件<strong>單獨</strong>作用的結果，條件之間會重疊，
+        <strong>移除數不能相加</strong>。實際合計要等過濾跑完才知道。
+      </p>
+    </fieldset>
   );
 }

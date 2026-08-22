@@ -29,22 +29,22 @@ import { criterionRows, medianOf } from "@/lib/thresholdEvidence";
 
 const CRITERION_TITLES: Record<string, { title: string; what: string }> = {
   min_genes: {
-    title: "Fewest genes a cell may have",
-    what: "A droplet with very few genes is usually debris or an empty bead rather than a cell.",
+    title: "一顆細胞最少要偵測到幾個基因",
+    what: "基因數很少的液滴通常是碎屑或空的 bead，不是細胞。",
   },
   min_counts: {
-    title: "Fewest UMI counts a cell may have",
-    what: "The same judgement by total molecules rather than by distinct genes.",
+    title: "一顆細胞最少要有幾個 UMI",
+    what: "同一個判斷，但看的是分子總數而不是相異基因數。",
   },
   max_pct_mito: {
-    title: "Most mitochondrial signal a cell may have",
+    title: "一顆細胞最多容許多少粒線體訊號",
     what:
-      "A dying cell leaks cytoplasmic RNA while its mitochondria stay, so the mitochondrial " +
-      "fraction rises. This is the criterion that decides how many dying cells reach the result.",
+      "將死的細胞會漏出細胞質 RNA，粒線體卻留著，所以粒線體比例會升高。" +
+      "這一條決定了有多少將死的細胞會進到最後的結果裡。",
   },
   max_pct_erythroid: {
-    title: "Most haemoglobin signal a cell may have",
-    what: "Red blood cell contamination. Usually near zero in a clean PBMC preparation.",
+    title: "一顆細胞最多容許多少血紅蛋白訊號",
+    what: "紅血球污染。乾淨的 PBMC 製備通常接近零。",
   },
 };
 
@@ -62,11 +62,11 @@ export default function ThresholdPreview({
 
   return (
     <div data-testid="threshold-preview" style={{ marginTop: "0.8rem" }}>
-      <h3 style={{ marginBottom: "0.2rem" }}>What each cut would cost</h3>
+      <h3 style={{ marginBottom: "0.2rem" }}>每一刀會付出什麼代價</h3>
       <p className="subtle" style={{ marginTop: 0 }}>
-        Measured on this run&rsquo;s {nCells != null ? nCells.toLocaleString() : ""} cells before
-        anything was removed. Nothing has been filtered yet — choosing <strong>Revise</strong> and
-        entering a value is what applies one.
+        在這次執行的 {nCells != null ? nCells.toLocaleString() : ""} 顆細胞上量的，
+        量的時候還沒移除任何東西。目前什麼都還沒過濾 —— 要選<strong>改參數重跑</strong>
+        並填入數值，才會真的套用。
       </p>
 
       {groups.map(([criterion, rows]) => {
@@ -78,7 +78,7 @@ export default function ThresholdPreview({
               <strong>{meta?.title ?? criterion}</strong>
               <code className="tl-id">{criterion}</code>
               {median != null && (
-                <span className="subtle">this run&rsquo;s median: {formatNumber(median)}</span>
+                <span className="subtle">本次中位數：{formatNumber(median)}</span>
               )}
             </div>
             {meta?.what && (
@@ -90,10 +90,10 @@ export default function ThresholdPreview({
               <table className="data">
                 <thead>
                   <tr>
-                    <th>Threshold</th>
-                    <th className="num">Cells removed</th>
-                    <th className="num">Of the run</th>
-                    <th className="num">Cells kept</th>
+                    <th>閾值</th>
+                    <th className="num">移除細胞數</th>
+                    <th className="num">佔比</th>
+                    <th className="num">保留細胞數</th>
                   </tr>
                 </thead>
                 <tbody>

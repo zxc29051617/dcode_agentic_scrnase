@@ -37,32 +37,47 @@ import "@copilotkit/react-ui/styles.css";
  * none: it is the page telling somebody they have misunderstood where they
  * are.
  */
-function asksFor(runId: string, step: string, parameters: string[]): string[] {
+type Ask = {
+  /** What the button says. Short, because it is a button. */
+  label: string;
+  /** What is actually sent. Carries the run id, which the label does not. */
+  message: string;
+};
+
+function asksFor(runId: string, step: string, parameters: string[]): Ask[] {
   const first = parameters[0];
+  // The run id belongs in the message and not on the button. It used to be in
+  // both, and the button text was produced by deleting the id back out of the
+  // sentence with three chained `.replace()` calls — a transform that breaks
+  // the moment the wording changes, silently, by showing the raw sentence.
+  const ask = (label: string, message: string): Ask => ({ label, message: `第 ${runId} 次執行：${message}` });
   if (step === "apply_cell_qc_filter") {
     return [
-      `For run ${runId}, read the threshold table and recommend values for ${parameters.join(", ")} — say what each one would cost and why you would draw the line there.`,
-      `For run ${runId}, what would accepting with no filtering at all cost me later?`,
-      `For run ${runId}, is a mitochondrial median of this size normal for the tissue?`,
-      `For run ${runId}, which of these cells would a reviewer object to keeping?`,
+      ask(
+        "讀閾值表，建議數值",
+        `讀這一關的閾值表，替 ${parameters.join("、")} 各建議一個值 —— 說明每個值會付出什麼代價，以及你為什麼把線畫在那裡。`,
+      ),
+      ask("完全不過濾會怎樣？", "如果我什麼都不過濾就接受，後面會付出什麼代價？"),
+      ask("這個粒線體中位數正常嗎？", "這個組織的粒線體中位數落在這個大小，正常嗎？"),
+      ask("審稿人會反對留下哪些細胞？", "這些細胞裡，哪些是審稿人會反對保留的？"),
     ];
   }
   if (step === "annotate_cells" || step === "cross_check_annotation") {
     return [
       first
-        ? `For run ${runId}, which ${first} should I choose and why?`
-        : `What is run ${runId} waiting for me to decide?`,
-      `What do the marker genes in run ${runId} say about what this tissue is?`,
-      `What is the second-best option for run ${runId}, and when would it be better?`,
-      `Is the recommended option for run ${runId} already downloaded?`,
+        ? ask(`該選哪一個 ${first}？`, `我該選哪一個 ${first}，為什麼？`)
+        : ask("這一關在等我決定什麼？", "這次執行在等我決定什麼？"),
+      ask("marker 基因說這是什麼組織？", "這次執行的 marker 基因，說明這是什麼組織？"),
+      ask("第二好的選項是什麼？", "第二好的選項是什麼？什麼情況下它會比較好？"),
+      ask("推薦的那個下載了嗎？", "推薦的那個選項，本機已經下載了嗎？"),
     ];
   }
   return [
     first
-      ? `For run ${runId}, which ${first} should I choose and why?`
-      : `What is run ${runId} waiting for me to decide, and what are my options?`,
-    `For run ${runId}, what did the reviewer actually measure here?`,
-    `For run ${runId}, what happens if I just accept this?`,
+      ? ask(`該選哪一個 ${first}？`, `我該選哪一個 ${first}，為什麼？`)
+      : ask("這一關在等我決定什麼？", "這次執行在等我決定什麼？我有哪些選項？"),
+    ask("模型實際量到了什麼？", "模型在這一關實際量到了什麼？"),
+    ask("直接接受會怎樣？", "如果我直接接受，會發生什麼事？"),
   ];
 }
 
@@ -89,19 +104,19 @@ function Openers({
   useEffect(() => {
     if (!autoAsk || asked || isLoading) return;
     setAsked(true);
-    void appendMessage(new TextMessage({ role: Role.User, content: asks[0] }));
+    void appendMessage(new TextMessage({ role: Role.User, content: asks[0].message }));
   }, [autoAsk, asked, isLoading, appendMessage, asks]);
 
   return (
     <div className="suggestions" style={{ marginBottom: "0.6rem" }}>
-      {asks.map((text) => (
+      {asks.map((item) => (
         <button
-          key={text}
+          key={item.label}
           type="button"
           disabled={isLoading}
-          onClick={() => void appendMessage(new TextMessage({ role: Role.User, content: text }))}
+          onClick={() => void appendMessage(new TextMessage({ role: Role.User, content: item.message }))}
         >
-          {text.replace(` for run ${runId}`, "").replace(`For run ${runId}, `, "").replace(` in run ${runId}`, "")}
+          {item.label}
         </button>
       ))}
     </div>
@@ -153,10 +168,10 @@ export default function GateAdvisor({
   return (
     <div data-testid="gate-advisor" style={{ marginTop: "0.9rem" }}>
       <div style={{ display: "flex", alignItems: "baseline", gap: "0.6rem", marginBottom: "0.5rem" }}>
-        <strong>Assistant</strong>
-        <span className="subtle">advises only; you pick above and press Submit</span>
+        <strong>助理</strong>
+        <span className="subtle">只提供建議；選項在上面，由你按下送出</span>
         <span className="spacer" style={{ flex: 1 }} />
-        <button type="button" onClick={() => setOpen(false)} aria-label="Close the assistant">
+        <button type="button" onClick={() => setOpen(false)} aria-label="關閉助理">
           ×
         </button>
       </div>

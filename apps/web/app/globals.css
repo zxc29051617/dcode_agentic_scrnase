@@ -389,6 +389,16 @@ cpk-web-inspector {
 .badge[data-tone="fail"]   { color: var(--fail);   background: var(--fail-bg); }
 .badge[data-tone="reused"] { color: var(--reused); background: var(--reused-bg); }
 .badge[data-tone="muted"]  { color: var(--muted);  background: var(--reused-bg); }
+/* RUNNING is neutral by design: colour on this page means "somebody has to
+   act", and a step still working asks nothing of anybody. What separates it
+   from `muted` is the pulse — a still badge reading RUNNING for half an hour
+   looks exactly like a hung process. */
+.badge[data-tone="running"] { color: var(--muted); background: var(--reused-bg); animation: tone-pulse 1.8s ease-in-out infinite; }
+.tl-dot[data-tone="running"] { background: var(--muted); animation: tone-pulse 1.8s ease-in-out infinite; }
+@keyframes tone-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) {
+  .badge[data-tone="running"], .tl-dot[data-tone="running"] { animation: none; }
+}
 
 /* --- cards / panels ------------------------------------------------------- */
 

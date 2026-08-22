@@ -241,13 +241,19 @@ export function stepLabel(step: string): StepLabel {
  * gate asks them to decide.
  */
 export const VERDICT_WORDS: Record<string, { word: string; meaning: string }> = {
-  pass: { word: "Looks sound", meaning: "The reviewer found nothing to raise." },
+  // The short token is `lib/verdict.ts`'s TONE_WORDS, so a badge and a
+  // sentence never disagree about what a value is called. The `meaning` is
+  // what the earlier wording ("Worth a look") was protecting: `warn` is not an
+  // error, and REVIEW alone could still be read as one.
+  pass: { word: "PASS", meaning: "The reviewer found nothing to raise." },
   warn: {
-    word: "Worth a look",
-    meaning: "The step ran soundly and the reviewer has something for you to see. It is not an error.",
+    word: "REVIEW",
+    meaning:
+      "The step ran soundly and the reviewer has something for you to see. It is not an error — " +
+      "and the run stops here and waits for you, because `autocontinue_on_warn` is false.",
   },
   fail: {
-    word: "Needs attention",
+    word: "STOP",
     meaning: "The reviewer does not think this result should be built on as it stands.",
   },
 };

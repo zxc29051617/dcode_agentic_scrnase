@@ -17,6 +17,44 @@ export function humanDuration(seconds: number | null | undefined): string | null
 }
 
 /**
+ * How often a live clock should redraw at this age.
+ *
+ * A running step is shown by `humanDuration`, whose resolution drops as the
+ * number grows: seconds below a minute, one decimal place of a minute below
+ * ten, whole minutes above. Ticking every second past the first minute redraws
+ * a number that has not changed, and past ten minutes it redraws one that
+ * changes once a minute.
+ *
+ * The point of the clock is not precision. It is that a reader can tell a step
+ * that is working from one that is hung, and for that the number has to visibly
+ * move — so the interval tracks the smallest visible increment rather than the
+ * second hand.
+ */
+export function tickIntervalMs(seconds: number): number {
+  if (seconds < 60) return 1_000;
+  if (seconds < 600) return 6_000; // one tenth of a minute
+  return 30_000;
+}
+
+/**
+ * A live elapsed time, from a server baseline plus locally measured time.
+ *
+ * Never `Date.now() - startedAt`. The baseline was measured by the gateway and
+ * the tick is measured by the browser, and adding them means the two clocks are
+ * never compared — a browser several minutes behind the server would otherwise
+ * render a negative age, or freeze at zero, on a step that is running fine.
+ */
+export function liveElapsed(
+  baselineSeconds: number | null | undefined,
+  secondsSinceMount: number,
+): number | null {
+  if (baselineSeconds == null || !Number.isFinite(baselineSeconds) || baselineSeconds < 0) {
+    return null;
+  }
+  return baselineSeconds + Math.max(0, secondsSinceMount);
+}
+
+/**
  * A measured expectation, or nothing.
  *
  * Returns null rather than a guess when the gateway has too few finished runs

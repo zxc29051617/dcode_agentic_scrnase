@@ -336,7 +336,13 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
             </p>
             <div className="panel">
               {steps ? (
-                <WorkflowTimeline steps={steps} runId={id} />
+                <WorkflowTimeline
+                  steps={steps}
+                  runId={id}
+                  unfinishedStep={snapshot.unfinished_step}
+                  elapsedSeconds={snapshot.current_step_elapsed_seconds}
+                  timings={timings?.steps ?? {}}
+                />
               ) : (
                 <p className="subtle" style={{ margin: 0 }}>
                   No step records were available for this run.
