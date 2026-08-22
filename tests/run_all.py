@@ -1,10 +1,24 @@
 """Run every test module and return a combined exit code.
 
     python tests/run_all.py
+
+The suite runs on `StubJudge` and reaches no network. That is a property of
+the default, not of the suite: `get_judge` reads `SCRNA_JUDGE_BACKEND`, and
+`.env` fills it when the environment does not — so anyone who set up a real
+endpoint by following `docs/judge_setup.md` has a `.env` that silently makes
+every test judge against a paid API.
+
+`test_judge_provenance` already asserts the stub was used, and it does catch
+this. It catches it too late: it is one assertion partway through the run, and
+on 2026-08-22 the modules ahead of it had already made 1,405 requests, 703 of
+them rejected, before it fired. A red suite that has already spent the money is
+not much better than a green one that never ran — so the check moved to the
+front, where refusing costs nothing.
 """
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -116,7 +130,60 @@ MODULES = (
 )
 
 
+#: What `main` returns when a live judge is configured. Distinct from `1`,
+#: which means tests ran and some failed: nothing ran here.
+LIVE_JUDGE_EXIT = 10
+
+
+def configured_judge_backend() -> str:
+    """The backend the suite would judge with, resolved as `get_judge` does.
+
+    Highest first: the environment, then `.env`, then `stub`. Read rather than
+    loaded — `envfile.load` would put the endpoint and the key into this
+    process, and a checker that has to modify the thing it is checking is a
+    worse checker.
+    """
+    from src import envfile
+
+    requested = os.environ.get("SCRNA_JUDGE_BACKEND")
+    if requested is None:
+        for path in envfile.candidate_paths():
+            if path.is_file():
+                requested = envfile.parse(path.read_text(encoding="utf-8")).get(
+                    "SCRNA_JUDGE_BACKEND"
+                )
+                break
+    return (requested or "stub").strip().lower()
+
+
+def refuse_a_live_judge(backend: str) -> str | None:
+    """The message to print before refusing to run, or None to go ahead.
+
+    Aliases resolve first: `ollama` and `openai-compatible` are `local` under
+    another name, and a check that only knew the word `local` would wave two of
+    the three ways of asking for one straight through.
+    """
+    from src.judge import BACKEND_ALIASES
+
+    if BACKEND_ALIASES.get(backend, backend) == "stub":
+        return None
+    return (
+        f"refusing to run: the judge backend resolves to {backend!r}, not 'stub'.\n"
+        "Every judged step would call a real endpoint, which costs money and "
+        "makes the result depend on a model's mood.\n"
+        "Set SCRNA_JUDGE_BACKEND=stub in .env (that is what .env.example ships), "
+        "or export SCRNA_JUDGE_BACKEND=stub for this shell.\n"
+        "To judge with a real model, pass --judge local to `python -m src.run` "
+        "instead: the flag beats both, and it does not reach the tests."
+    )
+
+
 def main() -> int:
+    refusal = refuse_a_live_judge(configured_judge_backend())
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return LIVE_JUDGE_EXIT
+
     failed = 0
     for module in MODULES:
         print(f"\n{module.__name__}")

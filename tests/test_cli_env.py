@@ -42,6 +42,21 @@ SECRET = "sk-from-dotenv-must-never-be-written-0987"
 
 
 @contextmanager
+def pushd(directory: str):
+    """Run with the working directory somewhere else.
+
+    `envfile.candidate_paths` looks in the working directory before the project
+    root, so a test about which `.env` wins has to be able to move.
+    """
+    previous = os.getcwd()
+    os.chdir(directory)
+    try:
+        yield
+    finally:
+        os.chdir(previous)
+
+
+@contextmanager
 def clean_env(**overrides: str):
     """Run with the judge variables under this test's control."""
     saved = {key: os.environ.get(key) for key in JUDGE_VARS}
@@ -434,6 +449,100 @@ def test_a_resource_change_cuts_at_the_count_and_not_before():
         cut, owner = registry.earliest_step_reading([key])
         assert cut == "cellranger_count", f"{key} cuts at {cut}"
         assert owner[key] == "cellranger_count"
+
+
+# --- the suite refuses to run against a live judge ------------------------------------------
+#
+# On 2026-08-22 a `.env` written for a demo left `SCRNA_JUDGE_BACKEND=local`,
+# and `python tests/run_all.py` judged against a paid endpoint: 1,405 requests,
+# 703 of them rejected, before `test_judge_provenance` failed on the one
+# assertion that noticed. That assertion is right and stays; these pin the
+# check that now runs before any module does, where refusing is free.
+#
+# `run_all` is imported inside each test rather than at the top of the file:
+# `run_all` imports *this* module, so a top-level import here would be circular
+# and neither file would load.
+
+
+def test_a_stub_backend_is_allowed_to_run():
+    from tests import run_all
+
+    with clean_env(SCRNA_JUDGE_BACKEND="stub"):
+        assert run_all.configured_judge_backend() == "stub"
+        assert run_all.refuse_a_live_judge("stub") is None
+
+
+def test_every_alias_for_a_live_backend_is_refused():
+    """`local` is not the only way to ask for one.
+
+    `ollama` and `openai-compatible` resolve to `local` through
+    `BACKEND_ALIASES`, and a check that matched the literal string `local`
+    would wave two of the three straight through.
+    """
+    from tests import run_all
+
+    for name in ("local", "ollama", "openai-compatible", "LOCAL", " Ollama "):
+        refusal = run_all.refuse_a_live_judge(name.strip().lower())
+        assert refusal is not None, f"{name!r} was allowed to run the suite"
+        assert "stub" in refusal, "the refusal has to say what to set instead"
+
+
+def test_the_refusal_names_the_flag_that_does_work():
+    """A refusal that only says no leaves somebody with a real endpoint stuck."""
+    from tests import run_all
+
+    refusal = run_all.refuse_a_live_judge("local")
+    assert "--judge local" in refusal
+
+
+def test_refusing_is_a_different_exit_code_from_failing():
+    """`1` means tests ran and some failed. Here nothing ran at all."""
+    from tests import run_all
+
+    assert run_all.LIVE_JUDGE_EXIT == 10
+    assert run_all.LIVE_JUDGE_EXIT != 1
+
+
+def test_the_environment_beats_the_file_for_the_guard_too():
+    """Same precedence as `get_judge`, or the check describes a different run."""
+    from tests import run_all
+
+    with tempfile.TemporaryDirectory() as directory:
+        Path(directory, ".env").write_text("SCRNA_JUDGE_BACKEND=local\n", encoding="utf-8")
+        with pushd(directory):
+            with clean_env(SCRNA_JUDGE_BACKEND="stub"):
+                assert run_all.configured_judge_backend() == "stub"
+
+
+def test_the_file_is_read_without_being_loaded():
+    """The checker must not put the endpoint and key into this process.
+
+    `envfile.load` would, and a check that modifies what it is checking is a
+    worse check: every module after it would then see variables the shell never
+    set.
+    """
+    from tests import run_all
+
+    with tempfile.TemporaryDirectory() as directory:
+        Path(directory, ".env").write_text(
+            "SCRNA_JUDGE_BACKEND=local\nSCRNA_JUDGE_API_KEY=sk-not-a-real-key\n",
+            encoding="utf-8",
+        )
+        with pushd(directory):
+            with clean_env():
+                assert run_all.configured_judge_backend() == "local"
+                assert "SCRNA_JUDGE_API_KEY" not in os.environ
+                assert "SCRNA_JUDGE_BACKEND" not in os.environ
+
+
+def test_no_configuration_at_all_is_stub():
+    """The documented default, and the one the whole suite depends on."""
+    from tests import run_all
+
+    with tempfile.TemporaryDirectory() as directory:
+        with pushd(directory):
+            with clean_env():
+                assert run_all.configured_judge_backend() == "stub"
 
 
 def main() -> int:
